@@ -58,6 +58,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
   const [scannedTag, setScannedTag] = useState<MasterKittingTag | null>(null);
   const [masterTags, setMasterTags] = useState<MasterKittingTag[]>([]);
   const [isAutoKittingModalOpen, setIsAutoKittingModalOpen] = useState(false);
+  const [isModalLocationCameraOpen, setIsModalLocationCameraOpen] = useState(false);
 
   // Smart Kitting Form Fields
   const [partCode, setPartCode] = useState('');
@@ -741,11 +742,12 @@ export const KittingView: React.FC<KittingViewProps> = ({
               {isCameraScanning && (
                 <SmoothCameraScanner
                   onScanSuccess={(scannedText) => {
+                    setIsCameraScanning(false);
                     handleParseQrPayload(scannedText);
                   }}
                   onClose={() => setIsCameraScanning(false)}
                   placeholderText="Căn mã QR Thẻ Thùng vào giữa khung hình camera..."
-                  autoCloseOnScan={false}
+                  autoCloseOnScan={true}
                 />
               )}
 
@@ -1205,6 +1207,14 @@ export const KittingView: React.FC<KittingViewProps> = ({
                       placeholder="Quét hoặc gõ mã kệ (VD: BUFFER-A1-01)..."
                       className="flex-1 px-3 py-2.5 bg-blue-50 border-2 border-blue-300 rounded-xl font-mono font-bold text-blue-900 text-xs focus:ring-2 focus:ring-blue-500 outline-hidden"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setIsModalLocationCameraOpen(!isModalLocationCameraOpen)}
+                      className="px-3 py-2.5 bg-blue-700 hover:bg-blue-800 text-white font-black text-xs rounded-xl flex items-center space-x-1 shrink-0 cursor-pointer shadow-xs"
+                    >
+                      <QrCode className="w-4 h-4 text-amber-300" />
+                      <span>{isModalLocationCameraOpen ? 'Ẩn' : 'Quét Kệ'}</span>
+                    </button>
                     <select
                       value={targetBuffer}
                       onChange={(e) => {
@@ -1220,8 +1230,26 @@ export const KittingView: React.FC<KittingViewProps> = ({
                       ))}
                     </select>
                   </div>
+
+                  {isModalLocationCameraOpen && (
+                    <div className="mt-2">
+                      <SmoothCameraScanner
+                        onScanSuccess={(scannedLocation) => {
+                          setIsModalLocationCameraOpen(false);
+                          const loc = scannedLocation.trim().toUpperCase();
+                          setTargetBuffer(loc);
+                          executeSmartKitting(loc);
+                          setIsAutoKittingModalOpen(false);
+                        }}
+                        onClose={() => setIsModalLocationCameraOpen(false)}
+                        placeholderText="Căn mã QR Kệ Outbuffer vào giữa khung hình camera..."
+                        autoCloseOnScan={true}
+                      />
+                    </div>
+                  )}
+
                   <p className="text-[10px] text-blue-700 font-medium mt-1">
-                    * Bắn súng quét QR kệ hoặc chọn dropdown để <strong>TỰ ĐỘNG XÁC NHẬN</strong>.
+                    * Quét QR kệ bằng camera hoặc bắn súng quét để <strong>TỰ ĐỘNG XÁC NHẬN & VÀO KỆ</strong>.
                   </p>
                 </div>
               </div>

@@ -100,6 +100,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
   // QR Code scanning states for Phiếu Thông Tin / Thẻ Thùng
   const [isAndonCameraScanning, setIsAndonCameraScanning] = useState(false);
+  const [isAndonModalCameraOpen, setIsAndonModalCameraOpen] = useState(false);
   const [andonQrInputText, setAndonQrInputText] = useState('');
   const [isAndonTagManagerOpen, setIsAndonTagManagerOpen] = useState(false);
   const [andonScanMessage, setAndonScanMessage] = useState('');
@@ -1028,11 +1029,12 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                 {isAndonCameraScanning && (
                   <SmoothCameraScanner
                     onScanSuccess={(code) => {
+                      setIsAndonCameraScanning(false);
                       handleParseAndonQrPayload(code);
                     }}
                     onClose={() => setIsAndonCameraScanning(false)}
                     placeholderText="Căn mã QR Phiếu Thông Tin / Thẻ Thùng vào giữa khung hình camera..."
-                    autoCloseOnScan={false}
+                    autoCloseOnScan={true}
                   />
                 )}
 
@@ -1594,17 +1596,42 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     <label className="block font-extrabold text-slate-800 mb-1">
                       CHỌN KỆ OUTBUFFER LẤY HÀNG (ƯU TIÊN FIFO) <span className="text-rose-500">*</span>
                     </label>
-                    <select
-                      value={selectedPickShelf || andonModalData.recommendedLocation}
-                      onChange={(e) => setSelectedPickShelf(e.target.value)}
-                      className="w-full px-3.5 py-2.5 bg-white border-2 border-emerald-500 rounded-xl font-black text-slate-900 text-sm focus:ring-2 focus:ring-emerald-500 shadow-xs"
-                    >
-                      {andonModalData.availableBuffers.map((b, idx) => (
-                        <option key={b.locationId} value={b.locationId}>
-                          [{b.locationId}] {b.modelName ? ` • Model: ${b.modelName}` : ''} {b.description ? ` (${b.description})` : ''} — Tồn: {b.currentStockQty} {andonModalData.unit} {idx === 0 ? ' ⭐ (Ưu tiên FIFO)' : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={selectedPickShelf || andonModalData.recommendedLocation}
+                        onChange={(e) => setSelectedPickShelf(e.target.value)}
+                        className="flex-1 px-3.5 py-2.5 bg-white border-2 border-emerald-500 rounded-xl font-black text-slate-900 text-sm focus:ring-2 focus:ring-emerald-500 shadow-xs"
+                      >
+                        {andonModalData.availableBuffers.map((b, idx) => (
+                          <option key={b.locationId} value={b.locationId}>
+                            [{b.locationId}] {b.modelName ? ` • Model: ${b.modelName}` : ''} {b.description ? ` (${b.description})` : ''} — Tồn: {b.currentStockQty} {andonModalData.unit} {idx === 0 ? ' ⭐ (Ưu tiên FIFO)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setIsAndonModalCameraOpen(!isAndonModalCameraOpen)}
+                        className="px-3 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-black text-xs rounded-xl flex items-center space-x-1 shrink-0 cursor-pointer shadow-xs"
+                      >
+                        <QrCode className="w-4 h-4 text-amber-300" />
+                        <span>{isAndonModalCameraOpen ? 'Ẩn' : 'Quét Kệ'}</span>
+                      </button>
+                    </div>
+
+                    {isAndonModalCameraOpen && (
+                      <div className="mt-2">
+                        <SmoothCameraScanner
+                          onScanSuccess={(scannedShelf) => {
+                            setIsAndonModalCameraOpen(false);
+                            const cleanShelf = scannedShelf.trim().toUpperCase();
+                            setSelectedPickShelf(cleanShelf);
+                          }}
+                          onClose={() => setIsAndonModalCameraOpen(false)}
+                          placeholderText="Căn mã QR Kệ Outbuffer cần lấy vào giữa khung hình camera..."
+                          autoCloseOnScan={true}
+                        />
+                      </div>
+                    )}
                   </div>
 
                   {(() => {
