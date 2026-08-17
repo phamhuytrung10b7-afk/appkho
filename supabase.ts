@@ -1,17 +1,16 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Read Supabase credentials from environment variables
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Hardcoded Supabase credentials for direct cloud connection
+export const HARDCODED_SUPABASE_URL = 'https://argjmnsffrznpwswinka.supabase.co';
+export const HARDCODED_SUPABASE_ANON_KEY = 'sb_publishable_Hl-mMWVY7ONNsVdwS_nfTw_gCnLEtzq';
 
-// Initialize Supabase client
-export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY && SUPABASE_URL.startsWith('http'));
+export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || HARDCODED_SUPABASE_URL;
+export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || HARDCODED_SUPABASE_ANON_KEY;
 
-// Fallback placeholder client if URL is not configured yet
-export const supabase: SupabaseClient = createClient(
-  SUPABASE_URL || 'https://placeholder-project.supabase.co',
-  SUPABASE_ANON_KEY || 'placeholder-anon-key'
-);
+// Initialize default Supabase client with priority given to hardcoded credentials
+export const isSupabaseConfigured = true;
+
+export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export interface SupabaseConfigState {
   url: string;
@@ -34,14 +33,11 @@ export function saveSupabaseCredentials(url: string, anonKey: string): void {
 
 export function getActiveSupabaseClient(): { client: SupabaseClient; isConfigured: boolean } {
   const { url, anonKey } = getSupabaseCredentials();
-  if (url && anonKey && url.startsWith('http')) {
-    return {
-      client: createClient(url, anonKey),
-      isConfigured: true,
-    };
-  }
+  const activeUrl = url || SUPABASE_URL;
+  const activeKey = anonKey || SUPABASE_ANON_KEY;
   return {
-    client: supabase,
-    isConfigured: false,
+    client: createClient(activeUrl, activeKey),
+    isConfigured: true,
   };
 }
+

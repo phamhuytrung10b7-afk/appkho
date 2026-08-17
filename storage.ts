@@ -500,6 +500,7 @@ export const storageService = {
     const txs = this.getTransactions();
     txs.push(newTx);
     this.saveTransactions(txs);
+    supabaseRelationalStore.insertTransaction(newTx);
 
     return newTx;
   },
@@ -583,6 +584,7 @@ export const storageService = {
     const txs = this.getTransactions();
     txs.push(newTx);
     this.saveTransactions(txs);
+    supabaseRelationalStore.insertTransaction(newTx);
 
     // Automatically trigger Kitting Queue item for pre-assembly processing!
     try {
@@ -1061,11 +1063,13 @@ export const storageService = {
       batches.unshift(batch);
     }
     localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
+    supabaseKeyStore.set(STORAGE_KEYS.CONTAINER_BATCHES, batches);
   },
 
   deleteContainerBatch(id: string): void {
     const batches = this.getContainerBatches().filter((b) => b.id !== id);
     localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
+    supabaseKeyStore.set(STORAGE_KEYS.CONTAINER_BATCHES, batches);
   },
 
   // Model BOMs
@@ -1088,11 +1092,13 @@ export const storageService = {
       boms.unshift(bom);
     }
     localStorage.setItem(MODEL_BOMS_KEY, JSON.stringify(boms));
+    supabaseKeyStore.set(STORAGE_KEYS.MODEL_BOMS, boms);
   },
 
   deleteModelBOM(id: string): void {
     const boms = this.getModelBOMs().filter(b => b.id !== id);
     localStorage.setItem(MODEL_BOMS_KEY, JSON.stringify(boms));
+    supabaseKeyStore.set(STORAGE_KEYS.MODEL_BOMS, boms);
   },
 
   importModelBOMFromRows(rawRows: any[], modelName: string): { added: number; name: string } {
@@ -1434,6 +1440,7 @@ export const storageService = {
 
   saveKittingQueue(items: KittingQueueItem[]): void {
     localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(items));
+    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, items);
   },
 
   addKittingQueueItemFromStockOut(tx: Transaction): KittingQueueItem {
@@ -1593,6 +1600,7 @@ export const storageService = {
 
   saveBufferLocations(locs: BufferLocationMap[]): void {
     localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
+    supabaseKeyStore.set(STORAGE_KEYS.BUFFER_MAP, locs);
   },
 
   updateBufferLocation(locationId: string, data: Partial<BufferLocationMap>): BufferLocationMap {
@@ -1767,6 +1775,7 @@ export const storageService = {
 
   saveMaterialCallRequests(reqs: MaterialCallRequest[]): void {
     localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
+    supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, reqs);
   },
 
   createMaterialCallRequest(params: {
@@ -1880,6 +1889,7 @@ export const storageService = {
 
   saveBomExportVouchers(vouchers: BomExportVoucher[]): void {
     localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
+    supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers);
   },
 
   addBomExportVoucher(params: {
@@ -2156,6 +2166,7 @@ export const storageService = {
 
   saveMasterContainerTags(tags: MasterKittingTag[]): void {
     localStorage.setItem(MASTER_CONTAINER_TAGS_KEY, JSON.stringify(tags));
+    supabaseKeyStore.set(STORAGE_KEYS.MASTER_CONTAINER_TAGS, tags);
   },
 
   resetMasterContainerTags(): MasterKittingTag[] {
@@ -2181,6 +2192,7 @@ export const storageService = {
 
   saveConversionFactors(factors: ConversionFactor[]): void {
     localStorage.setItem(CONVERSION_FACTORS_KEY, JSON.stringify(factors));
+    supabaseKeyStore.set(STORAGE_KEYS.CONVERSION_FACTORS, factors);
   },
 
   getConversionFactorForPart(partCode: string): number {
@@ -2223,6 +2235,7 @@ export const storageService = {
     };
     logs.unshift(newLog);
     localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(logs));
+    supabaseKeyStore.set(STORAGE_KEYS.KITTING_SCAN_LOGS, logs);
     return newLog;
   },
 
@@ -2242,6 +2255,7 @@ export const storageService = {
 
   saveProductivityPersonnelConfig(config: ProductivityPersonnelConfig): void {
     localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(config));
+    supabaseKeyStore.set(STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, config);
   },
 
   // --- CUSTOM GENERATED CONTAINER TAGS (Lưu vị trí riêng biệt với Thẻ Master Data) ---
@@ -2258,6 +2272,7 @@ export const storageService = {
 
   saveCustomGeneratedContainerTags(tags: CustomGeneratedContainerTag[]): void {
     localStorage.setItem(CUSTOM_GENERATED_CONTAINER_TAGS_KEY, JSON.stringify(tags));
+    supabaseKeyStore.set(STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, tags);
   },
 
   addCustomGeneratedContainerTag(tag: CustomGeneratedContainerTag): void {
