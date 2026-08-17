@@ -1,0 +1,8 @@
+{
+  "name": "Quản Lý Kho Linh Kiện - Thẻ Kho Điện Tử",
+  "description": "Phần mềm quản lý kho linh kiện thay thế thẻ kho giấy, hỗ trợ nhập xuất, kiểm kê, báo cáo và in thẻ kho.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
