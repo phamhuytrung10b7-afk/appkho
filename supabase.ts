@@ -12,18 +12,33 @@ export interface SupabaseConfigState {
   anonKey: string;
 }
 
+export function cleanSupabaseUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  let url = rawUrl.trim();
+  url = url.replace(/^['"]|['"]$/g, '');
+  url = url.replace(/\/+$/, '');
+  if (url.endsWith('/rest/v1')) {
+    url = url.substring(0, url.length - '/rest/v1'.length);
+  }
+  return url.replace(/\/+$/, '');
+}
+
 export function getSupabaseCredentials(): SupabaseConfigState {
   const localUrl = localStorage.getItem('thekho_supabase_url');
   const localKey = localStorage.getItem('thekho_supabase_anon_key');
+  const rawUrl = localUrl || SUPABASE_URL;
+  const rawKey = localKey || SUPABASE_ANON_KEY;
   return {
-    url: localUrl || SUPABASE_URL,
-    anonKey: localKey || SUPABASE_ANON_KEY,
+    url: cleanSupabaseUrl(rawUrl),
+    anonKey: rawKey.trim(),
   };
 }
 
 export function saveSupabaseCredentials(url: string, anonKey: string): void {
-  localStorage.setItem('thekho_supabase_url', url.trim());
-  localStorage.setItem('thekho_supabase_anon_key', anonKey.trim());
+  const cleanedUrl = cleanSupabaseUrl(url);
+  const cleanedKey = anonKey.trim();
+  localStorage.setItem('thekho_supabase_url', cleanedUrl);
+  localStorage.setItem('thekho_supabase_anon_key', cleanedKey);
 }
 
 // Global singleton client cache to avoid "Multiple GoTrueClient instances detected" warning
@@ -31,8 +46,8 @@ const clientMap = new Map<string, SupabaseClient>();
 
 export function getActiveSupabaseClient(): { client: SupabaseClient; isConfigured: boolean } {
   const { url, anonKey } = getSupabaseCredentials();
-  const activeUrl = url || SUPABASE_URL;
-  const activeKey = anonKey || SUPABASE_ANON_KEY;
+  const activeUrl = cleanSupabaseUrl(url || SUPABASE_URL);
+  const activeKey = (anonKey || SUPABASE_ANON_KEY).trim();
   const cacheKey = `${activeUrl}__${activeKey}`;
 
   if (!clientMap.has(cacheKey)) {
@@ -48,7 +63,7 @@ export function getActiveSupabaseClient(): { client: SupabaseClient; isConfigure
 
   return {
     client: clientMap.get(cacheKey)!,
-    isConfigured: true,
+    isConfigured: Boolean(activeUrl && activeKey),
   };
 }
 

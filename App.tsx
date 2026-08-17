@@ -32,6 +32,7 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(storageService.getSettings());
   const [searchTerm, setSearchTerm] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isLoadingCloud, setIsLoadingCloud] = useState(true);
 
   // Automatically adjust currentTab to the user's allowedTabs if currentTab is forbidden
   useEffect(() => {
@@ -75,8 +76,38 @@ export default function App() {
     setSettings(storageService.getSettings());
   }, []);
 
+  // On App Mount: Mandatory sync from Supabase Cloud as Single Source of Truth
   useEffect(() => {
-    refreshData();
+    let isMounted = true;
+    async function initCloudData() {
+      setIsLoadingCloud(true);
+      try {
+        const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud();
+        if (isMounted) {
+          setParts(cloudParts);
+          setTransactions(cloudTxs);
+          setKittingQueue(storageService.getKittingQueue());
+          setBufferLocations(storageService.getBufferLocations());
+          setMaterialCalls(storageService.getMaterialCallRequests());
+          setSettings(storageService.getSettings());
+        }
+      } catch (err) {
+        console.error('Lỗi khi tải dữ liệu ban đầu từ Supabase:', err);
+        if (isMounted) {
+          refreshData();
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingCloud(false);
+        }
+      }
+    }
+
+    initCloudData();
+
+    return () => {
+      isMounted = false;
+    };
   }, [refreshData]);
 
   // Open Electronic Bin Card for a part
@@ -116,6 +147,23 @@ export default function App() {
   const pendingKittingCount = kittingQueue.filter((k) => k.status === 'PENDING_KITTING').length;
   const callingAndonCount = materialCalls.filter((m) => m.status === 'CALLING').length;
   const deliveringAndonCount = materialCalls.filter((m) => m.status === 'DELIVERING').length;
+
+  if (isLoadingCloud) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-slate-900 text-white p-6 space-y-5">
+        <div className="relative flex items-center justify-center">
+          <div className="w-16 h-16 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
+          <Boxes className="w-6 h-6 text-blue-400 absolute animate-pulse" />
+        </div>
+        <div className="text-center space-y-1.5 max-w-sm">
+          <h2 className="text-base font-extrabold text-slate-100 tracking-tight">Đang tải dữ liệu từ Supabase Cloud...</h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Hệ thống đang đồng bộ kho hàng và lịch sử giao dịch trực tiếp từ máy chủ...
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return <LoginView onLoginSuccess={(u) => setCurrentUser(u)} warehouseName={settings.warehouseName} />;

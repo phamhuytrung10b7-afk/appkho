@@ -281,14 +281,12 @@ export const storageService = {
   getParts(): Part[] {
     const raw = localStorage.getItem(PARTS_KEY);
     if (!raw) {
-      localStorage.setItem(PARTS_KEY, JSON.stringify(initialParts));
-      supabaseKeyStore.set(STORAGE_KEYS.PARTS, initialParts);
-      return initialParts;
+      return [];
     }
     try {
       return JSON.parse(raw);
     } catch {
-      return initialParts;
+      return [];
     }
   },
 
@@ -347,14 +345,12 @@ export const storageService = {
   getTransactions(): Transaction[] {
     const raw = localStorage.getItem(TRANSACTIONS_KEY);
     if (!raw) {
-      localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(initialTransactions));
-      supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, initialTransactions);
-      return initialTransactions;
+      return [];
     }
     try {
       return JSON.parse(raw);
     } catch {
-      return initialTransactions;
+      return [];
     }
   },
 
@@ -2292,6 +2288,75 @@ export const storageService = {
   },
 
   // --- SUPABASE DUAL SYNC UTILITIES ---
+  async fetchInitialDataFromCloud(): Promise<{ parts: Part[]; transactions: Transaction[] }> {
+    let parts: Part[] = [];
+    let transactions: Transaction[] = [];
+
+    try {
+      // 1. Fetch parts directly from Supabase relational table `parts`
+      const relParts = await supabaseRelationalStore.selectParts();
+      if (relParts !== null) {
+        parts = relParts;
+      } else {
+        const keyParts = await supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS);
+        if (keyParts && Array.isArray(keyParts)) {
+          parts = keyParts;
+        } else {
+          parts = this.getParts();
+        }
+      }
+
+      // 2. Fetch transactions directly from Supabase relational table `transactions`
+      const relTxs = await supabaseRelationalStore.selectTransactions();
+      if (relTxs !== null) {
+        transactions = relTxs;
+      } else {
+        const keyTxs = await supabaseKeyStore.get<Transaction[]>(STORAGE_KEYS.TRANSACTIONS);
+        if (keyTxs && Array.isArray(keyTxs)) {
+          transactions = keyTxs;
+        } else {
+          transactions = this.getTransactions();
+        }
+      }
+
+      // Update local storage cache
+      localStorage.setItem(PARTS_KEY, JSON.stringify(parts));
+      localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
+
+      // 3. Fetch Settings
+      const remoteSettings = await supabaseKeyStore.get<AppSettings>(STORAGE_KEYS.SETTINGS);
+      if (remoteSettings) {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(remoteSettings));
+      }
+
+      const keyMappings: Array<[string, string]> = [
+        [STORAGE_KEYS.CONTAINER_BATCHES, CONTAINER_BATCHES_KEY],
+        [STORAGE_KEYS.MODEL_BOMS, MODEL_BOMS_KEY],
+        [STORAGE_KEYS.KITTING_QUEUE, KITTING_QUEUE_KEY],
+        [STORAGE_KEYS.BUFFER_MAP, BUFFER_MAP_KEY],
+        [STORAGE_KEYS.MATERIAL_CALLS, MATERIAL_CALLS_KEY],
+        [STORAGE_KEYS.BOM_VOUCHERS, BOM_VOUCHERS_KEY],
+        [STORAGE_KEYS.MASTER_CONTAINER_TAGS, MASTER_CONTAINER_TAGS_KEY],
+        [STORAGE_KEYS.CONVERSION_FACTORS, CONVERSION_FACTORS_KEY],
+        [STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
+        [STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, CUSTOM_GENERATED_CONTAINER_TAGS_KEY],
+      ];
+
+      for (const [sKey, lKey] of keyMappings) {
+        const val = await supabaseKeyStore.get(sKey);
+        if (val !== null && val !== undefined) {
+          localStorage.setItem(lKey, JSON.stringify(val));
+        }
+      }
+    } catch (err) {
+      console.error('Lỗi khi tải dữ liệu từ Supabase Cloud:', err);
+      parts = this.getParts();
+      transactions = this.getTransactions();
+    }
+
+    return { parts, transactions };
+  },
+
   async syncWithSupabase(): Promise<{ success: boolean; message: string }> {
     const { isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) {
@@ -2299,66 +2364,10 @@ export const storageService = {
     }
 
     try {
-      let syncCount = 0;
-
-      // 1. Fetch Parts
-      const remoteParts = await supabaseKeyStore.get<Part[]>(PARTS_KEY);
-      if (remoteParts && Array.isArray(remoteParts) && remoteParts.length > 0) {
-        localStorage.setItem(PARTS_KEY, JSON.stringify(remoteParts));
-        syncCount++;
-      } else {
-        const relParts = await supabaseRelationalStore.selectParts();
-        if (relParts && relParts.length > 0) {
-          localStorage.setItem(PARTS_KEY, JSON.stringify(relParts));
-          syncCount++;
-        }
-      }
-
-      // 2. Fetch Transactions
-      const remoteTxs = await supabaseKeyStore.get<Transaction[]>(TRANSACTIONS_KEY);
-      if (remoteTxs && Array.isArray(remoteTxs) && remoteTxs.length > 0) {
-        localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(remoteTxs));
-        syncCount++;
-      } else {
-        const relTxs = await supabaseRelationalStore.selectTransactions();
-        if (relTxs && relTxs.length > 0) {
-          localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(relTxs));
-          syncCount++;
-        }
-      }
-
-      // 3. Fetch Settings
-      const remoteSettings = await supabaseKeyStore.get<AppSettings>(SETTINGS_KEY);
-      if (remoteSettings && remoteSettings.companyName) {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(remoteSettings));
-        syncCount++;
-      }
-
-      // 4. Fetch Other Entities
-      const otherKeys = [
-        CONTAINER_BATCHES_KEY,
-        MODEL_BOMS_KEY,
-        KITTING_QUEUE_KEY,
-        BUFFER_MAP_KEY,
-        MATERIAL_CALLS_KEY,
-        BOM_VOUCHERS_KEY,
-        MASTER_CONTAINER_TAGS_KEY,
-        CONVERSION_FACTORS_KEY,
-        PRODUCTIVITY_PERSONNEL_CONFIG_KEY,
-        CUSTOM_GENERATED_CONTAINER_TAGS_KEY,
-      ];
-
-      for (const k of otherKeys) {
-        const val = await supabaseKeyStore.get(k);
-        if (val !== null && val !== undefined) {
-          localStorage.setItem(k, JSON.stringify(val));
-          syncCount++;
-        }
-      }
-
+      const { parts, transactions } = await this.fetchInitialDataFromCloud();
       return {
         success: true,
-        message: `Đã đồng bộ thành công ${syncCount} danh mục dữ liệu từ Supabase!`,
+        message: `Đã đồng bộ thành công! Tìm thấy ${parts.length} linh kiện và ${transactions.length} giao dịch từ Supabase Cloud.`,
       };
     } catch (err: any) {
       return {
