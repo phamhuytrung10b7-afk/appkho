@@ -23,6 +23,100 @@ export const STORAGE_KEYS = {
   CUSTOM_GENERATED_CONTAINER_TAGS: 'thekho_custom_generated_container_tags_v1',
 };
 
+// Data mapper for Part -> Supabase Row matching exact column names
+export function mapPartToSupabaseRow(part: Part) {
+  const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+  const minStock = typeof part.minStock === 'number' ? part.minStock : Number(part.minStock) || 0;
+  const maxStock = typeof (part as any).maxStock === 'number' ? (part as any).maxStock : Number((part as any).maxStock) || 0;
+  const unitPrice = typeof (part as any).unitPrice === 'number' ? (part as any).unitPrice : Number((part as any).unitPrice) || 0;
+
+  return {
+    id: String(part.id || ''),
+    code: String(part.code || ''),
+    name: String(part.name || ''),
+    group_name: String((part as any).groupName || (part as any).group_name || 'Khác'),
+    unit: String(part.unit || 'Cái'),
+    current_stock: currentStock,
+    min_stock: minStock,
+    max_stock: maxStock,
+    location: String(part.location || 'Kho chính'),
+    locations: Array.isArray(part.locations) ? part.locations : [],
+    unit_price: unitPrice,
+    supplier: String((part as any).supplier || ''),
+    notes: String(part.note || part.description || (part as any).notes || ''),
+    created_at: part.createdAt ? new Date(part.createdAt).toISOString() : new Date().toISOString(),
+    updated_at: part.updatedAt ? new Date(part.updatedAt).toISOString() : new Date().toISOString(),
+  };
+}
+
+export function mapSupabaseRowToPart(row: any): Part {
+  const currentStock = typeof row.current_stock === 'number' ? row.current_stock : Number(row.current_stock) || 0;
+  const minStock = typeof row.min_stock === 'number' ? row.min_stock : Number(row.min_stock) || 0;
+
+  return {
+    id: String(row.id || ''),
+    code: String(row.code || ''),
+    name: String(row.name || ''),
+    description: String(row.notes || row.description || ''),
+    location: String(row.location || 'Kho chính'),
+    locations: Array.isArray(row.locations) ? row.locations : [],
+    unit: String(row.unit || 'Cái'),
+    currentStock: currentStock,
+    minStock: minStock,
+    barcode: String(row.code || ''),
+    qrCode: String(row.code || ''),
+    note: String(row.notes || ''),
+    createdAt: row.created_at || new Date().toISOString(),
+    updatedAt: row.updated_at || new Date().toISOString(),
+  };
+}
+
+// Data mapper for Transaction -> Supabase Row
+export function mapTransactionToSupabaseRow(tx: Transaction) {
+  const quantity = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+  const stockBefore = typeof tx.stockBefore === 'number' ? tx.stockBefore : Number(tx.stockBefore) || 0;
+  const stockAfter = typeof tx.stockAfter === 'number' ? tx.stockAfter : Number(tx.stockAfter) || 0;
+
+  return {
+    id: String(tx.id || ''),
+    part_id: String(tx.partId || (tx as any).part_id || ''),
+    part_code: String(tx.partCode || (tx as any).part_code || ''),
+    part_name: String(tx.partName || (tx as any).part_name || ''),
+    unit: String(tx.unit || 'Cái'),
+    type: String(tx.type || 'IN'),
+    quantity: quantity,
+    date: tx.date ? new Date(tx.date).toISOString() : new Date().toISOString(),
+    person: String(tx.person || ''),
+    production_order: String(tx.productionOrder || (tx as any).production_order || ''),
+    reason_or_purpose: String(tx.reasonOrPurpose || (tx as any).reason_or_purpose || ''),
+    notes: String(tx.notes || ''),
+    location_id: String(tx.locationId || (tx as any).location_id || ''),
+    stock_before: stockBefore,
+    stock_after: stockAfter,
+    created_at: new Date().toISOString(),
+  };
+}
+
+export function mapSupabaseRowToTransaction(row: any): Transaction {
+  return {
+    id: String(row.id || ''),
+    partId: String(row.part_id || row.partId || ''),
+    partCode: String(row.part_code || row.partCode || ''),
+    partName: String(row.part_name || row.partName || ''),
+    unit: String(row.unit || 'Cái'),
+    type: row.type || 'IN',
+    quantity: typeof row.quantity === 'number' ? row.quantity : Number(row.quantity) || 0,
+    date: row.date || new Date().toISOString(),
+    person: String(row.person || ''),
+    locationId: String(row.location_id || row.locationId || ''),
+    productionOrder: String(row.production_order || row.productionOrder || ''),
+    reasonOrPurpose: String(row.reason_or_purpose || row.reasonOrPurpose || ''),
+    notes: String(row.notes || ''),
+    stockBefore: typeof row.stock_before === 'number' ? row.stock_before : Number(row.stock_before) || 0,
+    stockAfter: typeof row.stock_after === 'number' ? row.stock_after : Number(row.stock_after) || 0,
+  };
+}
+
 // Generic Supabase CRUD for Key-Value Table (`thekho_app_data`)
 export const supabaseKeyStore = {
   // SELECT
@@ -38,13 +132,13 @@ export const supabaseKeyStore = {
         .maybeSingle();
 
       if (error) {
-        console.warn(`Supabase SELECT error for key [${key}]:`, error.message);
+        console.error('Lỗi chi tiết Supabase:', error);
         return null;
       }
 
       return data ? (data.data as T) : null;
     } catch (err) {
-      console.warn(`Supabase fetch exception for key [${key}]:`, err);
+      console.error('Lỗi chi tiết Supabase:', err);
       return null;
     }
   },
@@ -63,13 +157,13 @@ export const supabaseKeyStore = {
         );
 
       if (error) {
-        console.warn(`Supabase UPSERT error for key [${key}]:`, error.message);
+        console.error('Lỗi chi tiết Supabase:', error);
         return false;
       }
 
       return true;
     } catch (err) {
-      console.warn(`Supabase set exception for key [${key}]:`, err);
+      console.error('Lỗi chi tiết Supabase:', err);
       return false;
     }
   },
@@ -86,13 +180,13 @@ export const supabaseKeyStore = {
         .eq('key', key);
 
       if (error) {
-        console.warn(`Supabase DELETE error for key [${key}]:`, error.message);
+        console.error('Lỗi chi tiết Supabase:', error);
         return false;
       }
 
       return true;
     } catch (err) {
-      console.warn(`Supabase delete exception for key [${key}]:`, err);
+      console.error('Lỗi chi tiết Supabase:', err);
       return false;
     }
   },
@@ -105,29 +199,74 @@ export const supabaseRelationalStore = {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return null;
     const { data, error } = await client.from('parts').select('*').order('created_at', { ascending: false });
-    if (error) return null;
-    return data as Part[];
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return null;
+    }
+    return (data || []).map(mapSupabaseRowToPart);
   },
 
   async insertPart(part: Part): Promise<boolean> {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return false;
-    const { error } = await client.from('parts').insert(part);
-    return !error;
+    const row = mapPartToSupabaseRow(part);
+    const { error } = await client.from('parts').upsert(row, { onConflict: 'id' });
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
+  },
+
+  async upsertParts(parts: Part[]): Promise<boolean> {
+    const { client, isConfigured } = getActiveSupabaseClient();
+    if (!isConfigured) return false;
+    if (!parts || parts.length === 0) return true;
+    const rows = parts.map(mapPartToSupabaseRow);
+    const { error } = await client.from('parts').upsert(rows, { onConflict: 'id' });
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
   },
 
   async updatePart(id: string, updates: Partial<Part>): Promise<boolean> {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return false;
-    const { error } = await client.from('parts').update(updates).eq('id', id);
-    return !error;
+    const rowUpdates: any = {};
+    if (updates.code !== undefined) rowUpdates.code = String(updates.code);
+    if (updates.name !== undefined) rowUpdates.name = String(updates.name);
+    if ((updates as any).groupName !== undefined || (updates as any).group_name !== undefined) {
+      rowUpdates.group_name = String((updates as any).groupName || (updates as any).group_name);
+    }
+    if (updates.unit !== undefined) rowUpdates.unit = String(updates.unit);
+    if (updates.currentStock !== undefined) rowUpdates.current_stock = typeof updates.currentStock === 'number' ? updates.currentStock : Number(updates.currentStock) || 0;
+    if (updates.minStock !== undefined) rowUpdates.min_stock = typeof updates.minStock === 'number' ? updates.minStock : Number(updates.minStock) || 0;
+    if (updates.location !== undefined) rowUpdates.location = String(updates.location);
+    if (updates.locations !== undefined) rowUpdates.locations = Array.isArray(updates.locations) ? updates.locations : [];
+    if (updates.note !== undefined || updates.description !== undefined) {
+      rowUpdates.notes = String(updates.note || updates.description || '');
+    }
+    rowUpdates.updated_at = new Date().toISOString();
+
+    const { error } = await client.from('parts').update(rowUpdates).eq('id', id);
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
   },
 
   async deletePart(id: string): Promise<boolean> {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return false;
     const { error } = await client.from('parts').delete().eq('id', id);
-    return !error;
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
   },
 
   // --- TRANSACTIONS CRUD ---
@@ -135,15 +274,36 @@ export const supabaseRelationalStore = {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return null;
     const { data, error } = await client.from('transactions').select('*').order('date', { ascending: false });
-    if (error) return null;
-    return data as Transaction[];
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return null;
+    }
+    return (data || []).map(mapSupabaseRowToTransaction);
   },
 
   async insertTransaction(tx: Transaction): Promise<boolean> {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return false;
-    const { error } = await client.from('transactions').insert(tx);
-    return !error;
+    const row = mapTransactionToSupabaseRow(tx);
+    const { error } = await client.from('transactions').upsert(row, { onConflict: 'id' });
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
+  },
+
+  async upsertTransactions(txs: Transaction[]): Promise<boolean> {
+    const { client, isConfigured } = getActiveSupabaseClient();
+    if (!isConfigured) return false;
+    if (!txs || txs.length === 0) return true;
+    const rows = txs.map(mapTransactionToSupabaseRow);
+    const { error } = await client.from('transactions').upsert(rows, { onConflict: 'id' });
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
   },
 
   // --- SETTINGS CRUD ---
@@ -151,14 +311,22 @@ export const supabaseRelationalStore = {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return null;
     const { data, error } = await client.from('settings').select('data').eq('id', 'app_settings').maybeSingle();
-    if (error || !data) return null;
+    if (error || !data) {
+      if (error) console.error('Lỗi chi tiết Supabase:', error);
+      return null;
+    }
     return data.data as AppSettings;
   },
 
   async upsertSettings(settings: AppSettings): Promise<boolean> {
     const { client, isConfigured } = getActiveSupabaseClient();
     if (!isConfigured) return false;
-    const { error } = await client.from('settings').upsert({ id: 'app_settings', data: settings, updated_at: new Date().toISOString() });
-    return !error;
+    const { error } = await client.from('settings').upsert({ id: 'app_settings', data: settings, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    if (error) {
+      console.error('Lỗi chi tiết Supabase:', error);
+      return false;
+    }
+    return true;
   },
 };
+

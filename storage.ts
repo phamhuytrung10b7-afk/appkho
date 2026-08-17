@@ -300,6 +300,7 @@ export const storageService = {
   saveParts(parts: Part[]): void {
     localStorage.setItem(PARTS_KEY, JSON.stringify(parts));
     supabaseKeyStore.set(STORAGE_KEYS.PARTS, parts);
+    supabaseRelationalStore.upsertParts(parts);
   },
 
   addPart(partData: Omit<Part, 'id' | 'createdAt' | 'updatedAt'>): Part {
@@ -360,6 +361,7 @@ export const storageService = {
   saveTransactions(txs: Transaction[]): void {
     localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(txs));
     supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, txs);
+    supabaseRelationalStore.upsertTransactions(txs);
   },
 
 
