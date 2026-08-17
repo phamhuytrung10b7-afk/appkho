@@ -177,12 +177,17 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       }
       const matchInMaster = masterTags.find((m) => m.partCode.toLowerCase() === pCode.toLowerCase());
       const matchInPending = pendingKittingItems.find((p) => p.partCode.toLowerCase() === pCode.toLowerCase());
+      const matchInParts = allParts.find((p) => p.code.toLowerCase() === pCode.toLowerCase() || p.id.toLowerCase() === pCode.toLowerCase());
+
       if (matchInMaster) {
         pName = matchInMaster.partName;
         pUnit = matchInMaster.unit || 'Cái';
       } else if (matchInPending) {
         pName = matchInPending.partName;
         pUnit = matchInPending.unit || 'Cái';
+      } else if (matchInParts) {
+        pName = matchInParts.name;
+        pUnit = matchInParts.unit || 'Cái';
       } else {
         pName = pCode;
       }
@@ -190,6 +195,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       pCode = cleanStr;
       const matchInMaster = masterTags.find((m) => m.partCode.toLowerCase() === pCode.toLowerCase());
       const matchInPending = pendingKittingItems.find((p) => p.partCode.toLowerCase() === pCode.toLowerCase());
+      const matchInParts = allParts.find((p) => p.code.toLowerCase() === pCode.toLowerCase() || p.id.toLowerCase() === pCode.toLowerCase());
+
       if (matchInMaster) {
         pName = matchInMaster.partName;
         pQty = matchInMaster.standardQty > 0 ? matchInMaster.standardQty : 10;
@@ -198,24 +205,16 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         pName = matchInPending.partName;
         pQty = matchInPending.rawQuantity > 0 ? matchInPending.rawQuantity : 10;
         pUnit = matchInPending.unit || 'Cái';
+      } else if (matchInParts) {
+        pName = matchInParts.name;
+        pUnit = matchInParts.unit || 'Cái';
       } else {
         pName = pCode;
       }
     }
 
-    // Validation: Part MUST either exist on Outbuffer OR in Pending Kitting queue
     const bufferEntry = bufferPartsMap.get(pCode.trim());
     const pendingItemsForCode = pendingKittingItems.filter((k) => k.partCode.trim().toLowerCase() === pCode.trim().toLowerCase());
-    const isPendingInQueue = pendingItemsForCode.length > 0;
-
-    if (!bufferEntry && !isPendingInQueue) {
-      setAndonErrorModal({
-        isOpen: true,
-        title: '⚠️ LỖI BÓC TÁCH & GỌI HÀNG (ANDON)',
-        message: `Mã linh kiện [${pCode}] KHÔNG TỒN TẠI trong Danh Sách Chờ Bóc Tách từ Kho Thô hay trên Kệ Outbuffer! Vui lòng làm thủ tục xuất kho thô từ Kho Tổng trước khi phát tín hiệu gọi cấp hàng.`,
-      });
-      return;
-    }
 
     // Determine Kitting status & location recommendation
     let isKitted = false;
@@ -239,8 +238,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       recLocation = 'DCLR';
       setSelectedPickShelf('DCLR');
       pendingRawQty = pendingItemsForCode.reduce((sum, i) => sum + i.rawQuantity, 0);
-      statusText = `🟡 CHƯA KITTING (Nằm trong Danh Sách Chờ Bóc Tách từ Kho Thô)`;
-      locationGuideText = `🚚 Linh kiện CHƯA KITTING lên Kệ Outbuffer. Giao trực tiếp qua DCLR (Cấp trực tiếp từ Kho Thô)`;
+      statusText = `🟡 CHƯA KITTING (Giao trực tiếp qua DCLR / Kho Thô)`;
+      locationGuideText = `🚚 Linh kiện CHƯA KITTING lên Kệ Outbuffer. Tín hiệu Andon sẽ giao cấp trực tiếp qua DCLR (Kho Thô)`;
     }
 
     // Auto update selected part code & values
@@ -248,7 +247,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     setRequestedQty(pQty);
     setAssemblyLine(assemblyLinesList[0] || 'DCLR');
 
-    // Open Andon Scan Modal
+    // Open Andon Scan Modal IMMEDIATELY
     setAndonModalData({
       isOpen: true,
       partCode: pCode,
