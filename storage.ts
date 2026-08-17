@@ -2019,6 +2019,7 @@ export const storageService = {
 
   saveUsers(users: UserAccount[]): void {
     localStorage.setItem('thekho_users_v1', JSON.stringify(users));
+    supabaseKeyStore.set(STORAGE_KEYS.USERS, users);
   },
 
   addUser(params: Omit<UserAccount, 'id' | 'createdAt'>): UserAccount {
@@ -2340,6 +2341,7 @@ export const storageService = {
         [STORAGE_KEYS.CONVERSION_FACTORS, CONVERSION_FACTORS_KEY],
         [STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
         [STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, CUSTOM_GENERATED_CONTAINER_TAGS_KEY],
+        [STORAGE_KEYS.USERS, 'thekho_users_v1'],
       ];
 
       for (const [sKey, lKey] of keyMappings) {

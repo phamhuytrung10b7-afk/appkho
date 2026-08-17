@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Part, Transaction, AppSettings, ViewTab, KittingQueueItem, BufferLocationMap, MaterialCallRequest, UserAccount } from './types';
 import { storageService } from './storage';
+import { getActiveSupabaseClient } from './supabase';
 import { Menu, Boxes, LogOut } from 'lucide-react';
 
 import { Sidebar } from './Sidebar';
@@ -76,11 +77,11 @@ export default function App() {
     setSettings(storageService.getSettings());
   }, []);
 
-  // On App Mount: Mandatory sync from Supabase Cloud as Single Source of Truth
+  // On App Mount: Mandatory sync from Supabase Cloud as Single Source of Truth & Realtime 100% Channel
   useEffect(() => {
     let isMounted = true;
-    async function initCloudData() {
-      setIsLoadingCloud(true);
+
+    async function syncCloudAndState() {
       try {
         const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud();
         if (isMounted) {
@@ -90,23 +91,56 @@ export default function App() {
           setBufferLocations(storageService.getBufferLocations());
           setMaterialCalls(storageService.getMaterialCallRequests());
           setSettings(storageService.getSettings());
+          const activeUser = storageService.getCurrentUser();
+          if (activeUser) {
+            setCurrentUser(activeUser);
+          }
         }
       } catch (err) {
-        console.error('Lỗi khi tải dữ liệu ban đầu từ Supabase:', err);
+        console.error('Lỗi khi tải/đồng bộ dữ liệu từ Supabase:', err);
         if (isMounted) {
           refreshData();
         }
-      } finally {
-        if (isMounted) {
-          setIsLoadingCloud(false);
-        }
+      }
+    }
+
+    async function initCloudData() {
+      setIsLoadingCloud(true);
+      await syncCloudAndState();
+      if (isMounted) {
+        setIsLoadingCloud(false);
       }
     }
 
     initCloudData();
 
+    // ⚡ 100% Realtime Setup: Listening to all postgres changes on schema 'public'
+    const { client, isConfigured } = getActiveSupabaseClient();
+    let channel: any = null;
+
+    if (isConfigured && client) {
+      channel = client
+        .channel('public-db-changes')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public' },
+          (payload) => {
+            console.log('⚡ Realtime postgres change received from Supabase:', payload);
+            if (isMounted) {
+              syncCloudAndState();
+            }
+          }
+        )
+        .subscribe((status) => {
+          console.log('Supabase Realtime subscription status:', status);
+        });
+    }
+
     return () => {
       isMounted = false;
+      if (client && channel) {
+        client.removeChannel(channel);
+      }
     };
   }, [refreshData]);
 

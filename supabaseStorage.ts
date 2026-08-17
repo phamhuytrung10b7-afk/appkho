@@ -21,6 +21,7 @@ export const STORAGE_KEYS = {
   KITTING_SCAN_LOGS: 'thekho_kitting_scan_logs_v1',
   PRODUCTIVITY_PERSONNEL_CONFIG: 'thekho_productivity_personnel_config_v1',
   CUSTOM_GENERATED_CONTAINER_TAGS: 'thekho_custom_generated_container_tags_v1',
+  USERS: 'thekho_users_v1',
 };
 
 // Data mapper for Part -> Supabase Row matching exact column names
