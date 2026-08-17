@@ -6,6 +6,7 @@ import { PART_GROUP_COLORS, getPartGroupConfig } from './partGroupColors';
 import { ContainerTagManagerModal } from './ContainerTagManagerModal';
 import { CustomTagManagerModal } from './CustomTagManagerModal';
 import { InlineQrScanner } from './InlineQrScanner';
+import { SmoothCameraScanner } from './SmoothCameraScanner';
 import { findLocationMatch } from './StockInView';
 import { normalizeLocationStr } from './StockOutScanModal';
 import {
@@ -734,28 +735,18 @@ export const KittingView: React.FC<KittingViewProps> = ({
                     <QrCode className="w-4 h-4" />
                     <span>{isCameraScanning ? 'Ẩn Camera' : 'Quét Camera QR'}</span>
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsTagManagerOpen(true)}
-                    className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black rounded-xl shadow-xs transition-all flex items-center space-x-1 cursor-pointer"
-                  >
-                    <Tag className="w-4 h-4" />
-                    <span>Chọn Từ Danh Sách Thẻ</span>
-                  </button>
                 </div>
               </div>
 
               {isCameraScanning && (
-                <div className="p-4 bg-slate-900 text-white rounded-2xl">
-                  <InlineQrScanner
-                    onScanSuccess={(scannedText) => {
-                      setIsCameraScanning(false);
-                      handleParseQrPayload(scannedText);
-                    }}
-                    placeholderText="Đưa Mã QR Thẻ Thùng vào giữa khung hình Camera..."
-                  />
-                </div>
+                <SmoothCameraScanner
+                  onScanSuccess={(scannedText) => {
+                    handleParseQrPayload(scannedText);
+                  }}
+                  onClose={() => setIsCameraScanning(false)}
+                  placeholderText="Căn mã QR Thẻ Thùng vào giữa khung hình camera..."
+                  autoCloseOnScan={false}
+                />
               )}
 
               <div className="flex items-center space-x-2">

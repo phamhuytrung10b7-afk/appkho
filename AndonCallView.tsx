@@ -3,6 +3,7 @@ import { MaterialCallRequest, BufferLocationMap, AppSettings, Part, ViewTab } fr
 import { storageService } from './storage';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { InlineQrScanner } from './InlineQrScanner';
+import { SmoothCameraScanner } from './SmoothCameraScanner';
 import { ContainerTagManagerModal } from './ContainerTagManagerModal';
 import { MasterKittingTag } from './masterExcelParser';
 import {
@@ -1021,27 +1022,18 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       <QrCode className="w-3.5 h-3.5" />
                       <span>{isAndonCameraScanning ? 'Ẩn Camera' : 'Quét Camera QR'}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsAndonTagManagerOpen(true)}
-                      className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-lg text-[11px] font-bold shadow-2xs flex items-center space-x-1 cursor-pointer"
-                    >
-                      <Tag className="w-3.5 h-3.5" />
-                      <span>Chọn Từ Danh Sách Thẻ</span>
-                    </button>
                   </div>
                 </div>
 
                 {isAndonCameraScanning && (
-                  <div className="p-2 bg-slate-900 rounded-xl">
-                    <InlineQrScanner
-                      onScanSuccess={(code) => {
-                        handleParseAndonQrPayload(code);
-                        setIsAndonCameraScanning(false);
-                      }}
-                      placeholderText="Đưa súng quét hoặc Camera tới mã QR Phiếu Thông Tin..."
-                    />
-                  </div>
+                  <SmoothCameraScanner
+                    onScanSuccess={(code) => {
+                      handleParseAndonQrPayload(code);
+                    }}
+                    onClose={() => setIsAndonCameraScanning(false)}
+                    placeholderText="Căn mã QR Phiếu Thông Tin / Thẻ Thùng vào giữa khung hình camera..."
+                    autoCloseOnScan={false}
+                  />
                 )}
 
                 <div className="flex gap-2">
