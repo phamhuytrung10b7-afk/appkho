@@ -1051,6 +1051,11 @@ export const storageService = {
     }
   },
 
+  saveContainerBatches(batches: ContainerBatch[]): void {
+    localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
+    supabaseKeyStore.set(STORAGE_KEYS.CONTAINER_BATCHES, batches);
+  },
+
   saveContainerBatch(batch: ContainerBatch): void {
     const batches = this.getContainerBatches();
     // Replace if batch with same contNumber exists or add to front
@@ -1060,14 +1065,12 @@ export const storageService = {
     } else {
       batches.unshift(batch);
     }
-    localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
-    supabaseKeyStore.set(STORAGE_KEYS.CONTAINER_BATCHES, batches);
+    this.saveContainerBatches(batches);
   },
 
   deleteContainerBatch(id: string): void {
     const batches = this.getContainerBatches().filter((b) => b.id !== id);
-    localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
-    supabaseKeyStore.set(STORAGE_KEYS.CONTAINER_BATCHES, batches);
+    this.saveContainerBatches(batches);
   },
 
   // Model BOMs
@@ -1210,6 +1213,11 @@ export const storageService = {
     return { isUsed: false };
   },
 
+  saveUsedQrTokens(tokens: Record<string, any>): void {
+    localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(tokens));
+    supabaseKeyStore.set(STORAGE_KEYS.USED_QR_TOKENS, tokens);
+  },
+
   markQrTokenAsUsed(tokenOrPayload: string, details: { partCode: string; quantity: number; importedQuantity?: number; contNumber: string; person?: string }): void {
     if (!tokenOrPayload) return;
     const tokens = this.getUsedQrTokens();
@@ -1233,14 +1241,47 @@ export const storageService = {
     tokens[tokenOrPayload] = info;
 
     // If payload contains pipe e.g. CONT_IN|LK01|1000|CONT123|TAG123|16/07/2026, also mark TAG123
+    let extractedTagId = '';
     if (tokenOrPayload.includes('|')) {
       const parts = tokenOrPayload.split('|');
       if (parts[4]) {
-        tokens[parts[4]] = info; // Mark tagId
+        extractedTagId = parts[4].trim();
+        tokens[extractedTagId] = info; // Mark tagId
       }
     }
 
-    localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(tokens));
+    this.saveUsedQrTokens(tokens);
+
+    // Update container batches state and sync directly to Supabase thekho_container_batches_v1
+    const batches = this.getContainerBatches();
+    let batchesModified = false;
+    const lookupTagId = extractedTagId || tokenOrPayload.trim();
+    const cleanContNumber = (details.contNumber || '').trim().toLowerCase();
+    const cleanPartCode = (details.partCode || '').trim().toLowerCase();
+
+    for (const batch of batches) {
+      for (const item of batch.items) {
+        const isMatch =
+          (lookupTagId && (item.id === lookupTagId || item.id?.trim() === lookupTagId)) ||
+          (tokenOrPayload && (item.qrPayload === tokenOrPayload || item.id === tokenOrPayload)) ||
+          (cleanContNumber && cleanPartCode &&
+           item.contNumber?.trim().toLowerCase() === cleanContNumber &&
+           item.partCode?.trim().toLowerCase() === cleanPartCode);
+
+        if (isMatch) {
+          const newImported = details.importedQuantity !== undefined ? details.importedQuantity : details.quantity;
+          item.importedQuantity = newImported;
+          item.isUsed = newImported >= (item.quantity || details.quantity);
+          item.scannedAt = nowStr;
+          item.scannedBy = details.person || 'Thủ kho';
+          batchesModified = true;
+        }
+      }
+    }
+
+    if (batchesModified) {
+      this.saveContainerBatches(batches);
+    }
   },
 
   // Validate if a scanned QR code belongs to a registered Container batch created on system
@@ -2576,6 +2617,7 @@ export const storageService = {
         STORAGE_KEYS.TRANSACTIONS,
         STORAGE_KEYS.SETTINGS,
         STORAGE_KEYS.CONTAINER_BATCHES,
+        STORAGE_KEYS.USED_QR_TOKENS,
         STORAGE_KEYS.MODEL_BOMS,
         STORAGE_KEYS.KITTING_QUEUE,
         STORAGE_KEYS.BUFFER_MAP,
@@ -2627,6 +2669,39 @@ export const storageService = {
       const remoteSettings = await supabaseKeyStore.get<AppSettings>(STORAGE_KEYS.SETTINGS);
       if (remoteSettings) {
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(remoteSettings));
+      }
+
+      // 5. Fetch Container Batches (Thẻ thùng) and Used QR Tokens with highest priority
+      const remoteBatches = await supabaseKeyStore.get<ContainerBatch[]>(STORAGE_KEYS.CONTAINER_BATCHES);
+      if (remoteBatches && Array.isArray(remoteBatches) && remoteBatches.length > 0) {
+        localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(remoteBatches));
+      }
+
+      const remoteTokens = await supabaseKeyStore.get<Record<string, any>>(STORAGE_KEYS.USED_QR_TOKENS);
+      if (remoteTokens && typeof remoteTokens === 'object' && Object.keys(remoteTokens).length > 0) {
+        localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(remoteTokens));
+      } else if (remoteBatches && Array.isArray(remoteBatches)) {
+        // Rebuild tokens lookup from remote batches if token key was empty
+        const fallbackTokens: Record<string, any> = {};
+        remoteBatches.forEach((batch) => {
+          batch.items?.forEach((tag) => {
+            if (tag.importedQuantity || tag.isUsed) {
+              const info = {
+                scannedAt: tag.scannedAt || new Date().toLocaleString('vi-VN'),
+                scannedBy: tag.scannedBy || 'Thủ kho',
+                partCode: tag.partCode,
+                quantity: tag.quantity,
+                importedQuantity: tag.importedQuantity || tag.quantity,
+                contNumber: tag.contNumber,
+              };
+              if (tag.id) fallbackTokens[tag.id] = info;
+              if (tag.qrPayload) fallbackTokens[tag.qrPayload] = info;
+            }
+          });
+        });
+        if (Object.keys(fallbackTokens).length > 0) {
+          localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(fallbackTokens));
+        }
       }
     } catch (err: any) {
       console.warn('Lỗi khi tải dữ liệu từ Supabase Cloud:', err);

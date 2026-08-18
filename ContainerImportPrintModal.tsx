@@ -98,7 +98,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
 
   // Real-time scanned QR tokens lookup
   const usedTokens = storageService.getUsedQrTokens();
-  const checkScanStatus = (tagId?: string, qrPayload?: string, itemQty?: number) => {
+  const checkScanStatus = (tagId?: string, qrPayload?: string, itemQty?: number, itemObj?: any) => {
     const token = (tagId && usedTokens[tagId]) || (qrPayload && usedTokens[qrPayload]) || null;
     if (token) {
       const imported = token.importedQuantity !== undefined ? token.importedQuantity : (token.quantity || 0);
@@ -111,6 +111,22 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
         details: token 
       };
     }
+
+    // Also fallback to persisted properties on itemObj from the saved ContainerBatch
+    if (itemObj) {
+      const imported = itemObj.importedQuantity !== undefined ? itemObj.importedQuantity : (itemObj.isUsed ? (itemObj.quantity || itemQty || 0) : 0);
+      const total = itemObj.quantity || itemQty || 0;
+      const isComplete = Boolean(itemObj.isUsed || (total > 0 && imported >= total));
+      if (imported > 0 || isComplete) {
+        return {
+          isScanned: isComplete,
+          importedQuantity: imported,
+          totalQuantity: total,
+          details: itemObj,
+        };
+      }
+    }
+
     return { isScanned: false, importedQuantity: 0, totalQuantity: itemQty || 0 };
   };
 
@@ -358,7 +374,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
 
   // Calculate scan progress for current parse result
   const currentParseScannedCount = parseResult
-    ? parseResult.items.filter((item) => checkScanStatus(item.tagId || item.id, item.qrPayload).isScanned).length
+    ? parseResult.items.filter((item) => checkScanStatus(item.tagId || item.id, item.qrPayload, item.quantity, item).isScanned).length
     : 0;
   const currentParseTotalItems = parseResult ? parseResult.items.length : 0;
   const currentParsePercent = currentParseTotalItems > 0 ? Math.round((currentParseScannedCount / currentParseTotalItems) * 100) : 0;
@@ -722,7 +738,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredItems.map((item, index) => {
-                          const scanState = checkScanStatus(item.tagId || item.id, item.qrPayload);
+                          const scanState = checkScanStatus(item.tagId || item.id, item.qrPayload, item.quantity, item);
                           return (
                             <tr key={item.id} className={`hover:bg-slate-50 transition-colors ${scanState.isScanned ? 'bg-emerald-50/40' : ''}`}>
                               <td className="p-3 text-center font-semibold text-slate-400">{index + 1}</td>
@@ -813,7 +829,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {savedBatches.map((batch) => {
                     const batchScannedCount = batch.items.filter(
-                      (tag) => checkScanStatus(tag.id, tag.qrPayload).isScanned
+                      (tag) => checkScanStatus(tag.id, tag.qrPayload, tag.quantity, tag).isScanned
                     ).length;
                     const batchTotal = batch.items.length;
                     const batchPercent = batchTotal > 0 ? Math.round((batchScannedCount / batchTotal) * 100) : 0;
@@ -1034,7 +1050,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                       }}
                     >
                       {row.map((item, colIndex) => {
-                        const scanState = checkScanStatus(item.tagId || item.id, item.qrPayload, item.quantity);
+                        const scanState = checkScanStatus(item.tagId || item.id, item.qrPayload, item.quantity, item);
                         const isScanned = scanState.isScanned;
                         const imported = scanState.importedQuantity || 0;
                         const total = item.quantity || scanState.totalQuantity || 0;

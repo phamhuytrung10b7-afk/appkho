@@ -159,6 +159,10 @@ export default function App() {
                     setBufferLocations(data);
                   } else if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
                     setMaterialCalls(data);
+                  } else if (key === STORAGE_KEYS.CONTAINER_BATCHES && Array.isArray(data)) {
+                    localStorage.setItem('thekho_container_batches_v1', JSON.stringify(data));
+                  } else if (key === STORAGE_KEYS.USED_QR_TOKENS && typeof data === 'object') {
+                    localStorage.setItem('thekho_used_qr_tokens_v1', JSON.stringify(data));
                   } else if (key === STORAGE_KEYS.SETTINGS && data) {
                     setSettings(data);
                   } else if (key === STORAGE_KEYS.USERS) {
