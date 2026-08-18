@@ -91,21 +91,24 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       let activeCamId = camId || selectedCameraId;
 
       if (devices && devices.length > 0) {
-        setCameras(devices.map((d, i) => ({ id: d.id, label: d.label || `Camera ${i + 1}` })));
+        setCameras(devices.map((d, i) => ({ id: d.id, label: d.label || `Camera Sau/Trước ${i + 1}` })));
         if (!activeCamId) {
-          // Smart selection: Filter for back/rear main camera, avoid 0.5x ultra-wide or macro
+          // Filter out front/selfie cameras to ensure back camera (cam sau) is used
           const backCams = devices.filter((d) => {
-            const l = d.label.toLowerCase();
-            return l.includes('back') || l.includes('rear') || l.includes('sau') || l.includes('environment') || l.includes('0');
+            const l = (d.label || '').toLowerCase();
+            const isFront = l.includes('front') || l.includes('trước') || l.includes('user') || l.includes('selfie') || l.includes('facing front');
+            return !isFront && (l.includes('back') || l.includes('rear') || l.includes('sau') || l.includes('environment') || l.includes('0') || l.length === 0);
           });
 
           const mainBackCam = backCams.find((d) => {
-            const l = d.label.toLowerCase();
+            const l = (d.label || '').toLowerCase();
             return !l.includes('wide') && !l.includes('ultra') && !l.includes('0.5') && !l.includes('macro') && !l.includes('telephoto');
           }) || backCams[0] || devices[devices.length - 1];
 
-          activeCamId = mainBackCam.id;
-          setSelectedCameraId(mainBackCam.id);
+          if (mainBackCam) {
+            activeCamId = mainBackCam.id;
+            setSelectedCameraId(mainBackCam.id);
+          }
         }
       }
 
@@ -157,12 +160,12 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       };
 
       const qrConfig = {
-        fps: 30,
+        fps: 25,
         qrbox: (w: number, h: number) => {
           const minEdge = Math.min(w, h);
           return {
-            width: Math.max(Math.floor(minEdge * 0.88), 240),
-            height: Math.max(Math.floor(minEdge * 0.75), 200),
+            width: Math.max(Math.floor(minEdge * 0.85), 220),
+            height: Math.max(Math.floor(minEdge * 0.72), 180),
           };
         },
         aspectRatio: 1.333333,
@@ -181,17 +184,14 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 
       if (camId) {
         await html5QrCode.start(camId, qrConfig, onScanSuccessCallback, () => {});
-      } else {
-        // Prefer environment facingMode first for optimal hardware autofocus on mobile
+      } else if (activeCamId) {
         try {
+          await html5QrCode.start(activeCamId, qrConfig, onScanSuccessCallback, () => {});
+        } catch (idErr) {
           await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccessCallback, () => {});
-        } catch (envErr) {
-          if (activeCamId) {
-            await html5QrCode.start(activeCamId, qrConfig, onScanSuccessCallback, () => {});
-          } else {
-            throw envErr;
-          }
         }
+      } else {
+        await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccessCallback, () => {});
       }
 
       // Check flashlight support
