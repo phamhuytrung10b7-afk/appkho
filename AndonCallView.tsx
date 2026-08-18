@@ -145,87 +145,96 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   // Handle parsing QR code from Phiếu Thông Tin / Thẻ Thùng for Andon Call
   const handleParseAndonQrPayload = (payloadStr: string) => {
     if (!payloadStr) return;
-    const cleanStr = payloadStr.trim();
+    const rawClean = payloadStr.trim();
+    if (!rawClean) return;
+
     const masterTags = storageService.getMasterContainerTags();
+    const allPartsList = storageService.getParts();
     const kittingQueue = storageService.getKittingQueue();
     const pendingKittingItems = kittingQueue.filter((k) => k.status === 'PENDING_KITTING');
 
-    // Parse payload with standard helper
-    const parsed = parseScannedQrPayload(cleanStr);
-    const searchCode = (parsed.partCode || cleanStr).trim();
+    let targetPartCode = '';
+    let targetPartName = '';
+    let targetQty = 10;
+    let targetUnit = 'Cái';
 
-    let pCode = searchCode;
-    let pName = searchCode;
-    let pQty = parsed.qty && parsed.qty > 0 ? parsed.qty : 10;
-    let pUnit = 'Cái';
-
-    // 1. Match in Master Container Tags
+    // 1. Match in Master Container Tags directly by qrPayload or partCode
     const matchedMaster = masterTags.find(
       (m) =>
-        (m.qrPayload && m.qrPayload.trim().toLowerCase() === cleanStr.toLowerCase()) ||
-        (m.partCode && m.partCode.trim().toLowerCase() === searchCode.toLowerCase())
+        (m.qrPayload && m.qrPayload.trim().toLowerCase() === rawClean.toLowerCase()) ||
+        (m.partCode && m.partCode.trim().toLowerCase() === rawClean.toLowerCase())
     );
 
     if (matchedMaster) {
-      pCode = matchedMaster.partCode;
-      pName = matchedMaster.partName || matchedMaster.partCode;
-      if (!parsed.qty) {
-        pQty = matchedMaster.standardQty && matchedMaster.standardQty > 0 ? matchedMaster.standardQty : 10;
-      }
-      pUnit = matchedMaster.unit || 'Cái';
-    } else if (cleanStr.includes('|')) {
-      // Pipe format e.g. "04-29-09-SHA76214CKNK-0001|1000|01" or "CONT_IN|LK01|100|..."
-      const parts = cleanStr.split('|');
-      pCode = parts[0] || searchCode;
-      if (!parsed.qty) {
-        pQty = parts[1] && !isNaN(parseFloat(parts[1])) ? parseFloat(parts[1]) : 10;
-      }
-      if (cleanStr.startsWith('CONT_IN|')) {
-        pCode = parts[1] || searchCode;
-        if (!parsed.qty) {
-          pQty = parts[2] && !isNaN(parseFloat(parts[2])) ? parseFloat(parts[2]) : 10;
+      targetPartCode = matchedMaster.partCode;
+      targetPartName = matchedMaster.partName || matchedMaster.partCode;
+      targetQty = matchedMaster.standardQty && matchedMaster.standardQty > 0 ? matchedMaster.standardQty : 10;
+      targetUnit = matchedMaster.unit || 'Cái';
+    } else {
+      // 2. Parse payload format
+      let extractedCode = rawClean;
+      let extractedQty: number | undefined = undefined;
+
+      if (rawClean.startsWith('{') && rawClean.endsWith('}')) {
+        try {
+          const obj = JSON.parse(rawClean);
+          if (obj.partCode || obj.code) {
+            extractedCode = obj.partCode || obj.code;
+            if (obj.qty || obj.quantity) extractedQty = parseFloat(obj.qty || obj.quantity);
+          }
+        } catch {}
+      } else if (rawClean.includes('|')) {
+        const parts = rawClean.split('|');
+        if (rawClean.startsWith('CONT_IN|')) {
+          extractedCode = parts[1] || '';
+          if (parts[2] && !isNaN(parseFloat(parts[2]))) extractedQty = parseFloat(parts[2]);
+        } else {
+          extractedCode = parts[0] || '';
+          if (parts[1] && !isNaN(parseFloat(parts[1]))) extractedQty = parseFloat(parts[1]);
         }
       }
-      const matchInMaster = masterTags.find((m) => m.partCode.toLowerCase() === pCode.toLowerCase());
-      const matchInPending = pendingKittingItems.find((p) => p.partCode.toLowerCase() === pCode.toLowerCase());
-      const matchInParts = allParts.find((p) => p.code.toLowerCase() === pCode.toLowerCase() || p.id.toLowerCase() === pCode.toLowerCase());
 
-      if (matchInMaster) {
-        pName = matchInMaster.partName;
-        pUnit = matchInMaster.unit || 'Cái';
-      } else if (matchInPending) {
-        pName = matchInPending.partName;
-        pUnit = matchInPending.unit || 'Cái';
-      } else if (matchInParts) {
-        pName = matchInParts.name;
-        pUnit = matchInParts.unit || 'Cái';
-      } else {
-        pName = pCode;
-      }
-    } else {
-      pCode = searchCode;
-      const matchInMaster = masterTags.find((m) => m.partCode.toLowerCase() === pCode.toLowerCase());
-      const matchInPending = pendingKittingItems.find((p) => p.partCode.toLowerCase() === pCode.toLowerCase());
-      const matchInParts = allParts.find((p) => p.code.toLowerCase() === pCode.toLowerCase() || p.id.toLowerCase() === pCode.toLowerCase());
+      extractedCode = extractedCode.trim();
 
-      if (matchInMaster) {
-        pName = matchInMaster.partName;
-        if (!parsed.qty) pQty = matchInMaster.standardQty > 0 ? matchInMaster.standardQty : 10;
-        pUnit = matchInMaster.unit || 'Cái';
-      } else if (matchInPending) {
-        pName = matchInPending.partName;
-        if (!parsed.qty) pQty = matchInPending.rawQuantity > 0 ? matchInPending.rawQuantity : 10;
-        pUnit = matchInPending.unit || 'Cái';
-      } else if (matchInParts) {
-        pName = matchInParts.name;
-        pUnit = matchInParts.unit || 'Cái';
+      const masterByExtracted = masterTags.find(
+        (m) => m.partCode.trim().toLowerCase() === extractedCode.toLowerCase()
+      );
+      const pendingByExtracted = pendingKittingItems.find(
+        (p) => p.partCode.trim().toLowerCase() === extractedCode.toLowerCase()
+      );
+      const partByExtracted = allPartsList.find(
+        (p) =>
+          p.code.trim().toLowerCase() === extractedCode.toLowerCase() ||
+          p.id.trim().toLowerCase() === extractedCode.toLowerCase() ||
+          (p.qrCode && p.qrCode.trim().toLowerCase() === extractedCode.toLowerCase()) ||
+          (p.barcode && p.barcode.trim().toLowerCase() === extractedCode.toLowerCase())
+      );
+
+      if (masterByExtracted) {
+        targetPartCode = masterByExtracted.partCode;
+        targetPartName = masterByExtracted.partName || masterByExtracted.partCode;
+        targetQty = extractedQty && extractedQty > 0 ? extractedQty : (masterByExtracted.standardQty > 0 ? masterByExtracted.standardQty : 10);
+        targetUnit = masterByExtracted.unit || 'Cái';
+      } else if (pendingByExtracted) {
+        targetPartCode = pendingByExtracted.partCode;
+        targetPartName = pendingByExtracted.partName || pendingByExtracted.partCode;
+        targetQty = extractedQty && extractedQty > 0 ? extractedQty : (pendingByExtracted.rawQuantity > 0 ? pendingByExtracted.rawQuantity : 10);
+        targetUnit = pendingByExtracted.unit || 'Cái';
+      } else if (partByExtracted) {
+        targetPartCode = partByExtracted.code;
+        targetPartName = partByExtracted.name || partByExtracted.code;
+        targetQty = extractedQty && extractedQty > 0 ? extractedQty : 10;
+        targetUnit = partByExtracted.unit || 'Cái';
       } else {
-        pName = pCode;
+        targetPartCode = extractedCode;
+        targetPartName = `Linh kiện ${extractedCode}`;
+        targetQty = extractedQty && extractedQty > 0 ? extractedQty : 10;
+        targetUnit = 'Cái';
       }
     }
 
-    const bufferEntry = bufferPartsMap.get(pCode.trim());
-    const pendingItemsForCode = pendingKittingItems.filter((k) => k.partCode.trim().toLowerCase() === pCode.trim().toLowerCase());
+    const bufferEntry = bufferPartsMap.get(targetPartCode.trim());
+    const pendingItemsForCode = pendingKittingItems.filter((k) => k.partCode.trim().toLowerCase() === targetPartCode.trim().toLowerCase());
 
     // Determine Kitting status & location recommendation
     let isKitted = false;
@@ -243,7 +252,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       recLocation = availableShelves[0]; // FIFO shelf recommendation
       setSelectedPickShelf(recLocation);
       statusText = `🟢 ĐÃ KITTING (Sẵn sàng trên Kệ Outbuffer)`;
-      locationGuideText = `📍 Linh kiện ĐÃ KITTING. Có ${bufferEntry.availableBuffers.length} kệ chứa linh kiện này. Kệ gợi ý FIFO: ${recLocation} (Tồn kệ: ${stockOnBuffer} ${pUnit})`;
+      locationGuideText = `📍 Linh kiện ĐÃ KITTING. Có ${bufferEntry.availableBuffers.length} kệ chứa linh kiện này. Kệ gợi ý FIFO: ${recLocation} (Tồn kệ: ${stockOnBuffer} ${targetUnit})`;
     } else {
       isKitted = false;
       recLocation = 'DCLR';
@@ -254,17 +263,19 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
 
     // Auto update selected part code & values
-    setSelectedPartCode(pCode);
-    setRequestedQty(pQty);
-    setAssemblyLine(assemblyLinesList[0] || 'DCLR');
+    setSelectedPartCode(targetPartCode);
+    setRequestedQty(targetQty);
+    if (assemblyLinesList && assemblyLinesList.length > 0) {
+      setAssemblyLine(assemblyLinesList[0]);
+    }
 
     // Open Andon Scan Modal IMMEDIATELY
     setAndonModalData({
       isOpen: true,
-      partCode: pCode,
-      partName: pName,
-      unit: pUnit,
-      standardQty: pQty,
+      partCode: targetPartCode,
+      partName: targetPartName,
+      unit: targetUnit,
+      standardQty: targetQty,
       isKitted,
       recommendedLocation: recLocation,
       availableShelves,

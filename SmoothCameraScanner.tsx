@@ -179,10 +179,19 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
         ],
       };
 
-      if (activeCamId) {
-        await html5QrCode.start(activeCamId, qrConfig, onScanSuccessCallback, () => {});
+      if (camId) {
+        await html5QrCode.start(camId, qrConfig, onScanSuccessCallback, () => {});
       } else {
-        await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccessCallback, () => {});
+        // Prefer environment facingMode first for optimal hardware autofocus on mobile
+        try {
+          await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccessCallback, () => {});
+        } catch (envErr) {
+          if (activeCamId) {
+            await html5QrCode.start(activeCamId, qrConfig, onScanSuccessCallback, () => {});
+          } else {
+            throw envErr;
+          }
+        }
       }
 
       // Check flashlight support
