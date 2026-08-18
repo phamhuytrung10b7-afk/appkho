@@ -182,7 +182,7 @@ export function exportProductivityExcel(
             : items
                 .map((item) => {
                   const conLaiStr = item.conLai <= 0 ? '-' : formatVietnameseNumber(item.conLai);
-                  const hsqdStr = item.hsqd.toString().replace('.', ',');
+                  const hsqdStr = Number(item.hsqd.toFixed(3)).toString().replace('.', ',');
                   const tyLeStr = `${Math.round(item.tyLeHoanThanh)}%`;
 
                   const slotTds = slots

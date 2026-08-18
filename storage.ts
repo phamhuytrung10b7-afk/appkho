@@ -1785,6 +1785,7 @@ export const storageService = {
     bufferLocation: string;
     isDirectKitting?: boolean;
     requestedBy: string;
+    requiredTime?: string;
   }): MaterialCallRequest {
     const reqs = this.getMaterialCallRequests();
     const newReq: MaterialCallRequest = {
@@ -1798,6 +1799,7 @@ export const storageService = {
       isDirectKitting: params.isDirectKitting || false,
       requestedBy: params.requestedBy,
       requestedAt: new Date().toISOString(),
+      requiredTime: params.requiredTime || new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
       status: 'CALLING',
     };
     reqs.unshift(newReq);
@@ -1871,6 +1873,89 @@ export const storageService = {
       }
     }
 
+    return updated;
+  },
+
+  restoreStockFromMaterialCall(req: MaterialCallRequest): void {
+    if (!req.bufferLocation || req.bufferLocation.includes('KITTING')) return;
+
+    const buffers = this.getBufferLocations();
+    const bIdx = buffers.findIndex((b) => b.locationId === req.bufferLocation);
+    if (bIdx >= 0) {
+      const targetBuf = buffers[bIdx];
+      let items: BufferPartItem[] = targetBuf.items ? [...targetBuf.items] : [];
+
+      const itemIdx = items.findIndex((i) => i.partCode === req.partCode);
+      if (itemIdx >= 0) {
+        items[itemIdx].currentStockQty += req.requestedQty;
+      } else {
+        items.push({
+          partCode: req.partCode,
+          partName: req.partName,
+          unit: req.unit,
+          currentStockQty: req.requestedQty,
+          lastUpdated: new Date().toISOString(),
+        });
+      }
+
+      const totalStock = items.reduce((sum, i) => sum + (i.currentStockQty || 0), 0);
+      buffers[bIdx] = {
+        ...targetBuf,
+        items,
+        partCode: items[0]?.partCode,
+        partName: items.length === 1 ? items[0]?.partName : items.length > 1 ? `${items.length} loại linh kiện` : undefined,
+        unit: items[0]?.unit || 'PCS',
+        currentStockQty: totalStock,
+        status: 'READY',
+        lastUpdated: new Date().toISOString(),
+      };
+      this.saveBufferLocations(buffers);
+    }
+
+    // Revert Kitting queue item status back to IN_BUFFER if it was DELIVERED
+    const queue = this.getKittingQueue();
+    const kIdx = queue.findIndex(
+      (k) => k.bufferLocation === req.bufferLocation && k.partCode === req.partCode && k.status === 'DELIVERED'
+    );
+    if (kIdx >= 0) {
+      queue[kIdx].status = 'IN_BUFFER';
+      this.saveKittingQueue(queue);
+    }
+  },
+
+  deleteMaterialCallRequest(requestId: string, restoreStockIfCompleted: boolean = true): void {
+    const reqs = this.getMaterialCallRequests();
+    const idx = reqs.findIndex((r) => r.requestId === requestId);
+    if (idx === -1) return;
+
+    const req = reqs[idx];
+    if (req.status === 'COMPLETED' && restoreStockIfCompleted) {
+      this.restoreStockFromMaterialCall(req);
+    }
+
+    reqs.splice(idx, 1);
+    this.saveMaterialCallRequests(reqs);
+  },
+
+  rollbackMaterialCallStatus(requestId: string, targetStatus: 'CALLING' | 'DELIVERING'): MaterialCallRequest {
+    const reqs = this.getMaterialCallRequests();
+    const idx = reqs.findIndex((r) => r.requestId === requestId);
+    if (idx === -1) throw new Error('Không tìm thấy đơn yêu cầu cần rollback');
+
+    const req = reqs[idx];
+    if (req.status === 'COMPLETED') {
+      this.restoreStockFromMaterialCall(req);
+    }
+
+    const updated: MaterialCallRequest = {
+      ...req,
+      status: targetStatus,
+      deliveredAt: targetStatus === 'CALLING' ? undefined : req.deliveredAt,
+      deliveredBy: targetStatus === 'CALLING' ? undefined : req.deliveredBy,
+    };
+
+    reqs[idx] = updated;
+    this.saveMaterialCallRequests(reqs);
     return updated;
   },
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MaterialCallRequest, BufferLocationMap, AppSettings, Part, ViewTab } from './types';
+import { MaterialCallRequest, BufferLocationMap, AppSettings, Part, ViewTab, KittingQueueItem, ContainerQrTag } from './types';
 import { storageService } from './storage';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -32,6 +32,8 @@ import {
   X,
   Sparkles,
   AlertTriangle,
+  RotateCcw,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface AndonCallViewProps {
@@ -90,6 +92,14 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     : (settings.staffList && settings.staffList[0]) || 'Nguyễn Văn A (Trưởng Dây Chuyền 1)';
 
   // Request form state - Default assemblyLine to 'DCLR', default requestedBy to logged in user
+  const getDefaultRequiredTime = () => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() + 15);
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  };
+
   const [assemblyLine, setAssemblyLine] = useState('DCLR');
   const [isCustomLineMode, setIsCustomLineMode] = useState(false);
   const [isManageLinesModalOpen, setIsManageLinesModalOpen] = useState(false);
@@ -98,6 +108,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   const [selectedPartCode, setSelectedPartCode] = useState('');
   const [requestedQty, setRequestedQty] = useState<number>(10);
   const [requestedBy, setRequestedBy] = useState(defaultRequester);
+  const [requiredTime, setRequiredTime] = useState<string>(getDefaultRequiredTime);
 
   // QR Code scanning states for Phiếu Thông Tin / Thẻ Thùng
   const [isAndonCameraScanning, setIsAndonCameraScanning] = useState(false);
@@ -153,84 +164,99 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     const kittingQueue = storageService.getKittingQueue();
     const pendingKittingItems = kittingQueue.filter((k) => k.status === 'PENDING_KITTING');
 
-    let targetPartCode = '';
-    let targetPartName = '';
-    let targetQty = 10;
-    let targetUnit = 'Cái';
+    let matchedPart: Part | undefined = undefined;
+    let matchedPending: KittingQueueItem | undefined = undefined;
+    let matchedMaster: MasterKittingTag | undefined = undefined;
+    let extractedQty: number | undefined = undefined;
 
-    // 1. Match in Master Container Tags directly by qrPayload or partCode
-    const matchedMaster = masterTags.find(
+    // 1. Check exact match in Master Container Tags by qrPayload, id, or partCode
+    matchedMaster = masterTags.find(
       (m) =>
         (m.qrPayload && m.qrPayload.trim().toLowerCase() === rawClean.toLowerCase()) ||
+        (m.id && m.id.trim().toLowerCase() === rawClean.toLowerCase()) ||
         (m.partCode && m.partCode.trim().toLowerCase() === rawClean.toLowerCase())
     );
 
     if (matchedMaster) {
+      matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === matchedMaster?.partCode.trim().toLowerCase());
+    }
+
+    // 2. Parse JSON payload if available
+    if (!matchedMaster && rawClean.startsWith('{') && rawClean.endsWith('}')) {
+      try {
+        const obj = JSON.parse(rawClean);
+        const code = obj.partCode || obj.code || obj.part_code || obj.maLK;
+        if (code) {
+          matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === String(code).trim().toLowerCase());
+        }
+        if (obj.qty || obj.quantity || obj.sl) {
+          extractedQty = parseFloat(obj.qty || obj.quantity || obj.sl);
+        }
+      } catch (e) {}
+    }
+
+    // 3. Search for existing part code as a substring inside rawClean
+    if (!matchedPart) {
+      const sortedParts = [...allPartsList].sort((a, b) => b.code.length - a.code.length);
+      matchedPart = sortedParts.find((p) => {
+        const code = p.code.trim().toLowerCase();
+        if (!code) return false;
+        const cleanLower = rawClean.toLowerCase();
+        return (
+          cleanLower === code ||
+          (p.id && p.id.toLowerCase() === cleanLower) ||
+          (p.qrCode && p.qrCode.toLowerCase() === cleanLower) ||
+          (p.barcode && p.barcode.toLowerCase() === cleanLower) ||
+          cleanLower.includes(code)
+        );
+      });
+    }
+
+    // 4. Check pending kitting items by substring match
+    if (!matchedPart) {
+      const sortedPending = [...pendingKittingItems].sort((a, b) => b.partCode.length - a.partCode.length);
+      matchedPending = sortedPending.find((k) => {
+        const code = k.partCode.trim().toLowerCase();
+        return code && rawClean.toLowerCase().includes(code);
+      });
+    }
+
+    // 5. Try regex pattern match for standard part codes e.g. 04-20-00-5AAB0113K-0000
+    let extractedCodeStr = '';
+    if (!matchedPart && !matchedPending && !matchedMaster) {
+      const codeRegex = /\b\d{2}-\d{2}-\d{2}-[A-Za-z0-9-]+\b/i;
+      const match = rawClean.match(codeRegex);
+      if (match) {
+        extractedCodeStr = match[0];
+        matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === extractedCodeStr.toLowerCase());
+      }
+    }
+
+    let targetPartCode = '';
+    let targetPartName = '';
+    let targetUnit = 'Cái';
+    let targetQty = 10;
+
+    if (matchedPart) {
+      targetPartCode = matchedPart.code;
+      targetPartName = matchedPart.name || matchedPart.code;
+      targetUnit = matchedPart.unit || 'Cái';
+      targetQty = extractedQty || 10;
+    } else if (matchedMaster) {
       targetPartCode = matchedMaster.partCode;
       targetPartName = matchedMaster.partName || matchedMaster.partCode;
-      targetQty = matchedMaster.standardQty && matchedMaster.standardQty > 0 ? matchedMaster.standardQty : 10;
       targetUnit = matchedMaster.unit || 'Cái';
+      targetQty = extractedQty || matchedMaster.standardQty || 10;
+    } else if (matchedPending) {
+      targetPartCode = matchedPending.partCode;
+      targetPartName = matchedPending.partName || matchedPending.partCode;
+      targetUnit = matchedPending.unit || 'Cái';
+      targetQty = extractedQty || matchedPending.rawQuantity || 10;
     } else {
-      // 2. Parse payload format
-      let extractedCode = rawClean;
-      let extractedQty: number | undefined = undefined;
-
-      if (rawClean.startsWith('{') && rawClean.endsWith('}')) {
-        try {
-          const obj = JSON.parse(rawClean);
-          if (obj.partCode || obj.code) {
-            extractedCode = obj.partCode || obj.code;
-            if (obj.qty || obj.quantity) extractedQty = parseFloat(obj.qty || obj.quantity);
-          }
-        } catch {}
-      } else if (rawClean.includes('|')) {
-        const parts = rawClean.split('|');
-        if (rawClean.startsWith('CONT_IN|')) {
-          extractedCode = parts[1] || '';
-          if (parts[2] && !isNaN(parseFloat(parts[2]))) extractedQty = parseFloat(parts[2]);
-        } else {
-          extractedCode = parts[0] || '';
-          if (parts[1] && !isNaN(parseFloat(parts[1]))) extractedQty = parseFloat(parts[1]);
-        }
-      }
-
-      extractedCode = extractedCode.trim();
-
-      const masterByExtracted = masterTags.find(
-        (m) => m.partCode.trim().toLowerCase() === extractedCode.toLowerCase()
-      );
-      const pendingByExtracted = pendingKittingItems.find(
-        (p) => p.partCode.trim().toLowerCase() === extractedCode.toLowerCase()
-      );
-      const partByExtracted = allPartsList.find(
-        (p) =>
-          p.code.trim().toLowerCase() === extractedCode.toLowerCase() ||
-          p.id.trim().toLowerCase() === extractedCode.toLowerCase() ||
-          (p.qrCode && p.qrCode.trim().toLowerCase() === extractedCode.toLowerCase()) ||
-          (p.barcode && p.barcode.trim().toLowerCase() === extractedCode.toLowerCase())
-      );
-
-      if (masterByExtracted) {
-        targetPartCode = masterByExtracted.partCode;
-        targetPartName = masterByExtracted.partName || masterByExtracted.partCode;
-        targetQty = extractedQty && extractedQty > 0 ? extractedQty : (masterByExtracted.standardQty > 0 ? masterByExtracted.standardQty : 10);
-        targetUnit = masterByExtracted.unit || 'Cái';
-      } else if (pendingByExtracted) {
-        targetPartCode = pendingByExtracted.partCode;
-        targetPartName = pendingByExtracted.partName || pendingByExtracted.partCode;
-        targetQty = extractedQty && extractedQty > 0 ? extractedQty : (pendingByExtracted.rawQuantity > 0 ? pendingByExtracted.rawQuantity : 10);
-        targetUnit = pendingByExtracted.unit || 'Cái';
-      } else if (partByExtracted) {
-        targetPartCode = partByExtracted.code;
-        targetPartName = partByExtracted.name || partByExtracted.code;
-        targetQty = extractedQty && extractedQty > 0 ? extractedQty : 10;
-        targetUnit = partByExtracted.unit || 'Cái';
-      } else {
-        targetPartCode = extractedCode;
-        targetPartName = `Linh kiện ${extractedCode}`;
-        targetQty = extractedQty && extractedQty > 0 ? extractedQty : 10;
-        targetUnit = 'Cái';
-      }
+      targetPartCode = extractedCodeStr || rawClean.split('|')[0].split('\n')[0].replace(/[^A-Za-z0-9-]/g, '').trim() || rawClean;
+      targetPartName = `Linh kiện ${targetPartCode}`;
+      targetUnit = 'Cái';
+      targetQty = extractedQty || 10;
     }
 
     const bufferEntry = bufferPartsMap.get(targetPartCode.trim());
@@ -467,6 +493,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         bufferLocation: targetBufferLocation,
         isDirectKitting,
         requestedBy,
+        requiredTime: requiredTime || getDefaultRequiredTime(),
       });
 
       // Audio notification chime
@@ -539,6 +566,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         bufferLocation: chosenPickLocation,
         isDirectKitting: !isKitted,
         requestedBy: requestedBy,
+        requiredTime: requiredTime || getDefaultRequiredTime(),
       });
 
       // Sound notification chime
@@ -593,10 +621,56 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
-  // Filter requests with strict FIFO ordering (oldest call requestedAt first)
+  const isAdmin =
+    currentUser?.username === 'admin' ||
+    currentUser?.roleTitle?.toLowerCase().includes('admin') ||
+    currentUser?.roleTitle?.toLowerCase().includes('quản trị') ||
+    (currentUser?.allowedTabs && currentUser.allowedTabs.includes('settings'));
+
+  const handleAdminDeleteRequest = (requestId: string, isCompleted: boolean = false) => {
+    if (!window.confirm('ADMIN XÁC NHẬN: Bạn có chắc chắn muốn XÓA yêu cầu cấp hàng này không? Hành động này sẽ không thể hoàn tác!')) {
+      return;
+    }
+    try {
+      storageService.deleteMaterialCallRequest(requestId, isCompleted);
+      setMessage({
+        type: 'success',
+        text: '🗑️ [ADMIN] Đã xóa thành công yêu cầu cấp hàng!' + (isCompleted ? ' Tồn kho kệ Buffer đã được hoàn trả tự động.' : ''),
+      });
+      onRefresh();
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || 'Lỗi khi xóa yêu cầu' });
+    }
+  };
+
+  const handleAdminRollbackRequest = (requestId: string, targetStatus: 'CALLING' | 'DELIVERING') => {
+    const statusLabel = targetStatus === 'CALLING' ? '1. ĐANG GỌI HÀNG' : '2. ĐANG VẬN CHUYỂN';
+    if (!window.confirm(`ADMIN XÁC NHẬN: Bạn có muốn ROLLBACK đơn này về trạng thái [${statusLabel}] không?`)) {
+      return;
+    }
+    try {
+      storageService.rollbackMaterialCallStatus(requestId, targetStatus);
+      setMessage({
+        type: 'success',
+        text: `↩️ [ADMIN] Đã rollback thành công yêu cầu về trạng thái ${statusLabel}! (Tồn kho kệ Buffer đã được cập nhật tự động nếu cần)`,
+      });
+      onRefresh();
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || 'Lỗi khi rollback' });
+    }
+  };
+
+  // Priority sorting: Sort by requiredTime (earliest needed time first), fallback to requestedAt
   const callingReqs = materialCalls
     .filter((m) => m.status === 'CALLING')
-    .sort((a, b) => new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime());
+    .sort((a, b) => {
+      if (a.requiredTime && b.requiredTime) {
+        return a.requiredTime.localeCompare(b.requiredTime);
+      }
+      if (a.requiredTime) return -1;
+      if (b.requiredTime) return 1;
+      return new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime();
+    });
   const deliveringReqs = materialCalls.filter((m) => m.status === 'DELIVERING');
   const completedReqs = materialCalls
     .filter((m) => m.status === 'COMPLETED')
@@ -855,6 +929,17 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         )}
                       </div>
 
+                      {/* Required Time Highlight Badge */}
+                      <div className="p-2.5 bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 rounded-xl flex items-center justify-between gap-2 text-xs font-black text-amber-950 shadow-2xs">
+                        <span className="flex items-center space-x-1.5 text-amber-900">
+                          <Clock className="w-4 h-4 text-rose-600 shrink-0 animate-pulse" />
+                          <span>⏰ GIỜ CẦN CHÍNH XÁC:</span>
+                        </span>
+                        <span className="text-sm font-mono font-black text-rose-950 bg-rose-100 px-3 py-0.5 rounded-lg border border-rose-300 shadow-2xs">
+                          {req.requiredTime || 'Càng sớm càng tốt'}
+                        </span>
+                      </div>
+
                       {/* Call Timestamp Highlight */}
                       <div className="p-2.5 bg-rose-50/90 border border-rose-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
                         <div className="flex items-center space-x-2 text-slate-800">
@@ -921,16 +1006,29 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         })()
                       )}
 
-                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-100">
                         <span>Người gọi: {req.requestedBy}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleStartDelivery(req.requestId)}
-                          className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center space-x-1.5"
-                        >
-                          <Truck className="w-3 h-3.5" />
-                          <span>NHẬN ĐƠN DELIVERY</span>
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleAdminDeleteRequest(req.requestId)}
+                              className="px-2.5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-2xs transition-all cursor-pointer flex items-center space-x-1 text-xs"
+                              title="Admin: Xóa đơn gọi hàng lỡ bấm nhầm"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Xóa Đơn (Admin)</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleStartDelivery(req.requestId)}
+                            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center space-x-1.5"
+                          >
+                            <Truck className="w-3 h-3.5" />
+                            <span>NHẬN ĐƠN DELIVERY</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -994,7 +1092,14 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     </div>
 
                     <div className="p-3 bg-blue-50/80 border border-blue-100 rounded-xl text-xs space-y-1">
-                      <span className="font-bold text-blue-900">Nơi nhận hàng:</span>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-blue-900">Nơi nhận hàng:</span>
+                        {req.requiredTime && (
+                          <span className="text-[11px] font-mono font-black text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md border border-rose-300">
+                            ⏰ Cần lúc: {req.requiredTime}
+                          </span>
+                        )}
+                      </div>
                       <p className="font-extrabold text-slate-900 text-sm">{req.assemblyLine}</p>
                       <p className="text-[11px] text-slate-500">Người yêu cầu: {req.requestedBy}</p>
                     </div>
@@ -1007,6 +1112,35 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       <Check className="w-4 h-4" />
                       <span>XÁC NHẬN ĐÃ GIAO HÀNG TỚI BÀN MÁY</span>
                     </button>
+
+                    {isAdmin && (
+                      <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs bg-slate-50 p-2 rounded-xl">
+                        <span className="font-extrabold text-slate-700 flex items-center space-x-1">
+                          <ShieldAlert className="w-3.5 h-3.5 text-blue-600" />
+                          <span>Admin Quản Lý:</span>
+                        </span>
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleAdminRollbackRequest(req.requestId, 'CALLING')}
+                            className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold rounded-lg cursor-pointer flex items-center space-x-1 text-[11px] shadow-2xs"
+                            title="Rollback về trạng thái 1. Đang Gọi Hàng"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Rollback Về Gọi Hàng</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAdminDeleteRequest(req.requestId)}
+                            className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer flex items-center space-x-1 text-[11px] shadow-2xs"
+                            title="Xóa đơn vận chuyển này"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Xóa Đơn</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1324,11 +1458,51 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     />
                   </div>
 
+                  {/* Required Time Input */}
+                  <div className="p-3 bg-rose-50 border-2 border-rose-300 rounded-2xl space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="block font-extrabold text-rose-950 text-xs flex items-center space-x-1.5">
+                        <Clock className="w-4 h-4 text-rose-600 animate-pulse shrink-0" />
+                        <span>4. Giờ Cần Chính Xác Linh Kiện</span> <span className="text-rose-500">*</span>
+                      </label>
+                      <span className="text-[10px] text-rose-700 font-bold bg-white px-2 py-0.5 rounded-md border border-rose-200">
+                        ⏱ Ưu tiên phát hàng
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="time"
+                        value={requiredTime}
+                        onChange={(e) => setRequiredTime(e.target.value)}
+                        className="px-3 py-2 bg-white border-2 border-rose-400 rounded-xl font-black text-rose-950 text-sm focus:ring-2 focus:ring-rose-500 outline-hidden shadow-2xs shrink-0"
+                      />
+                      <div className="flex flex-wrap gap-1 items-center">
+                        <span className="text-[10px] text-rose-800 font-bold">Thêm nhanh:</span>
+                        {['15', '30', '45', '60'].map((mins) => (
+                          <button
+                            key={mins}
+                            type="button"
+                            onClick={() => {
+                              const d = new Date();
+                              d.setMinutes(d.getMinutes() + parseInt(mins, 10));
+                              const h = String(d.getHours()).padStart(2, '0');
+                              const m = String(d.getMinutes()).padStart(2, '0');
+                              setRequiredTime(`${h}:${m}`);
+                            }}
+                            className="px-2.5 py-1 bg-rose-200 hover:bg-rose-300 text-rose-950 rounded-lg font-black text-xs cursor-pointer shadow-2xs transition-all active:scale-95"
+                          >
+                            +{mins}p
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Requester Select - Default to Logged in User */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="block font-bold text-slate-800">
-                        4. Người Yêu Cầu <span className="text-rose-500">*</span>
+                        5. Người Yêu Cầu <span className="text-rose-500">*</span>
                       </label>
                       {currentUser && (
                         <button
@@ -1378,6 +1552,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   <tr>
                     <th className="p-3 w-10 text-center">STT</th>
                     <th className="p-3">Thời Gian Hoàn Tất Giao</th>
+                    <th className="p-3 text-center">Giờ Cần LK</th>
                     <th className="p-3">Bàn Máy Nhận</th>
                     <th className="p-3">Mã Linh Kiện</th>
                     <th className="p-3">Tên Linh Kiện</th>
@@ -1386,12 +1561,13 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     <th className="p-3">Người Gọi</th>
                     <th className="p-3">Người Giao Hàng</th>
                     <th className="p-3 text-center">Trạng Thái</th>
+                    {isAdmin && <th className="p-3 text-center text-rose-700 font-extrabold">Thao Tác Admin</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {completedReqs.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="p-12 text-center text-slate-400">
+                      <td colSpan={isAdmin ? 12 : 11} className="p-12 text-center text-slate-400">
                         <Clock className="w-12 h-12 mx-auto mb-3 text-slate-300" />
                         <p className="font-extrabold text-slate-700 text-sm">Chưa Có Lịch Sử Giao Cấp Hàng Hoàn Tất</p>
                         <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
@@ -1404,6 +1580,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       <tr key={m.requestId} className="hover:bg-slate-50 transition-colors">
                         <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
                         <td className="p-3 text-slate-600 font-semibold">{formatVietnamDateTime(m.deliveredAt || m.requestedAt)}</td>
+                        <td className="p-3 text-center font-mono font-bold text-rose-700 bg-rose-50/50 rounded-lg">{m.requiredTime || '---'}</td>
                         <td className="p-3 font-bold text-slate-800">{m.assemblyLine}</td>
                         <td className="p-3 font-mono font-bold text-purple-800">{m.partCode}</td>
                         <td className="p-3 font-semibold text-slate-900">{m.partName}</td>
@@ -1417,6 +1594,30 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                             <span>Đã Giao Thành Công</span>
                           </span>
                         </td>
+                        {isAdmin && (
+                          <td className="p-3 text-center">
+                            <div className="flex items-center justify-center space-x-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleAdminRollbackRequest(m.requestId, 'DELIVERING')}
+                                className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[10px] rounded-lg cursor-pointer flex items-center space-x-1 shadow-2xs"
+                                title="Rollback về Đang Vận Chuyển và tự động hoàn trả tồn kho vào Kệ Outbuffer"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Rollback (Hoàn Tồn)</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleAdminDeleteRequest(m.requestId, true)}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded-lg cursor-pointer flex items-center space-x-1 shadow-2xs"
+                                title="Xóa lịch sử và tự động hoàn trả tồn kho vào Kệ Outbuffer"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Xóa (Hoàn Tồn)</span>
+                              </button>
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     ))
                   )}
@@ -1601,6 +1802,46 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              {/* Required Time Input */}
+              <div className="p-2.5 bg-rose-50 border-2 border-rose-300 rounded-2xl space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block font-black text-rose-950 text-[11px] flex items-center space-x-1">
+                    <Clock className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
+                    <span>GIỜ CẦN CHÍNH XÁC LINH KIỆN</span> <span className="text-rose-500">*</span>
+                  </label>
+                  <span className="text-[10px] text-rose-700 font-bold bg-white px-2 py-0.5 rounded-md border border-rose-200">
+                    ⏱ Ưu tiên phát hàng
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="time"
+                    value={requiredTime}
+                    onChange={(e) => setRequiredTime(e.target.value)}
+                    className="px-3 py-1.5 bg-white border-2 border-rose-400 rounded-xl font-black text-rose-950 text-sm focus:ring-2 focus:ring-rose-500 outline-hidden shadow-2xs shrink-0"
+                  />
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <span className="text-[10px] text-rose-800 font-bold">Cần sau:</span>
+                    {['15', '30', '45', '60'].map((mins) => (
+                      <button
+                        key={mins}
+                        type="button"
+                        onClick={() => {
+                          const d = new Date();
+                          d.setMinutes(d.getMinutes() + parseInt(mins, 10));
+                          const h = String(d.getHours()).padStart(2, '0');
+                          const m = String(d.getMinutes()).padStart(2, '0');
+                          setRequiredTime(`${h}:${m}`);
+                        }}
+                        className="px-2 py-1 bg-rose-200 hover:bg-rose-300 text-rose-950 rounded-lg font-black text-[10px] cursor-pointer shadow-2xs transition-all active:scale-95"
+                      >
+                        +{mins}p
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 

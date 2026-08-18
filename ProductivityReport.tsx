@@ -663,8 +663,8 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                     <td className="p-2 border border-slate-300 text-center font-bold text-slate-800">
                       {Math.round(item.tyLeHoanThanh)}%
                     </td>
-                    <td className="p-2 border border-slate-300 text-center font-mono">
-                      {item.hsqd.toString().replace('.', ',')}
+                    <td className="p-2 border border-slate-300 text-center font-mono font-bold text-amber-900">
+                      {Number(item.hsqd.toFixed(3)).toString().replace('.', ',')}
                     </td>
                     {TIME_SLOTS.map((slot) => (
                       <td key={slot} className="p-2 border border-slate-300 text-center font-mono">

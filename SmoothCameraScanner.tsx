@@ -160,26 +160,28 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       };
 
       const qrConfig = {
-        fps: 25,
+        fps: 30,
         qrbox: (w: number, h: number) => {
-          const minEdge = Math.min(w, h);
           return {
-            width: Math.max(Math.floor(minEdge * 0.85), 220),
-            height: Math.max(Math.floor(minEdge * 0.72), 180),
+            width: Math.max(Math.floor(w * 0.95), 240),
+            height: Math.max(Math.floor(h * 0.90), 220),
           };
         },
         aspectRatio: 1.333333,
+        disableFlip: false,
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
         formatsToSupport: [
           Html5QrcodeSupportedFormats.QR_CODE,
           Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.UPC_A,
           Html5QrcodeSupportedFormats.DATA_MATRIX,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.PDF_417,
+          Html5QrcodeSupportedFormats.CODE_39,
         ],
+      };
+
+      const cameraConstraints = {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920, min: 1280 },
+        height: { ideal: 1080, min: 720 },
       };
 
       if (camId) {
@@ -188,11 +190,35 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
         try {
           await html5QrCode.start(activeCamId, qrConfig, onScanSuccessCallback, () => {});
         } catch (idErr) {
-          await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccessCallback, () => {});
+          await html5QrCode.start(cameraConstraints as any, qrConfig, onScanSuccessCallback, () => {});
         }
       } else {
-        await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccessCallback, () => {});
+        await html5QrCode.start(cameraConstraints as any, qrConfig, onScanSuccessCallback, () => {});
       }
+
+      // Native BarcodeDetector hardware acceleration fallback
+      try {
+        if ('BarcodeDetector' in window) {
+          const detector = new (window as any).BarcodeDetector({ formats: ['qr_code', 'code_128', 'data_matrix'] });
+          const videoEl = document.querySelector(`#${containerIdRef.current} video`) as HTMLVideoElement;
+          if (videoEl) {
+            const checkFrame = async () => {
+              if (!html5QrCodeRef.current || videoEl.paused || videoEl.ended) return;
+              try {
+                const detected = await detector.detect(videoEl);
+                if (detected && detected.length > 0 && detected[0].rawValue) {
+                  onScanSuccessCallback(detected[0].rawValue);
+                  return;
+                }
+              } catch (e) {}
+              if (html5QrCodeRef.current) {
+                requestAnimationFrame(checkFrame);
+              }
+            };
+            requestAnimationFrame(checkFrame);
+          }
+        }
+      } catch (e) {}
 
       // Check flashlight support
       try {

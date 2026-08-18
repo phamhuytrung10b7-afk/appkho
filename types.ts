@@ -160,6 +160,7 @@ export interface MaterialCallRequest {
   isDirectKitting?: boolean; // Tín hiệu Bóc tách & Giao thẳng (Cross-docking)
   requestedBy: string;
   requestedAt: string;
+  requiredTime?: string; // Giờ cần chính xác linh kiện đó (e.g. "08:30" hoặc "09:15"...)
   status: 'CALLING' | 'DELIVERING' | 'COMPLETED';
   deliveredBy?: string;
   deliveredAt?: string;

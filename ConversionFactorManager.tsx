@@ -335,7 +335,7 @@ export const ConversionFactorManager: React.FC = () => {
                         />
                       ) : (
                         <span className="font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                          {f.hsqd.toFixed(2).replace('.', ',')}
+                          {Number(f.hsqd.toFixed(3)).toString().replace('.', ',')}
                         </span>
                       )}
                     </td>
