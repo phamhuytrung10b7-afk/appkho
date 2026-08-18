@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   ComposedChart,
 } from 'recharts';
-import { FileSpreadsheet, Calendar, Users, Plus, Trash2, Download, RefreshCw, BarChart2, Table, Sparkles, QrCode } from 'lucide-react';
+import { FileSpreadsheet, Calendar, Users, Plus, Trash2, Download, RefreshCw, BarChart2, Table, Sparkles, QrCode, Cloud, CloudOff, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { Part } from './types';
 import { ProductivityExportModal } from './ProductivityExportModal';
 import { storageService } from './storage';
@@ -65,6 +65,9 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const [cloudSaveAlert, setCloudSaveAlert] = useState<string | null>(null);
+  const [personnelConfig, setPersonnelConfig] = useState(() => storageService.getProductivityPersonnelConfig());
 
   // 35-day date retention bounds
   const today = new Date();
@@ -73,22 +76,60 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const minDateStr = minDateObj.toISOString().split('T')[0];
   const maxDateStr = today.toISOString().split('T')[0];
 
-  const handleUpdateKhsx = (partCode: string, valStr: string) => {
+  // Fetch fresh personnel allocation and daily targets directly from Supabase Cloud
+  useEffect(() => {
+    let isMounted = true;
+    async function syncCloudConfig() {
+      try {
+        setIsCloudSyncing(true);
+        const cloudCfg = await storageService.fetchProductivityPersonnelConfigFromCloud();
+        if (isMounted && cloudCfg) {
+          setPersonnelConfig(cloudCfg);
+        }
+      } catch (err) {
+        console.warn('Lỗi đồng bộ cấu hình năng suất từ Supabase Cloud:', err);
+      } finally {
+        if (isMounted) setIsCloudSyncing(false);
+      }
+    }
+    syncCloudConfig();
+  }, [reportDate, refreshTrigger]);
+
+  const handleManualCloudRefresh = async () => {
+    try {
+      setIsCloudSyncing(true);
+      await storageService.fetchInitialDataFromCloud();
+      const cloudCfg = await storageService.fetchProductivityPersonnelConfigFromCloud();
+      if (cloudCfg) setPersonnelConfig(cloudCfg);
+      setRefreshTrigger((p) => p + 1);
+    } catch (err: any) {
+      setCloudSaveAlert('⚠️ Lỗi đồng bộ Supabase Cloud: ' + (err?.message || 'Mất kết nối'));
+      setTimeout(() => setCloudSaveAlert(null), 4000);
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
+
+  const handleUpdateKhsx = async (partCode: string, valStr: string) => {
     const parsed = parseInt(valStr, 10);
     const newKhsx = isNaN(parsed) ? 0 : Math.max(0, parsed);
-    const currentConfig = storageService.getProductivityPersonnelConfig();
     const updatedMap = {
-      ...(currentConfig.khsxMap || {}),
+      ...(personnelConfig.khsxMap || {}),
       [partCode]: newKhsx,
     };
-    storageService.saveProductivityPersonnelConfig({
-      ...currentConfig,
+    const updatedCfg = {
+      ...personnelConfig,
       khsxMap: updatedMap,
-    });
+    };
+    setPersonnelConfig(updatedCfg);
+    const result = await storageService.saveProductivityPersonnelConfig(updatedCfg);
+    if (!result.cloudSynced) {
+      setCloudSaveAlert(result.message || '⚠️ MẤT KẾT NỐI SUPABASE CLOUD: Không thể lưu chỉ tiêu KHSX lên Cloud!');
+      setTimeout(() => setCloudSaveAlert(null), 5000);
+    }
     setRefreshTrigger((p) => p + 1);
   };
 
-  const personnelConfig = storageService.getProductivityPersonnelConfig();
   const personnel: PersonnelSummary = {
     chinhThuc: personnelConfig.chinhThuc,
     soanVatTu: personnelConfig.soanVatTu,
@@ -103,67 +144,102 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const factorMap = new Map<string, number>();
   factors.forEach((f) => factorMap.set(f.partCode.trim().toUpperCase(), f.hsqd));
 
-  // Fetch scan logs for current reportDate
+  // --- REALTIME DATA AGGREGATION FROM SUPABASE CLOUD DATA ---
   const scanLogs = storageService.getKittingScanLogs();
-  const dateLogs = scanLogs.filter((log) => log.timestamp.startsWith(reportDate));
+  const kittingQueue = storageService.getKittingQueue();
+  const transactions = storageService.getTransactions();
 
-  // Aggregate scanned items
   const partMap = new Map<string, HourlyReportItem>();
 
-  dateLogs.forEach((log) => {
-    const codeKey = log.partCode.trim().toUpperCase();
-    const dt = new Date(log.timestamp);
+  const getSlotKey = (dt: Date) => {
     const hour = dt.getHours();
+    if (hour >= 8 && hour < 9) return '8h-9h';
+    if (hour >= 9 && hour < 10) return '9h-10h';
+    if (hour >= 10 && hour < 11) return '10h-11h';
+    if (hour >= 11 && hour < 12) return '11h-12h';
+    if (hour >= 13 && hour < 14) return '13h-14h';
+    if (hour >= 14 && hour < 15) return '14h-15h';
+    if (hour >= 15 && hour < 16) return '15h-16h';
+    if (hour >= 16 && hour < 17) return '16h-17h';
+    if (hour >= 17 && hour < 18) return '17h-18h';
+    if (hour >= 18 && hour < 19) return '18h-19h';
+    if (hour >= 19 && hour < 20) return '19h-20h';
+    return '8h-9h';
+  };
 
-    let slotKey = '8h-9h';
-    if (hour >= 8 && hour < 9) slotKey = '8h-9h';
-    else if (hour >= 9 && hour < 10) slotKey = '9h-10h';
-    else if (hour >= 10 && hour < 11) slotKey = '10h-11h';
-    else if (hour >= 11 && hour < 12) slotKey = '11h-12h';
-    else if (hour >= 13 && hour < 14) slotKey = '13h-14h';
-    else if (hour >= 14 && hour < 15) slotKey = '14h-15h';
-    else if (hour >= 15 && hour < 16) slotKey = '15h-16h';
-    else if (hour >= 16 && hour < 17) slotKey = '16h-17h';
-    else if (hour >= 17 && hour < 18) slotKey = '17h-18h';
-    else if (hour >= 18 && hour < 19) slotKey = '18h-19h';
-    else if (hour >= 19 && hour < 20) slotKey = '19h-20h';
-
+  const initPartEntry = (pCode: string, pName: string) => {
+    const codeKey = pCode.trim().toUpperCase();
     if (!partMap.has(codeKey)) {
       const factor = factorMap.get(codeKey) || 1.0;
-      const khsx = personnelConfig.khsxMap?.[log.partCode] || 550;
+      const khsx = personnelConfig.khsxMap?.[pCode] || 550;
       partMap.set(codeKey, {
         id: codeKey,
-        partCode: log.partCode,
-        partName: log.partName || log.partCode,
+        partCode: pCode,
+        partName: pName || pCode,
         khsx: khsx,
         thucHien: 0,
         conLai: khsx,
         tyLeHoanThanh: 0,
         hsqd: factor,
         hourly: {
-          '8h-9h': 0,
-          '9h-10h': 0,
-          '10h-11h': 0,
-          '11h-12h': 0,
-          '13h-14h': 0,
-          '14h-15h': 0,
-          '15h-16h': 0,
-          '16h-17h': 0,
-          '17h-18h': 0,
-          '18h-19h': 0,
-          '19h-20h': 0,
+          '8h-9h': 0, '9h-10h': 0, '10h-11h': 0, '11h-12h': 0,
+          '13h-14h': 0, '14h-15h': 0, '15h-16h': 0, '16h-17h': 0,
+          '17h-18h': 0, '18h-19h': 0, '19h-20h': 0,
         },
         tongSanLuong: 0,
       });
     }
+    return partMap.get(codeKey)!;
+  };
 
-    const item = partMap.get(codeKey)!;
+  // 1. Process scan logs for current reportDate
+  const dateLogs = scanLogs.filter((log) => log.timestamp.startsWith(reportDate));
+  dateLogs.forEach((log) => {
+    const item = initPartEntry(log.partCode, log.partName || log.partCode);
+    const slotKey = getSlotKey(new Date(log.timestamp));
     item.thucHien += log.quantity;
     item.hourly[slotKey] = (item.hourly[slotKey] || 0) + log.quantity;
     item.tongSanLuong += log.quantity;
     item.conLai = Math.max(0, item.khsx - item.thucHien);
     item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
   });
+
+  // 2. Aggregate completed kittingQueue items on reportDate if scanLogs missing
+  if (dateLogs.length === 0) {
+    const dateQueue = kittingQueue.filter((kq) => {
+      const ts = kq.endTime || kq.startTime || kq.createdAt;
+      return (kq.status === 'IN_BUFFER' || kq.status === 'DELIVERED' || (kq.kittedQuantity && kq.kittedQuantity > 0)) && ts && ts.startsWith(reportDate);
+    });
+    dateQueue.forEach((kq) => {
+      const item = initPartEntry(kq.partCode, kq.partName || kq.partCode);
+      const ts = kq.endTime || kq.startTime || kq.createdAt;
+      const slotKey = getSlotKey(new Date(ts));
+      const qty = kq.kittedQuantity || kq.rawQuantity || 0;
+      item.thucHien += qty;
+      item.hourly[slotKey] = (item.hourly[slotKey] || 0) + qty;
+      item.tongSanLuong += qty;
+      item.conLai = Math.max(0, item.khsx - item.thucHien);
+      item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
+    });
+  }
+
+  // 3. Aggregate transactions on reportDate if no logs/queue
+  if (partMap.size === 0) {
+    const dateTxs = transactions.filter((tx) => {
+      const isOut = tx.type === 'OUT' || (tx as any).type === 'KITTING' || (tx as any).type === 'EXPORT';
+      return isOut && tx.date && tx.date.startsWith(reportDate);
+    });
+    dateTxs.forEach((tx) => {
+      const item = initPartEntry(tx.partCode, tx.partName || tx.partCode);
+      const dt = tx.date.includes('T') ? new Date(tx.date) : new Date(tx.date + 'T08:30:00');
+      const slotKey = getSlotKey(dt);
+      item.thucHien += tx.quantity;
+      item.hourly[slotKey] = (item.hourly[slotKey] || 0) + tx.quantity;
+      item.tongSanLuong += tx.quantity;
+      item.conLai = Math.max(0, item.khsx - item.thucHien);
+      item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
+    });
+  }
 
   const items = Array.from(partMap.values());
 
@@ -277,23 +353,56 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
 
   return (
     <div className="space-y-8">
-      {/* Top Action Bar for Exports */}
+      {/* Cloud Alert Message if saving or syncing failed */}
+      {cloudSaveAlert && (
+        <div className="bg-rose-600 text-white px-4 py-3 rounded-2xl shadow-md flex items-center justify-between text-xs font-bold animate-pulse">
+          <div className="flex items-center space-x-2">
+            <AlertTriangle className="w-5 h-5 text-yellow-300 shrink-0" />
+            <span>{cloudSaveAlert}</span>
+          </div>
+          <button
+            onClick={() => setCloudSaveAlert(null)}
+            className="text-white hover:text-slate-200 text-xs underline font-extrabold cursor-pointer"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
+
+      {/* Top Action Bar for Exports & Cloud Sync */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
           <div className="p-2.5 bg-blue-100 text-blue-700 rounded-xl">
             <BarChart2 className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
-              Báo Cáo Năng Suất Lao Động Hằng Ngày & Biểu Đồ Khung Giờ
-            </h3>
+            <div className="flex items-center space-x-2">
+              <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
+                Báo Cáo Năng Suất Lao Động Hằng Ngày & Biểu Đồ Khung Giờ
+              </h3>
+              <span className="hidden sm:inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-50 text-blue-700 border border-blue-200">
+                <Cloud className="w-3 h-3 text-blue-600" />
+                <span>Supabase Cloud</span>
+              </span>
+            </div>
             <p className="text-xs text-slate-500">
-              Chỉ hiển thị linh kiện đã quét Kitting Smart thành công nhập kệ OUTBUFFER.
+              Tổng hợp dữ liệu chuẩn trực tiếp từ Supabase Cloud theo khung giờ (8h-9h, 9h-10h...)
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Manual Cloud Refresh Button */}
+          <button
+            onClick={handleManualCloudRefresh}
+            disabled={isCloudSyncing}
+            className="flex items-center space-x-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs font-black border border-slate-200 transition-all cursor-pointer disabled:opacity-50"
+            title="Đồng bộ lại dữ liệu chuẩn từ Supabase Cloud"
+          >
+            <RefreshCw className={`w-4 h-4 text-blue-600 ${isCloudSyncing ? 'animate-spin' : ''}`} />
+            <span>{isCloudSyncing ? 'Đang Tải Cloud...' : 'Đồng Bộ Supabase Cloud'}</span>
+          </button>
+
           {/* Inventory Excel Export */}
           <button
             onClick={onExportInventoryExcel}

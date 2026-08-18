@@ -2238,7 +2238,7 @@ export const storageService = {
     return newLog;
   },
 
-  // --- PRODUCTIVITY PERSONNEL CONFIG (Lưu gợi ý thông số điền tay) ---
+  // --- PRODUCTIVITY PERSONNEL CONFIG (Lưu trực tiếp Supabase Cloud: thekho_staff_allocation_v1 & thekho_daily_reports_v1) ---
   getProductivityPersonnelConfig(): ProductivityPersonnelConfig {
     const raw = localStorage.getItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY);
     if (!raw) {
@@ -2252,9 +2252,45 @@ export const storageService = {
     }
   },
 
-  saveProductivityPersonnelConfig(config: ProductivityPersonnelConfig): void {
+  async saveProductivityPersonnelConfig(config: ProductivityPersonnelConfig): Promise<{ success: boolean; cloudSynced: boolean; message?: string }> {
     localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(config));
-    supabaseKeyStore.set(STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, config);
+    
+    // Push directly to Supabase Cloud under keys
+    try {
+      const p1 = supabaseKeyStore.set(STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, config);
+      const p2 = supabaseKeyStore.set(STORAGE_KEYS.STAFF_ALLOCATION, config);
+      const p3 = supabaseKeyStore.set(STORAGE_KEYS.DAILY_REPORTS, config);
+      const [res1, res2, res3] = await Promise.all([p1, p2, p3]);
+      const cloudSynced = res1 && res2 && res3;
+      if (!cloudSynced) {
+        return {
+          success: true,
+          cloudSynced: false,
+          message: '⚠️ Đã lưu tại máy nhưng KHÔNG THỂ đồng bộ lên Supabase Cloud do lỗi kết nối mạng!',
+        };
+      }
+      return { success: true, cloudSynced: true };
+    } catch (err: any) {
+      return {
+        success: true,
+        cloudSynced: false,
+        message: `⚠️ Đã lưu local nhưng lỗi đẩy Supabase Cloud: ${err?.message || 'Mất kết nối'}`,
+      };
+    }
+  },
+
+  async fetchProductivityPersonnelConfigFromCloud(): Promise<ProductivityPersonnelConfig> {
+    try {
+      const cloudVal = await supabaseKeyStore.get<ProductivityPersonnelConfig>(STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG)
+        || await supabaseKeyStore.get<ProductivityPersonnelConfig>(STORAGE_KEYS.STAFF_ALLOCATION);
+      if (cloudVal && typeof cloudVal === 'object') {
+        localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(cloudVal));
+        return cloudVal;
+      }
+    } catch (err) {
+      console.warn('Không thể tải cấu hình nhân sự từ Supabase Cloud:', err);
+    }
+    return this.getProductivityPersonnelConfig();
   },
 
   // --- CUSTOM GENERATED CONTAINER TAGS (Lưu vị trí riêng biệt với Thẻ Master Data) ---
@@ -2340,6 +2376,9 @@ export const storageService = {
         [STORAGE_KEYS.MASTER_CONTAINER_TAGS, MASTER_CONTAINER_TAGS_KEY],
         [STORAGE_KEYS.CONVERSION_FACTORS, CONVERSION_FACTORS_KEY],
         [STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
+        [STORAGE_KEYS.STAFF_ALLOCATION, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
+        [STORAGE_KEYS.DAILY_REPORTS, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
+        [STORAGE_KEYS.KITTING_SCAN_LOGS, KITTING_SCAN_LOGS_KEY],
         [STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, CUSTOM_GENERATED_CONTAINER_TAGS_KEY],
         [STORAGE_KEYS.USERS, 'thekho_users_v1'],
       ];
@@ -2350,10 +2389,11 @@ export const storageService = {
           localStorage.setItem(lKey, JSON.stringify(val));
         }
       }
-    } catch (err) {
-      console.error('Lỗi khi tải dữ liệu từ Supabase Cloud:', err);
+    } catch (err: any) {
+      console.warn('Lỗi khi tải dữ liệu từ Supabase Cloud:', err);
       parts = this.getParts();
       transactions = this.getTransactions();
+      throw new Error(`[Supabase Connection Failure] ${err?.message || 'Failed to fetch from cloud'}`);
     }
 
     return { parts, transactions };

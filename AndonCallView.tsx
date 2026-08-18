@@ -4,6 +4,7 @@ import { storageService } from './storage';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { InlineQrScanner } from './InlineQrScanner';
 import { SmoothCameraScanner } from './SmoothCameraScanner';
+import { parseScannedQrPayload } from './QrScannerModal';
 import { ContainerTagManagerModal } from './ContainerTagManagerModal';
 import { MasterKittingTag } from './masterExcelParser';
 import {
@@ -149,31 +150,41 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     const kittingQueue = storageService.getKittingQueue();
     const pendingKittingItems = kittingQueue.filter((k) => k.status === 'PENDING_KITTING');
 
-    let pCode = '';
-    let pName = '';
-    let pQty = 10;
+    // Parse payload with standard helper
+    const parsed = parseScannedQrPayload(cleanStr);
+    const searchCode = (parsed.partCode || cleanStr).trim();
+
+    let pCode = searchCode;
+    let pName = searchCode;
+    let pQty = parsed.qty && parsed.qty > 0 ? parsed.qty : 10;
     let pUnit = 'Cái';
 
     // 1. Match in Master Container Tags
     const matchedMaster = masterTags.find(
       (m) =>
         (m.qrPayload && m.qrPayload.trim().toLowerCase() === cleanStr.toLowerCase()) ||
-        (m.partCode && m.partCode.trim().toLowerCase() === cleanStr.toLowerCase())
+        (m.partCode && m.partCode.trim().toLowerCase() === searchCode.toLowerCase())
     );
 
     if (matchedMaster) {
       pCode = matchedMaster.partCode;
       pName = matchedMaster.partName || matchedMaster.partCode;
-      pQty = matchedMaster.standardQty && matchedMaster.standardQty > 0 ? matchedMaster.standardQty : 10;
+      if (!parsed.qty) {
+        pQty = matchedMaster.standardQty && matchedMaster.standardQty > 0 ? matchedMaster.standardQty : 10;
+      }
       pUnit = matchedMaster.unit || 'Cái';
     } else if (cleanStr.includes('|')) {
       // Pipe format e.g. "04-29-09-SHA76214CKNK-0001|1000|01" or "CONT_IN|LK01|100|..."
       const parts = cleanStr.split('|');
-      pCode = parts[0] || '';
-      pQty = parts[1] && !isNaN(parseFloat(parts[1])) ? parseFloat(parts[1]) : 10;
+      pCode = parts[0] || searchCode;
+      if (!parsed.qty) {
+        pQty = parts[1] && !isNaN(parseFloat(parts[1])) ? parseFloat(parts[1]) : 10;
+      }
       if (cleanStr.startsWith('CONT_IN|')) {
-        pCode = parts[1] || '';
-        pQty = parts[2] && !isNaN(parseFloat(parts[2])) ? parseFloat(parts[2]) : 10;
+        pCode = parts[1] || searchCode;
+        if (!parsed.qty) {
+          pQty = parts[2] && !isNaN(parseFloat(parts[2])) ? parseFloat(parts[2]) : 10;
+        }
       }
       const matchInMaster = masterTags.find((m) => m.partCode.toLowerCase() === pCode.toLowerCase());
       const matchInPending = pendingKittingItems.find((p) => p.partCode.toLowerCase() === pCode.toLowerCase());
@@ -192,18 +203,18 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         pName = pCode;
       }
     } else {
-      pCode = cleanStr;
+      pCode = searchCode;
       const matchInMaster = masterTags.find((m) => m.partCode.toLowerCase() === pCode.toLowerCase());
       const matchInPending = pendingKittingItems.find((p) => p.partCode.toLowerCase() === pCode.toLowerCase());
       const matchInParts = allParts.find((p) => p.code.toLowerCase() === pCode.toLowerCase() || p.id.toLowerCase() === pCode.toLowerCase());
 
       if (matchInMaster) {
         pName = matchInMaster.partName;
-        pQty = matchInMaster.standardQty > 0 ? matchInMaster.standardQty : 10;
+        if (!parsed.qty) pQty = matchInMaster.standardQty > 0 ? matchInMaster.standardQty : 10;
         pUnit = matchInMaster.unit || 'Cái';
       } else if (matchInPending) {
         pName = matchInPending.partName;
-        pQty = matchInPending.rawQuantity > 0 ? matchInPending.rawQuantity : 10;
+        if (!parsed.qty) pQty = matchInPending.rawQuantity > 0 ? matchInPending.rawQuantity : 10;
         pUnit = matchInPending.unit || 'Cái';
       } else if (matchInParts) {
         pName = matchInParts.name;

@@ -44,30 +44,39 @@ export function saveSupabaseCredentials(url: string, anonKey: string): void {
 // Global singleton client cache to avoid "Multiple GoTrueClient instances detected" warning
 const clientMap = new Map<string, SupabaseClient>();
 
-export function getActiveSupabaseClient(): { client: SupabaseClient; isConfigured: boolean } {
+export function getActiveSupabaseClient(): { client: SupabaseClient | null; isConfigured: boolean } {
   const { url, anonKey } = getSupabaseCredentials();
   const activeUrl = cleanSupabaseUrl(url || SUPABASE_URL);
   const activeKey = (anonKey || SUPABASE_ANON_KEY).trim();
   const cacheKey = `${activeUrl}__${activeKey}`;
 
-  if (!clientMap.has(cacheKey)) {
-    clientMap.set(
-      cacheKey,
-      createClient(activeUrl, activeKey, {
-        auth: {
-          persistSession: false,
-        },
-      })
-    );
+  const isValidUrl = Boolean(activeUrl && (activeUrl.startsWith('http://') || activeUrl.startsWith('https://')));
+  const isConfigured = Boolean(isValidUrl && activeKey);
+
+  if (isConfigured && !clientMap.has(cacheKey)) {
+    try {
+      clientMap.set(
+        cacheKey,
+        createClient(activeUrl, activeKey, {
+          auth: {
+            persistSession: false,
+          },
+        })
+      );
+    } catch (err) {
+      console.warn('Cannot initialize Supabase client:', err);
+    }
   }
 
+  const client = clientMap.get(cacheKey) || null;
+
   return {
-    client: clientMap.get(cacheKey)!,
-    isConfigured: Boolean(activeUrl && activeKey),
+    client,
+    isConfigured: Boolean(client && isConfigured),
   };
 }
 
 export const isSupabaseConfigured = true;
-export const supabase: SupabaseClient = getActiveSupabaseClient().client;
+export const supabase: SupabaseClient | null = getActiveSupabaseClient().client;
 
 

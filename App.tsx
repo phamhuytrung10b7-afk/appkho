@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Part, Transaction, AppSettings, ViewTab, KittingQueueItem, BufferLocationMap, MaterialCallRequest, UserAccount } from './types';
 import { storageService } from './storage';
 import { getActiveSupabaseClient } from './supabase';
-import { Menu, Boxes, LogOut } from 'lucide-react';
+import { Menu, Boxes, LogOut, AlertTriangle, RefreshCw } from 'lucide-react';
 
 import { Sidebar } from './Sidebar';
 import { ElectronicBinCardModal } from './ElectronicBinCardModal';
@@ -34,6 +34,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLoadingCloud, setIsLoadingCloud] = useState(true);
+  const [cloudConnectionError, setCloudConnectionError] = useState<string | null>(null);
 
   // Automatically adjust currentTab to the user's allowedTabs if currentTab is forbidden
   useEffect(() => {
@@ -91,24 +92,33 @@ export default function App() {
           setBufferLocations(storageService.getBufferLocations());
           setMaterialCalls(storageService.getMaterialCallRequests());
           setSettings(storageService.getSettings());
+          setCloudConnectionError(null);
           const activeUser = storageService.getCurrentUser();
           if (activeUser) {
             setCurrentUser(activeUser);
           }
         }
-      } catch (err) {
-        console.error('Lỗi khi tải/đồng bộ dữ liệu từ Supabase:', err);
+      } catch (err: any) {
+        console.warn('Lỗi khi tải/đồng bộ dữ liệu từ Supabase:', err);
         if (isMounted) {
+          setCloudConnectionError(
+            '⚠️ MẤT KẾT NỐI SUPABASE CLOUD: Không thể kết nối máy chủ Supabase. Dữ liệu chưa thể đồng bộ Cloud. Vui lòng kiểm tra lại mạng hoặc cấu hình kết nối trong Cài Đặt!'
+          );
           refreshData();
         }
       }
     }
 
     async function initCloudData() {
-      setIsLoadingCloud(true);
-      await syncCloudAndState();
-      if (isMounted) {
-        setIsLoadingCloud(false);
+      try {
+        setIsLoadingCloud(true);
+        await syncCloudAndState();
+      } catch (err) {
+        console.warn('Lỗi khởi tạo dữ liệu Supabase:', err);
+      } finally {
+        if (isMounted) {
+          setIsLoadingCloud(false);
+        }
       }
     }
 
@@ -119,27 +129,33 @@ export default function App() {
     let channel: any = null;
 
     if (isConfigured && client) {
-      channel = client
-        .channel('public-db-changes')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public' },
-          (payload) => {
-            console.log('⚡ Realtime postgres change received from Supabase:', payload);
-            if (isMounted) {
-              syncCloudAndState();
+      try {
+        channel = client
+          .channel('public-db-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public' },
+            (payload) => {
+              console.log('⚡ Realtime postgres change received from Supabase:', payload);
+              if (isMounted) {
+                syncCloudAndState();
+              }
             }
-          }
-        )
-        .subscribe((status) => {
-          console.log('Supabase Realtime subscription status:', status);
-        });
+          )
+          .subscribe((status) => {
+            console.log('Supabase Realtime subscription status:', status);
+          });
+      } catch (err) {
+        console.warn('Không thể khởi tạo kết nối Supabase Realtime:', err);
+      }
     }
 
     return () => {
       isMounted = false;
       if (client && channel) {
-        client.removeChannel(channel);
+        try {
+          client.removeChannel(channel);
+        } catch (_) {}
       }
     };
   }, [refreshData]);
@@ -252,6 +268,35 @@ export default function App() {
             <span className="hidden sm:inline">Thoát</span>
           </button>
         </div>
+
+        {/* Connection Failure Alert Banner */}
+        {cloudConnectionError && (
+          <div className="bg-rose-600 text-white px-4 py-3 shadow-md flex items-center justify-between gap-3 text-xs font-bold z-20">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="w-5 h-5 text-yellow-300 shrink-0 animate-bounce" />
+              <span>{cloudConnectionError}</span>
+            </div>
+            <button
+              onClick={() => {
+                setIsLoadingCloud(true);
+                storageService.fetchInitialDataFromCloud()
+                  .then(({ parts: p, transactions: t }) => {
+                    setParts(p);
+                    setTransactions(t);
+                    setCloudConnectionError(null);
+                  })
+                  .catch((err) => {
+                    setCloudConnectionError('⚠️ Vẫn chưa thể kết nối Supabase Cloud: ' + (err?.message || 'Lỗi mạng'));
+                  })
+                  .finally(() => setIsLoadingCloud(false));
+              }}
+              className="bg-white text-rose-900 px-3 py-1.5 rounded-lg hover:bg-rose-100 font-extrabold shrink-0 shadow-2xs cursor-pointer flex items-center space-x-1.5 transition-all"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Thử Kết Nối Lại</span>
+            </button>
+          </div>
+        )}
 
         {/* View Router Body */}
         <main className="flex-1 pb-12 p-4 sm:p-6 max-w-7xl mx-auto w-full">

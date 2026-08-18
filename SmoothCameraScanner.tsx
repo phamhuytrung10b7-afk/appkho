@@ -93,13 +93,19 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       if (devices && devices.length > 0) {
         setCameras(devices.map((d, i) => ({ id: d.id, label: d.label || `Camera ${i + 1}` })));
         if (!activeCamId) {
-          const back = devices.find((d) => {
+          // Smart selection: Filter for back/rear main camera, avoid 0.5x ultra-wide or macro
+          const backCams = devices.filter((d) => {
             const l = d.label.toLowerCase();
-            return (l.includes('back') || l.includes('rear') || l.includes('sau') || l.includes('environment')) &&
-              !l.includes('wide') && !l.includes('0.5');
-          }) || devices[devices.length - 1];
-          activeCamId = back.id;
-          setSelectedCameraId(back.id);
+            return l.includes('back') || l.includes('rear') || l.includes('sau') || l.includes('environment') || l.includes('0');
+          });
+
+          const mainBackCam = backCams.find((d) => {
+            const l = d.label.toLowerCase();
+            return !l.includes('wide') && !l.includes('ultra') && !l.includes('0.5') && !l.includes('macro') && !l.includes('telephoto');
+          }) || backCams[0] || devices[devices.length - 1];
+
+          activeCamId = mainBackCam.id;
+          setSelectedCameraId(mainBackCam.id);
         }
       }
 
@@ -108,7 +114,7 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 
       const onScanSuccessCallback = (decodedText: string) => {
         const now = Date.now();
-        if (now - lastScanTimeRef.current < 1200) {
+        if (now - lastScanTimeRef.current < 500) {
           return; // Throttle repeat scans
         }
         lastScanTimeRef.current = now;
@@ -118,13 +124,35 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 
         setLastScannedCode(decodedText);
         setShowSuccessBadge(true);
-        setTimeout(() => setShowSuccessBadge(false), 2000);
 
+        // 1. Synchronously stop camera media tracks IMMEDIATELY so camera shuts down instantly on mobile
+        if (html5QrCodeRef.current) {
+          try {
+            const stream = (html5QrCodeRef.current as any).mediaStream as MediaStream;
+            if (stream) {
+              stream.getTracks().forEach((track) => {
+                try { track.stop(); } catch (e) {}
+              });
+            }
+            if (html5QrCodeRef.current.isScanning) {
+              html5QrCodeRef.current.stop().catch(() => {});
+            }
+            html5QrCodeRef.current.clear();
+          } catch (e) {
+            console.warn('Instant stop camera stream error:', e);
+          }
+          html5QrCodeRef.current = null;
+        }
+
+        setIsCameraActive(false);
+        setIsTorchOn(false);
+
+        // 2. Trigger scan success callback which opens modal immediately
         onScanSuccess(decodedText);
 
-        if (autoCloseOnScan) {
-          stopCamera();
-          if (onClose) onClose();
+        // 3. Auto close container if required
+        if (autoCloseOnScan && onClose) {
+          onClose();
         }
       };
 
@@ -133,11 +161,11 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
         qrbox: (w: number, h: number) => {
           const minEdge = Math.min(w, h);
           return {
-            width: Math.max(Math.floor(minEdge * 0.85), 220),
-            height: Math.max(Math.floor(minEdge * 0.70), 180),
+            width: Math.max(Math.floor(minEdge * 0.88), 240),
+            height: Math.max(Math.floor(minEdge * 0.75), 200),
           };
         },
-        aspectRatio: 1.0,
+        aspectRatio: 1.333333,
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
         formatsToSupport: [
           Html5QrcodeSupportedFormats.QR_CODE,

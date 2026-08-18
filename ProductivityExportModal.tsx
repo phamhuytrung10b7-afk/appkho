@@ -61,15 +61,19 @@ export const ProductivityExportModal: React.FC<ProductivityExportModalProps> = (
     }));
   };
 
-  const handleSaveConfigOnly = () => {
-    storageService.saveProductivityPersonnelConfig(config);
-    setSavedSuccessMessage('Đã lưu cấu hình phân bổ nhân sự! Hệ thống sẽ gợi ý thông số này cho các lần xuất sau.');
-    setTimeout(() => setSavedSuccessMessage(null), 3000);
+  const handleSaveConfigOnly = async () => {
+    const res = await storageService.saveProductivityPersonnelConfig(config);
+    if (res.cloudSynced) {
+      setSavedSuccessMessage('✅ Đã đồng bộ cấu hình phân bổ nhân sự lên Supabase Cloud thành công!');
+    } else {
+      setSavedSuccessMessage(res.message || '⚠️ Đã lưu tại máy nhưng chưa thể đẩy lên Supabase Cloud!');
+    }
+    setTimeout(() => setSavedSuccessMessage(null), 4000);
   };
 
-  const handleExecuteExportExcel = () => {
-    // Save settings for future sessions
-    storageService.saveProductivityPersonnelConfig(config);
+  const handleExecuteExportExcel = async () => {
+    // Save settings for future sessions directly to Supabase Cloud
+    await storageService.saveProductivityPersonnelConfig(config);
 
     // Fetch conversion factors
     const factors = storageService.getConversionFactors();
