@@ -159,105 +159,31 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     const rawClean = payloadStr.trim();
     if (!rawClean) return;
 
-    const masterTags = storageService.getMasterContainerTags();
+    // STRICT VALIDATION: Only accept codes from Master Data (539 Tags) or Custom Generated Tags
+    const validation = storageService.findAndValidateContainerTag(rawClean);
+
+    if (!validation.isValid || !validation.matchedTag) {
+      setAndonErrorModal({
+        isOpen: true,
+        title: 'MÃ THẺ THÙNG KHÔNG HỢP LỆ',
+        message: validation.errorReason || `⛔ Mã QR "${rawClean}" KHÔNG TỒN TẠI trong Danh Sách Thẻ Thùng Master Data (539 Thẻ) hoặc Thẻ Thùng Phát Sinh! Hệ thống chỉ chấp nhận mã QR Thẻ Thùng hợp lệ đã được quản lý.`,
+      });
+      return;
+    }
+
+    const matchedTag = validation.matchedTag;
     const allPartsList = storageService.getParts();
     const kittingQueue = storageService.getKittingQueue();
     const pendingKittingItems = kittingQueue.filter((k) => k.status === 'PENDING_KITTING');
 
-    let matchedPart: Part | undefined = undefined;
-    let matchedPending: KittingQueueItem | undefined = undefined;
-    let matchedMaster: MasterKittingTag | undefined = undefined;
-    let extractedQty: number | undefined = undefined;
+    const matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === matchedTag.partCode.trim().toLowerCase());
 
-    // 1. Check exact match in Master Container Tags by qrPayload, id, or partCode
-    matchedMaster = masterTags.find(
-      (m) =>
-        (m.qrPayload && m.qrPayload.trim().toLowerCase() === rawClean.toLowerCase()) ||
-        (m.id && m.id.trim().toLowerCase() === rawClean.toLowerCase()) ||
-        (m.partCode && m.partCode.trim().toLowerCase() === rawClean.toLowerCase())
-    );
-
-    if (matchedMaster) {
-      matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === matchedMaster?.partCode.trim().toLowerCase());
-    }
-
-    // 2. Parse JSON payload if available
-    if (!matchedMaster && rawClean.startsWith('{') && rawClean.endsWith('}')) {
-      try {
-        const obj = JSON.parse(rawClean);
-        const code = obj.partCode || obj.code || obj.part_code || obj.maLK;
-        if (code) {
-          matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === String(code).trim().toLowerCase());
-        }
-        if (obj.qty || obj.quantity || obj.sl) {
-          extractedQty = parseFloat(obj.qty || obj.quantity || obj.sl);
-        }
-      } catch (e) {}
-    }
-
-    // 3. Search for existing part code as a substring inside rawClean
-    if (!matchedPart) {
-      const sortedParts = [...allPartsList].sort((a, b) => b.code.length - a.code.length);
-      matchedPart = sortedParts.find((p) => {
-        const code = p.code.trim().toLowerCase();
-        if (!code) return false;
-        const cleanLower = rawClean.toLowerCase();
-        return (
-          cleanLower === code ||
-          (p.id && p.id.toLowerCase() === cleanLower) ||
-          (p.qrCode && p.qrCode.toLowerCase() === cleanLower) ||
-          (p.barcode && p.barcode.toLowerCase() === cleanLower) ||
-          cleanLower.includes(code)
-        );
-      });
-    }
-
-    // 4. Check pending kitting items by substring match
-    if (!matchedPart) {
-      const sortedPending = [...pendingKittingItems].sort((a, b) => b.partCode.length - a.partCode.length);
-      matchedPending = sortedPending.find((k) => {
-        const code = k.partCode.trim().toLowerCase();
-        return code && rawClean.toLowerCase().includes(code);
-      });
-    }
-
-    // 5. Try regex pattern match for standard part codes e.g. 04-20-00-5AAB0113K-0000
-    let extractedCodeStr = '';
-    if (!matchedPart && !matchedPending && !matchedMaster) {
-      const codeRegex = /\b\d{2}-\d{2}-\d{2}-[A-Za-z0-9-]+\b/i;
-      const match = rawClean.match(codeRegex);
-      if (match) {
-        extractedCodeStr = match[0];
-        matchedPart = allPartsList.find((p) => p.code.trim().toLowerCase() === extractedCodeStr.toLowerCase());
-      }
-    }
-
-    let targetPartCode = '';
-    let targetPartName = '';
-    let targetUnit = 'Cái';
-    let targetQty = 10;
-
-    if (matchedPart) {
-      targetPartCode = matchedPart.code;
-      targetPartName = matchedPart.name || matchedPart.code;
-      targetUnit = matchedPart.unit || 'Cái';
-      targetQty = extractedQty || 10;
-    } else if (matchedMaster) {
-      targetPartCode = matchedMaster.partCode;
-      targetPartName = matchedMaster.partName || matchedMaster.partCode;
-      targetUnit = matchedMaster.unit || 'Cái';
-      targetQty = extractedQty || matchedMaster.standardQty || 10;
-    } else if (matchedPending) {
-      targetPartCode = matchedPending.partCode;
-      targetPartName = matchedPending.partName || matchedPending.partCode;
-      targetUnit = matchedPending.unit || 'Cái';
-      targetQty = extractedQty || matchedPending.rawQuantity || 10;
-    } else {
-      targetPartCode = extractedCodeStr || rawClean.split('|')[0].split('\n')[0].replace(/[^A-Za-z0-9-]/g, '').trim() || rawClean;
-      targetPartName = `Linh kiện ${targetPartCode}`;
-      targetUnit = 'Cái';
-      targetQty = extractedQty || 10;
-    }
+    const targetPartCode = matchedTag.partCode;
+    const targetPartName = matchedTag.partName || (matchedPart ? matchedPart.name : matchedTag.partCode);
+    const targetUnit = matchedTag.unit || (matchedPart ? matchedPart.unit : 'Cái');
+    const targetQty = validation.extractedQty !== undefined && validation.extractedQty > 0
+      ? validation.extractedQty
+      : (matchedTag.standardQty && matchedTag.standardQty > 0 ? matchedTag.standardQty : 10);
 
     const bufferEntry = bufferPartsMap.get(targetPartCode.trim());
     const pendingItemsForCode = pendingKittingItems.filter((k) => k.partCode.trim().toLowerCase() === targetPartCode.trim().toLowerCase());

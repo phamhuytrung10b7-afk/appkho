@@ -199,82 +199,31 @@ export const KittingView: React.FC<KittingViewProps> = ({
     setIsAutoKittingModalOpen(true);
   };
 
-  // Parse Raw QR Code payload [Mã_Linh_Kiện]|[Số_Lượng_Định_Mức]|[Mã_Nhóm]
+  // Parse Raw QR Code payload strictly matching Master Data or Custom Generated Container Tags
   const handleParseQrPayload = (payloadStr: string) => {
     if (!payloadStr) return;
     const cleanStr = payloadStr.trim();
+    if (!cleanStr) return;
 
-    // Look up in Master Tags list first
-    const matchedMaster = masterTags.find(
-      (m) =>
-        (m.qrPayload && m.qrPayload.trim().toLowerCase() === cleanStr.toLowerCase()) ||
-        (m.partCode && m.partCode.trim().toLowerCase() === cleanStr.toLowerCase())
-    );
+    const validation = storageService.findAndValidateContainerTag(cleanStr);
 
-    if (matchedMaster) {
-      handleProcessTagSelection(matchedMaster);
+    if (!validation.isValid || !validation.matchedTag) {
+      setResultModal({
+        isOpen: true,
+        isSuccess: false,
+        title: 'MÃ THẺ THÙNG KHÔNG HỢP LỆ',
+        message: validation.errorReason || `⛔ Mã QR "${cleanStr}" KHÔNG TỒN TẠI trong Danh Sách Thẻ Thùng Master Data (539 Thẻ) hoặc Thẻ Thùng Phát Sinh! Hệ thống chỉ chấp nhận các mã Thẻ Thùng hợp lệ đã được khai báo.`,
+      });
       return;
     }
 
-    // Otherwise parse pipe format e.g. "02-33-07-SHB3336-0000|100|DIEN" or "CONT_IN|LK01|100|..."
-    if (cleanStr.includes('|')) {
-      const parts = cleanStr.split('|');
-      let pCode = parts[0] || '';
-      let pQty = parts[1] && !isNaN(parseFloat(parts[1])) ? parseFloat(parts[1]) : 0;
-      let pGroup = parts[2] || '';
+    // Found valid Master Tag or Custom Tag
+    const tagToProcess: MasterKittingTag = {
+      ...validation.matchedTag,
+      standardQty: validation.extractedQty !== undefined ? validation.extractedQty : validation.matchedTag.standardQty,
+    };
 
-      if (cleanStr.startsWith('CONT_IN|')) {
-        pCode = parts[1] || 'LK-NEW';
-        pQty = parts[2] && !isNaN(parseFloat(parts[2])) ? parseFloat(parts[2]) : 0;
-        pGroup = parts[6] || 'DIEN';
-      }
-
-      const grpConfig = getPartGroupConfig(pGroup);
-
-      const dynamicTag: MasterKittingTag = {
-        id: `dyn-${Date.now()}`,
-        stt: 'Số Quét',
-        partCode: pCode,
-        partName: `Linh kiện ${pCode}`,
-        standardQty: pQty,
-        unit: 'cái/bộ',
-        groupName: grpConfig.name,
-        ccdcSpec: '',
-        groupConfig: grpConfig,
-        qrPayload: cleanStr,
-      };
-
-      handleProcessTagSelection(dynamicTag);
-    } else {
-      // Simple code search in system parts
-      const systemParts = storageService.getParts();
-      const matchedPart = systemParts.find(
-        (p) => p.code.trim().toLowerCase() === cleanStr.toLowerCase()
-      );
-
-      if (matchedPart) {
-        const grpConfig = getPartGroupConfig(matchedPart.description || matchedPart.name);
-        const dynamicTag: MasterKittingTag = {
-          id: `dyn-${Date.now()}`,
-          stt: 'Số Quét',
-          partCode: matchedPart.code,
-          partName: matchedPart.name,
-          standardQty: 0,
-          unit: matchedPart.unit || 'Cái',
-          groupName: grpConfig.name,
-          ccdcSpec: matchedPart.location || '',
-          groupConfig: grpConfig,
-          qrPayload: `${matchedPart.code}||${grpConfig.id}`,
-        };
-        handleProcessTagSelection(dynamicTag);
-      } else {
-        setPartCode(cleanStr);
-        setPartName(`Linh kiện ${cleanStr}`);
-        setStandardQty(0);
-        setActualQty(0);
-        setIsAutoKittingModalOpen(true);
-      }
-    }
+    handleProcessTagSelection(tagToProcess);
   };
 
   const handleOpenQueueKittingModal = (item: KittingQueueItem) => {

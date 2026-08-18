@@ -2258,6 +2258,161 @@ export const storageService = {
     return SAMPLE_MASTER_TAGS;
   },
 
+  /**
+   * Validate and find Container Tag from Master Data (539 Tags) or Custom Generated Tags
+   * Strict validation: Only returns valid if the scanned code or partCode is in Master Data or Custom Tags
+   */
+  findAndValidateContainerTag(rawInput: string): {
+    isValid: boolean;
+    matchedTag?: MasterKittingTag;
+    source?: 'MASTER_DATA' | 'CUSTOM_GENERATED';
+    extractedPartCode?: string;
+    extractedQty?: number;
+    errorReason?: string;
+  } {
+    if (!rawInput || !rawInput.trim()) {
+      return {
+        isValid: false,
+        errorReason: 'Chuỗi quét rỗng hoặc không có dữ liệu!',
+      };
+    }
+
+    const rawClean = rawInput.trim();
+    const rawCleanLower = rawClean.toLowerCase();
+
+    const masterTags = this.getMasterContainerTags();
+    const customTags = this.getCustomGeneratedContainerTags();
+
+    // 1. Direct match with qrPayload, id, or partCode
+    // Master tags first
+    let foundMaster = masterTags.find(
+      (m) =>
+        (m.qrPayload && m.qrPayload.trim().toLowerCase() === rawCleanLower) ||
+        (m.id && m.id.trim().toLowerCase() === rawCleanLower) ||
+        (m.partCode && m.partCode.trim().toLowerCase() === rawCleanLower)
+    );
+    if (foundMaster) {
+      return {
+        isValid: true,
+        matchedTag: foundMaster,
+        source: 'MASTER_DATA',
+        extractedPartCode: foundMaster.partCode,
+        extractedQty: foundMaster.standardQty,
+      };
+    }
+
+    // Custom tags
+    let foundCustom = customTags.find(
+      (c) =>
+        (c.qrPayload && c.qrPayload.trim().toLowerCase() === rawCleanLower) ||
+        (c.id && c.id.trim().toLowerCase() === rawCleanLower) ||
+        (c.partCode && c.partCode.trim().toLowerCase() === rawCleanLower)
+    );
+    if (foundCustom) {
+      return {
+        isValid: true,
+        matchedTag: foundCustom,
+        source: 'CUSTOM_GENERATED',
+        extractedPartCode: foundCustom.partCode,
+        extractedQty: foundCustom.standardQty,
+      };
+    }
+
+    // 2. Parse Pipe format: e.g. "04-29-05-SHA76210KL-0001||CAO_SU" or "04-29-05-SHA76210KL-0001|100|CAO_SU" or "CONT_IN|04-29-05-SHA76210KL-0001|..."
+    let parsedCode = '';
+    let parsedQty: number | undefined = undefined;
+
+    if (rawClean.includes('|')) {
+      const parts = rawClean.split('|').map((s) => s.trim()).filter(Boolean);
+      if (rawClean.startsWith('CONT_IN|') && parts.length > 1) {
+        parsedCode = parts[1];
+        if (parts[2] && !isNaN(parseFloat(parts[2]))) parsedQty = parseFloat(parts[2]);
+      } else if (parts.length > 0) {
+        parsedCode = parts[0];
+        if (parts.length > 1 && !isNaN(parseFloat(parts[1]))) parsedQty = parseFloat(parts[1]);
+      }
+    }
+
+    // 3. Parse JSON format
+    if (!parsedCode && rawClean.startsWith('{') && rawClean.endsWith('}')) {
+      try {
+        const obj = JSON.parse(rawClean);
+        parsedCode = String(obj.partCode || obj.code || obj.part_code || obj.maLK || '').trim();
+        if (obj.qty || obj.quantity || obj.sl) {
+          parsedQty = parseFloat(obj.qty || obj.quantity || obj.sl);
+        }
+      } catch {}
+    }
+
+    // 4. Parse standard code format via regex e.g. 04-29-05-SHA76210KL-0001
+    if (!parsedCode) {
+      const codeRegex = /\b\d{2}-\d{2}-\d{2}-[A-Za-z0-9-]+\b/i;
+      const match = rawClean.match(codeRegex);
+      if (match) {
+        parsedCode = match[0].trim();
+      }
+    }
+
+    // If parsedCode is found, verify if this code exists in Master Tags or Custom Tags
+    if (parsedCode) {
+      const codeLower = parsedCode.toLowerCase();
+      const mMatch = masterTags.find(
+        (m) =>
+          m.partCode.trim().toLowerCase() === codeLower ||
+          (m.qrPayload && m.qrPayload.trim().toLowerCase().includes(codeLower))
+      );
+      if (mMatch) {
+        return {
+          isValid: true,
+          matchedTag: mMatch,
+          source: 'MASTER_DATA',
+          extractedPartCode: mMatch.partCode,
+          extractedQty: parsedQty !== undefined ? parsedQty : mMatch.standardQty,
+        };
+      }
+
+      const cMatch = customTags.find(
+        (c) =>
+          c.partCode.trim().toLowerCase() === codeLower ||
+          (c.qrPayload && c.qrPayload.trim().toLowerCase().includes(codeLower))
+      );
+      if (cMatch) {
+        return {
+          isValid: true,
+          matchedTag: cMatch,
+          source: 'CUSTOM_GENERATED',
+          extractedPartCode: cMatch.partCode,
+          extractedQty: parsedQty !== undefined ? parsedQty : cMatch.standardQty,
+        };
+      }
+    }
+
+    // 5. Check if any known tag's partCode is contained within the scanned string
+    const allKnown = [
+      ...masterTags.map((t) => ({ tag: t, source: 'MASTER_DATA' as const })),
+      ...customTags.map((t) => ({ tag: t, source: 'CUSTOM_GENERATED' as const })),
+    ].sort((a, b) => b.tag.partCode.length - a.tag.partCode.length);
+
+    for (const item of allKnown) {
+      const pCodeLower = item.tag.partCode.trim().toLowerCase();
+      if (pCodeLower && rawCleanLower.includes(pCodeLower)) {
+        return {
+          isValid: true,
+          matchedTag: item.tag,
+          source: item.source,
+          extractedPartCode: item.tag.partCode,
+          extractedQty: parsedQty !== undefined ? parsedQty : item.tag.standardQty,
+        };
+      }
+    }
+
+    // NOT FOUND: STRICT REJECTION
+    return {
+      isValid: false,
+      errorReason: `Mã "${rawClean.length > 35 ? rawClean.substring(0, 35) + '...' : rawClean}" KHÔNG TỒN TẠI trong Danh Sách Thẻ Thùng Master Data (${masterTags.length} Thẻ) hoặc Thẻ Thùng Phát Sinh! Hệ thống chỉ chấp nhận mã Thẻ Thùng hợp lệ.`,
+    };
+  },
+
   // --- CONVERSION FACTORS (HỆ SỐ QUY ĐỔI) ---
   getConversionFactors(): ConversionFactor[] {
     const raw = localStorage.getItem(CONVERSION_FACTORS_KEY);
