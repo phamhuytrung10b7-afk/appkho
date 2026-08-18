@@ -1,9 +1,23 @@
 import { getActiveSupabaseClient } from './supabase';
-import { Part, Transaction, StockCheckRecord, AppSettings, ContainerBatch, ModelBOM, KittingQueueItem, BufferLocationMap, MaterialCallRequest, BomExportVoucher, ConversionFactor, KittingScanLog, ProductivityPersonnelConfig } from './types';
+import {
+  Part,
+  Transaction,
+  StockCheckRecord,
+  AppSettings,
+  ContainerBatch,
+  ModelBOM,
+  KittingQueueItem,
+  BufferLocationMap,
+  MaterialCallRequest,
+  BomExportVoucher,
+  ConversionFactor,
+  KittingScanLog,
+  ProductivityPersonnelConfig,
+} from './types';
 import { MasterKittingTag } from './masterExcelParser';
 import { CustomGeneratedContainerTag } from './storage';
 
-// Keys for App Data store
+// Keys for App Data store in Supabase Key-Value table `thekho_app_data`
 export const STORAGE_KEYS = {
   PARTS: 'thekho_parts_v1',
   TRANSACTIONS: 'thekho_transactions_v1',
@@ -24,6 +38,17 @@ export const STORAGE_KEYS = {
   DAILY_REPORTS: 'thekho_daily_reports_v1',
   CUSTOM_GENERATED_CONTAINER_TAGS: 'thekho_custom_generated_container_tags_v1',
   USERS: 'thekho_users_v1',
+};
+
+// Local storage cache timestamp prefix
+const CACHE_TS_PREFIX = '_thekho_cache_ts_';
+
+// Egress bandwidth savings tracker (for diagnostics & verification)
+export const egressStats = {
+  cacheHits: 0,
+  cacheMisses: 0,
+  estimatedBytesSaved: 0,
+  estimatedBytesDownloaded: 0,
 };
 
 // Data mapper for Part -> Supabase Row matching exact column names
@@ -121,48 +146,197 @@ export function mapSupabaseRowToTransaction(row: any): Transaction {
 }
 
 function logSupabaseError(context: string, error: any) {
-  const errMsg = typeof error === 'object' && error !== null
-    ? (error.message || error.details || JSON.stringify(error))
-    : String(error);
+  const errMsg =
+    typeof error === 'object' && error !== null
+      ? error.message || error.details || JSON.stringify(error)
+      : String(error);
   console.warn(`[Supabase Connection Warning] ${context}:`, errMsg);
 }
 
-// Generic Supabase CRUD for Key-Value Table (`thekho_app_data`)
+// Helper for localStorage cached data
+function getLocalCacheData<T>(key: string): { data: T | null; timestamp: string | null } {
+  try {
+    const ts = localStorage.getItem(`${CACHE_TS_PREFIX}${key}`);
+    const rawData = localStorage.getItem(key);
+    if (rawData) {
+      return { data: JSON.parse(rawData) as T, timestamp: ts };
+    }
+    return { data: null, timestamp: ts };
+  } catch {
+    return { data: null, timestamp: null };
+  }
+}
+
+function setLocalCacheData<T>(key: string, data: T, timestamp: string): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+    localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, timestamp);
+  } catch (err) {
+    console.warn(`[Cache Warning] Failed to write localStorage for key ${key}:`, err);
+  }
+}
+
+function removeLocalCacheData(key: string): void {
+  try {
+    localStorage.removeItem(key);
+    localStorage.removeItem(`${CACHE_TS_PREFIX}${key}`);
+  } catch (_) {}
+}
+
+/**
+ * Smart Local Caching Key-Value Store for Supabase `thekho_app_data` table.
+ * Dramatically reduces Egress by checking ~50 byte `updated_at` before downloading large JSONB payloads.
+ */
 export const supabaseKeyStore = {
-  // SELECT
-  async get<T>(key: string): Promise<T | null> {
+  /**
+   * Smart GET with updated_at timestamp comparison.
+   * If updated_at on Supabase matches local cache timestamp, returns local cache with 0 JSONB Egress.
+   */
+  async get<T>(key: string, options?: { forceFresh?: boolean }): Promise<T | null> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return null;
+      const localCache = getLocalCacheData<T>(key);
 
+      // If Supabase is not configured or offline, return local cache immediately
+      if (!isConfigured || !client) {
+        return localCache.data;
+      }
+
+      // 1. SMART CHECK: If we have valid local cache and forceFresh is false, check ONLY `updated_at` (~50 Bytes)
+      if (localCache.data !== null && localCache.timestamp && !options?.forceFresh) {
+        const { data: metaData, error: metaErr } = await client
+          .from('thekho_app_data')
+          .select('updated_at')
+          .eq('key', key)
+          .maybeSingle();
+
+        if (!metaErr && metaData?.updated_at) {
+          const serverUpdatedAt = String(metaData.updated_at);
+          if (serverUpdatedAt === localCache.timestamp) {
+            // CACHE HIT! The payload on cloud has NOT changed.
+            egressStats.cacheHits++;
+            const estimatedSaved = JSON.stringify(localCache.data).length;
+            egressStats.estimatedBytesSaved += estimatedSaved;
+            // console.log(`⚡ [Egress Saver] Cache Hit for "${key}"! Saved ~${(estimatedSaved / 1024).toFixed(1)} KB.`);
+            return localCache.data;
+          }
+        }
+      }
+
+      // 2. CACHE MISS or CHANGED: Fetch full payload `data, updated_at`
+      egressStats.cacheMisses++;
       const { data, error } = await client
         .from('thekho_app_data')
-        .select('data')
+        .select('data, updated_at')
         .eq('key', key)
         .maybeSingle();
 
       if (error) {
         logSupabaseError(`KeyStore.get(${key})`, error);
-        return null;
+        return localCache.data; // Fallback to local cache on error
       }
 
-      return data ? (data.data as T) : null;
+      if (!data) {
+        return localCache.data;
+      }
+
+      const fetchedData = data.data as T;
+      const updatedTimestamp = data.updated_at || new Date().toISOString();
+      const downloadedBytes = JSON.stringify(data).length;
+      egressStats.estimatedBytesDownloaded += downloadedBytes;
+
+      // Update local storage and timestamp
+      setLocalCacheData(key, fetchedData, updatedTimestamp);
+      return fetchedData;
     } catch (err) {
       logSupabaseError(`KeyStore.get(${key}) catch`, err);
-      return null;
+      const localCache = getLocalCacheData<T>(key);
+      return localCache.data;
     }
   },
 
-  // UPSERT (INSERT or UPDATE)
-  async set<T>(key: string, value: T): Promise<boolean> {
+  /**
+   * Batch Smart Sync: Checks timestamps for multiple keys in a single lightweight query (~200 Bytes),
+   * and only downloads the specific keys that have actually changed on Cloud!
+   */
+  async batchSyncAllKeys(keys: string[]): Promise<{ updatedCount: number; cachedCount: number }> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client || keys.length === 0) {
+        return { updatedCount: 0, cachedCount: 0 };
+      }
 
+      // 1. Single lightweight query to get all updated_at for specified keys (~200 - 400 Bytes)
+      const { data: metaList, error } = await client
+        .from('thekho_app_data')
+        .select('key, updated_at')
+        .in('key', keys);
+
+      if (error || !metaList) {
+        logSupabaseError('batchSyncAllKeys meta query', error);
+        return { updatedCount: 0, cachedCount: 0 };
+      }
+
+      const changedKeys: string[] = [];
+      let cachedCount = 0;
+
+      for (const row of metaList) {
+        const key = row.key;
+        const serverTs = String(row.updated_at || '');
+        const local = getLocalCacheData(key);
+
+        if (local.data !== null && local.timestamp === serverTs) {
+          cachedCount++;
+          egressStats.cacheHits++;
+          egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;
+        } else {
+          changedKeys.push(key);
+        }
+      }
+
+      // 2. Fetch data ONLY for changed or missing keys
+      let updatedCount = 0;
+      if (changedKeys.length > 0) {
+        const { data: fullDataList, error: dataErr } = await client
+          .from('thekho_app_data')
+          .select('key, data, updated_at')
+          .in('key', changedKeys);
+
+        if (!dataErr && fullDataList) {
+          for (const row of fullDataList) {
+            setLocalCacheData(row.key, row.data, row.updated_at || new Date().toISOString());
+            updatedCount++;
+            egressStats.cacheMisses++;
+            egressStats.estimatedBytesDownloaded += JSON.stringify(row).length;
+          }
+        }
+      }
+
+      return { updatedCount, cachedCount };
+    } catch (err) {
+      logSupabaseError('batchSyncAllKeys catch', err);
+      return { updatedCount: 0, cachedCount: 0 };
+    }
+  },
+
+  /**
+   * UPSERT: Ghi đè đồng thời cả Supabase Cloud và localStorage
+   */
+  async set<T>(key: string, value: T): Promise<boolean> {
+    const nowIso = new Date().toISOString();
+
+    // 1. Update localStorage immediately with latest timestamp
+    setLocalCacheData(key, value, nowIso);
+
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return true;
+
+      // 2. Upsert to Supabase Cloud
       const { error } = await client
         .from('thekho_app_data')
         .upsert(
-          { key, data: value, updated_at: new Date().toISOString() },
+          { key, data: value, updated_at: nowIso },
           { onConflict: 'key' }
         );
 
@@ -178,11 +352,15 @@ export const supabaseKeyStore = {
     }
   },
 
-  // DELETE
+  /**
+   * DELETE: Xóa đồng thời cả Supabase Cloud và localStorage
+   */
   async delete(key: string): Promise<boolean> {
+    removeLocalCacheData(key);
+
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return true;
 
       const { error } = await client
         .from('thekho_app_data')
@@ -200,16 +378,46 @@ export const supabaseKeyStore = {
       return false;
     }
   },
+
+  /**
+   * Update cache when a Realtime broadcast arrives with the new row payload
+   */
+  handleRealtimePayload(key: string, data: any, updatedAt: string): void {
+    if (!key) return;
+    setLocalCacheData(key, data, updatedAt || new Date().toISOString());
+  },
 };
 
-// Direct Relational Table CRUD for Supabase
+/**
+ * Direct Relational Table CRUD for Supabase with Pagination, Limits & Column Select Optimization.
+ */
 export const supabaseRelationalStore = {
   // --- PARTS CRUD ---
-  async selectParts(): Promise<Part[] | null> {
+  /**
+   * Selects parts with specific columns and pagination to save Egress.
+   */
+  async selectParts(options?: { limit?: number; offset?: number; search?: string }): Promise<Part[] | null> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return null;
-      const { data, error } = await client.from('parts').select('*').order('created_at', { ascending: false });
+      if (!isConfigured || !client) return null;
+
+      const limit = options?.limit ?? 500;
+      let query = client
+        .from('parts')
+        .select('id, code, name, group_name, unit, current_stock, min_stock, max_stock, location, locations, unit_price, supplier, notes, created_at, updated_at')
+        .order('created_at', { ascending: false });
+
+      if (options?.search) {
+        query = query.or(`code.ilike.%${options.search}%,name.ilike.%${options.search}%`);
+      }
+
+      if (options?.offset !== undefined) {
+        query = query.range(options.offset, options.offset + limit - 1);
+      } else {
+        query = query.limit(limit);
+      }
+
+      const { data, error } = await query;
       if (error) {
         logSupabaseError('selectParts', error);
         return null;
@@ -224,7 +432,7 @@ export const supabaseRelationalStore = {
   async insertPart(part: Part): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return false;
       const row = mapPartToSupabaseRow(part);
       const { error } = await client.from('parts').upsert(row, { onConflict: 'id' });
       if (error) {
@@ -241,7 +449,7 @@ export const supabaseRelationalStore = {
   async upsertParts(parts: Part[]): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return false;
       if (!parts || parts.length === 0) return true;
       const rows = parts.map(mapPartToSupabaseRow);
       const { error } = await client.from('parts').upsert(rows, { onConflict: 'id' });
@@ -259,7 +467,7 @@ export const supabaseRelationalStore = {
   async updatePart(id: string, updates: Partial<Part>): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return false;
       const rowUpdates: any = {};
       if (updates.code !== undefined) rowUpdates.code = String(updates.code);
       if (updates.name !== undefined) rowUpdates.name = String(updates.name);
@@ -267,10 +475,18 @@ export const supabaseRelationalStore = {
         rowUpdates.group_name = String((updates as any).groupName || (updates as any).group_name);
       }
       if (updates.unit !== undefined) rowUpdates.unit = String(updates.unit);
-      if (updates.currentStock !== undefined) rowUpdates.current_stock = typeof updates.currentStock === 'number' ? updates.currentStock : Number(updates.currentStock) || 0;
-      if (updates.minStock !== undefined) rowUpdates.min_stock = typeof updates.minStock === 'number' ? updates.minStock : Number(updates.minStock) || 0;
+      if (updates.currentStock !== undefined) {
+        rowUpdates.current_stock =
+          typeof updates.currentStock === 'number' ? updates.currentStock : Number(updates.currentStock) || 0;
+      }
+      if (updates.minStock !== undefined) {
+        rowUpdates.min_stock =
+          typeof updates.minStock === 'number' ? updates.minStock : Number(updates.minStock) || 0;
+      }
       if (updates.location !== undefined) rowUpdates.location = String(updates.location);
-      if (updates.locations !== undefined) rowUpdates.locations = Array.isArray(updates.locations) ? updates.locations : [];
+      if (updates.locations !== undefined) {
+        rowUpdates.locations = Array.isArray(updates.locations) ? updates.locations : [];
+      }
       if (updates.note !== undefined || updates.description !== undefined) {
         rowUpdates.notes = String(updates.note || updates.description || '');
       }
@@ -291,7 +507,7 @@ export const supabaseRelationalStore = {
   async deletePart(id: string): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return false;
       const { error } = await client.from('parts').delete().eq('id', id);
       if (error) {
         logSupabaseError('deletePart', error);
@@ -305,11 +521,31 @@ export const supabaseRelationalStore = {
   },
 
   // --- TRANSACTIONS CRUD ---
-  async selectTransactions(): Promise<Transaction[] | null> {
+  /**
+   * Selects transactions with strict pagination limit (default 100 recent rows) to eliminate massive egress.
+   */
+  async selectTransactions(options?: { limit?: number; offset?: number; partCode?: string }): Promise<Transaction[] | null> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return null;
-      const { data, error } = await client.from('transactions').select('*').order('date', { ascending: false });
+      if (!isConfigured || !client) return null;
+
+      const limit = options?.limit ?? 100;
+      let query = client
+        .from('transactions')
+        .select('id, part_id, part_code, part_name, unit, type, quantity, date, person, location_id, production_order, reason_or_purpose, notes, stock_before, stock_after, created_at')
+        .order('date', { ascending: false });
+
+      if (options?.partCode) {
+        query = query.eq('part_code', options.partCode);
+      }
+
+      if (options?.offset !== undefined) {
+        query = query.range(options.offset, options.offset + limit - 1);
+      } else {
+        query = query.limit(limit);
+      }
+
+      const { data, error } = await query;
       if (error) {
         logSupabaseError('selectTransactions', error);
         return null;
@@ -324,7 +560,7 @@ export const supabaseRelationalStore = {
   async insertTransaction(tx: Transaction): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return false;
       const row = mapTransactionToSupabaseRow(tx);
       const { error } = await client.from('transactions').upsert(row, { onConflict: 'id' });
       if (error) {
@@ -341,7 +577,7 @@ export const supabaseRelationalStore = {
   async upsertTransactions(txs: Transaction[]): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
+      if (!isConfigured || !client) return false;
       if (!txs || txs.length === 0) return true;
       const rows = txs.map(mapTransactionToSupabaseRow);
       const { error } = await client.from('transactions').upsert(rows, { onConflict: 'id' });
@@ -360,8 +596,13 @@ export const supabaseRelationalStore = {
   async selectSettings(): Promise<AppSettings | null> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return null;
-      const { data, error } = await client.from('settings').select('data').eq('id', 'app_settings').maybeSingle();
+      if (!isConfigured || !client) return null;
+      const { data, error } = await client
+        .from('settings')
+        .select('data, updated_at')
+        .eq('id', 'app_settings')
+        .maybeSingle();
+
       if (error || !data) {
         if (error) logSupabaseError('selectSettings', error);
         return null;
@@ -376,8 +617,13 @@ export const supabaseRelationalStore = {
   async upsertSettings(settings: AppSettings): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured) return false;
-      const { error } = await client.from('settings').upsert({ id: 'app_settings', data: settings, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+      if (!isConfigured || !client) return false;
+      const { error } = await client
+        .from('settings')
+        .upsert(
+          { id: 'app_settings', data: settings, updated_at: new Date().toISOString() },
+          { onConflict: 'id' }
+        );
       if (error) {
         logSupabaseError('upsertSettings', error);
         return false;
@@ -389,4 +635,3 @@ export const supabaseRelationalStore = {
     }
   },
 };
-

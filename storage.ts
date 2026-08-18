@@ -2570,27 +2570,50 @@ export const storageService = {
     let transactions: Transaction[] = [];
 
     try {
-      // 1. Fetch parts directly from Supabase relational table `parts`
-      const relParts = await supabaseRelationalStore.selectParts();
-      if (relParts !== null) {
-        parts = relParts;
+      // 1. Batch timestamp check for all Key-Value keys in 1 ultralight request (~200 Bytes)
+      const allKvKeys = [
+        STORAGE_KEYS.PARTS,
+        STORAGE_KEYS.TRANSACTIONS,
+        STORAGE_KEYS.SETTINGS,
+        STORAGE_KEYS.CONTAINER_BATCHES,
+        STORAGE_KEYS.MODEL_BOMS,
+        STORAGE_KEYS.KITTING_QUEUE,
+        STORAGE_KEYS.BUFFER_MAP,
+        STORAGE_KEYS.MATERIAL_CALLS,
+        STORAGE_KEYS.BOM_VOUCHERS,
+        STORAGE_KEYS.MASTER_CONTAINER_TAGS,
+        STORAGE_KEYS.CONVERSION_FACTORS,
+        STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG,
+        STORAGE_KEYS.STAFF_ALLOCATION,
+        STORAGE_KEYS.DAILY_REPORTS,
+        STORAGE_KEYS.KITTING_SCAN_LOGS,
+        STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS,
+        STORAGE_KEYS.USERS,
+      ];
+
+      await supabaseKeyStore.batchSyncAllKeys(allKvKeys);
+
+      // 2. Fetch parts with smart cache check or relational query (limit 500)
+      const keyParts = await supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS);
+      if (keyParts && Array.isArray(keyParts) && keyParts.length > 0) {
+        parts = keyParts;
       } else {
-        const keyParts = await supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS);
-        if (keyParts && Array.isArray(keyParts)) {
-          parts = keyParts;
+        const relParts = await supabaseRelationalStore.selectParts({ limit: 500 });
+        if (relParts !== null && relParts.length > 0) {
+          parts = relParts;
         } else {
           parts = this.getParts();
         }
       }
 
-      // 2. Fetch transactions directly from Supabase relational table `transactions`
-      const relTxs = await supabaseRelationalStore.selectTransactions();
-      if (relTxs !== null) {
-        transactions = relTxs;
+      // 3. Fetch transactions with smart cache check or relational query (limit 100)
+      const keyTxs = await supabaseKeyStore.get<Transaction[]>(STORAGE_KEYS.TRANSACTIONS);
+      if (keyTxs && Array.isArray(keyTxs) && keyTxs.length > 0) {
+        transactions = keyTxs;
       } else {
-        const keyTxs = await supabaseKeyStore.get<Transaction[]>(STORAGE_KEYS.TRANSACTIONS);
-        if (keyTxs && Array.isArray(keyTxs)) {
-          transactions = keyTxs;
+        const relTxs = await supabaseRelationalStore.selectTransactions({ limit: 100 });
+        if (relTxs !== null && relTxs.length > 0) {
+          transactions = relTxs;
         } else {
           transactions = this.getTransactions();
         }
@@ -2600,34 +2623,10 @@ export const storageService = {
       localStorage.setItem(PARTS_KEY, JSON.stringify(parts));
       localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
 
-      // 3. Fetch Settings
+      // 4. Fetch Settings with Smart Cache
       const remoteSettings = await supabaseKeyStore.get<AppSettings>(STORAGE_KEYS.SETTINGS);
       if (remoteSettings) {
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(remoteSettings));
-      }
-
-      const keyMappings: Array<[string, string]> = [
-        [STORAGE_KEYS.CONTAINER_BATCHES, CONTAINER_BATCHES_KEY],
-        [STORAGE_KEYS.MODEL_BOMS, MODEL_BOMS_KEY],
-        [STORAGE_KEYS.KITTING_QUEUE, KITTING_QUEUE_KEY],
-        [STORAGE_KEYS.BUFFER_MAP, BUFFER_MAP_KEY],
-        [STORAGE_KEYS.MATERIAL_CALLS, MATERIAL_CALLS_KEY],
-        [STORAGE_KEYS.BOM_VOUCHERS, BOM_VOUCHERS_KEY],
-        [STORAGE_KEYS.MASTER_CONTAINER_TAGS, MASTER_CONTAINER_TAGS_KEY],
-        [STORAGE_KEYS.CONVERSION_FACTORS, CONVERSION_FACTORS_KEY],
-        [STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
-        [STORAGE_KEYS.STAFF_ALLOCATION, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
-        [STORAGE_KEYS.DAILY_REPORTS, PRODUCTIVITY_PERSONNEL_CONFIG_KEY],
-        [STORAGE_KEYS.KITTING_SCAN_LOGS, KITTING_SCAN_LOGS_KEY],
-        [STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, CUSTOM_GENERATED_CONTAINER_TAGS_KEY],
-        [STORAGE_KEYS.USERS, 'thekho_users_v1'],
-      ];
-
-      for (const [sKey, lKey] of keyMappings) {
-        const val = await supabaseKeyStore.get(sKey);
-        if (val !== null && val !== undefined) {
-          localStorage.setItem(lKey, JSON.stringify(val));
-        }
       }
     } catch (err: any) {
       console.warn('Lỗi khi tải dữ liệu từ Supabase Cloud:', err);

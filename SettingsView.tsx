@@ -3,6 +3,7 @@ import { AppSettings } from './types';
 import { storageService } from './storage';
 import { ConversionFactorManager } from './ConversionFactorManager';
 import { getSupabaseCredentials, saveSupabaseCredentials, getActiveSupabaseClient } from './supabase';
+import { egressStats } from './supabaseStorage';
 import {
   Settings,
   Building2,
@@ -28,6 +29,10 @@ import {
   Key,
   Globe,
   Code,
+  Zap,
+  ShieldCheck,
+  Activity,
+  HardDrive,
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -1105,6 +1110,96 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                 <CloudUpload className="w-4 h-4" />
                 <span>Đẩy Toàn Bộ Dữ Liệu App Lên Supabase</span>
               </button>
+            </div>
+          </div>
+
+          {/* Smart Local Cache & Egress Saver Live Monitor Card */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-950 to-blue-950 text-white p-6 rounded-2xl border border-blue-500/30 shadow-xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-blue-500/20 text-blue-400 rounded-xl border border-blue-500/30">
+                  <Zap className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <h4 className="font-extrabold text-sm text-white tracking-wide flex items-center space-x-2">
+                    <span>HỆ THỐNG SMART CACHE & GIẢM THIỂU BĂNG THÔNG EGRESS</span>
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-mono font-bold rounded-full border border-emerald-500/30">
+                      GÓI FREE TỐI ƯU
+                    </span>
+                  </h4>
+                  <p className="text-xs text-slate-400">
+                    Cơ chế kiểm tra nhẹ <code className="text-blue-300 font-mono">updated_at (~50 Bytes)</code> giúp tiết kiệm hơn 99% dung lượng Egress tải về máy trạm.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Clear cache timestamps
+                    Object.keys(localStorage).forEach((k) => {
+                      if (k.startsWith('_thekho_cache_ts_')) {
+                        localStorage.removeItem(k);
+                      }
+                    });
+                    setMessage({ type: 'success', text: 'Đã xóa toàn bộ Timestamp Cache! Lần tải tới sẽ tải fresh data từ Supabase.' });
+                  }}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer"
+                  title="Xóa cache metadata để test lại quá trình tải lại"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Xóa Timestamp Cache</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Số Lần Trúng Cache:</span>
+                </div>
+                <div className="text-xl font-black text-emerald-400 font-mono">
+                  {egressStats.cacheHits} <span className="text-xs font-normal text-slate-400">lần</span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">Dùng cache máy, không tốn Egress</div>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                  <Activity className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Số Lần Tải Mới:</span>
+                </div>
+                <div className="text-xl font-black text-blue-400 font-mono">
+                  {egressStats.cacheMisses} <span className="text-xs font-normal text-slate-400">lần</span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">Chỉ tải khi có thay đổi thực sự</div>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                  <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Ước Tính Tiết Kiệm:</span>
+                </div>
+                <div className="text-xl font-black text-emerald-400 font-mono">
+                  {(egressStats.estimatedBytesSaved / 1024).toFixed(1)} <span className="text-xs font-normal text-slate-400">KB</span>
+                </div>
+                <div className="text-[10px] text-emerald-400/80 mt-1">Băng thông Egress đã tiết kiệm</div>
+              </div>
+
+              <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                  <Zap className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Tỷ Lệ Tiết Kiệm:</span>
+                </div>
+                <div className="text-xl font-black text-sky-400 font-mono">
+                  {egressStats.cacheHits + egressStats.cacheMisses > 0
+                    ? `${((egressStats.cacheHits / (egressStats.cacheHits + egressStats.cacheMisses)) * 100).toFixed(0)}%`
+                    : '100%'}
+                </div>
+                <div className="text-[10px] text-sky-400/80 mt-1">Tỷ lệ tránh tải thừa payload</div>
+              </div>
             </div>
           </div>
 

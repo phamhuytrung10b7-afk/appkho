@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Part, Transaction, AppSettings, ViewTab, KittingQueueItem, BufferLocationMap, MaterialCallRequest, UserAccount } from './types';
 import { storageService } from './storage';
 import { getActiveSupabaseClient } from './supabase';
+import { STORAGE_KEYS, supabaseKeyStore, mapSupabaseRowToPart, mapSupabaseRowToTransaction } from './supabaseStorage';
 import { Menu, Boxes, LogOut, AlertTriangle, RefreshCw } from 'lucide-react';
 
 import { Sidebar } from './Sidebar';
@@ -124,7 +125,7 @@ export default function App() {
 
     initCloudData();
 
-    // ⚡ 100% Realtime Setup: Listening to all postgres changes on schema 'public'
+    // ⚡ 100% Realtime Setup: Listening to postgres changes on schema 'public' with Zero-Egress Row-Level updates
     const { client, isConfigured } = getActiveSupabaseClient();
     let channel: any = null;
 
@@ -135,10 +136,87 @@ export default function App() {
           .on(
             'postgres_changes',
             { event: '*', schema: 'public' },
-            (payload) => {
-              console.log('⚡ Realtime postgres change received from Supabase:', payload);
-              if (isMounted) {
-                syncCloudAndState();
+            (payload: any) => {
+              if (!isMounted) return;
+              const { table, eventType, new: newRow, old: oldRow } = payload;
+
+              // 1. Handle Key-Value Table (`thekho_app_data`)
+              if (table === 'thekho_app_data') {
+                if ((eventType === 'INSERT' || eventType === 'UPDATE') && newRow?.key) {
+                  const key = newRow.key;
+                  const data = newRow.data;
+                  const updatedAt = newRow.updated_at || new Date().toISOString();
+
+                  supabaseKeyStore.handleRealtimePayload(key, data, updatedAt);
+
+                  if (key === STORAGE_KEYS.PARTS && Array.isArray(data)) {
+                    setParts(data);
+                  } else if (key === STORAGE_KEYS.TRANSACTIONS && Array.isArray(data)) {
+                    setTransactions(data);
+                  } else if (key === STORAGE_KEYS.KITTING_QUEUE && Array.isArray(data)) {
+                    setKittingQueue(data);
+                  } else if (key === STORAGE_KEYS.BUFFER_MAP && Array.isArray(data)) {
+                    setBufferLocations(data);
+                  } else if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
+                    setMaterialCalls(data);
+                  } else if (key === STORAGE_KEYS.SETTINGS && data) {
+                    setSettings(data);
+                  } else if (key === STORAGE_KEYS.USERS) {
+                    const u = storageService.getCurrentUser();
+                    if (u) setCurrentUser(u);
+                  }
+                }
+                return;
+              }
+
+              // 2. Handle Relational `parts` Table
+              if (table === 'parts') {
+                if (eventType === 'INSERT' && newRow) {
+                  const mapped = mapSupabaseRowToPart(newRow);
+                  setParts((prev) => {
+                    const filtered = prev.filter((p) => p.id !== mapped.id && p.code !== mapped.code);
+                    const updated = [mapped, ...filtered];
+                    localStorage.setItem(STORAGE_KEYS.PARTS, JSON.stringify(updated));
+                    return updated;
+                  });
+                } else if (eventType === 'UPDATE' && newRow) {
+                  const mapped = mapSupabaseRowToPart(newRow);
+                  setParts((prev) => {
+                    const updated = prev.map((p) => (p.id === mapped.id ? mapped : p));
+                    localStorage.setItem(STORAGE_KEYS.PARTS, JSON.stringify(updated));
+                    return updated;
+                  });
+                } else if (eventType === 'DELETE' && oldRow) {
+                  setParts((prev) => {
+                    const updated = prev.filter((p) => p.id !== oldRow.id);
+                    localStorage.setItem(STORAGE_KEYS.PARTS, JSON.stringify(updated));
+                    return updated;
+                  });
+                }
+                return;
+              }
+
+              // 3. Handle Relational `transactions` Table
+              if (table === 'transactions') {
+                if (eventType === 'INSERT' && newRow) {
+                  const mappedTx = mapSupabaseRowToTransaction(newRow);
+                  setTransactions((prev) => {
+                    const filtered = prev.filter((t) => t.id !== mappedTx.id);
+                    const updated = [mappedTx, ...filtered];
+                    localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(updated));
+                    return updated;
+                  });
+                }
+                return;
+              }
+
+              // 4. Handle Relational `settings` Table
+              if (table === 'settings') {
+                if (newRow?.data) {
+                  setSettings(newRow.data);
+                  localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(newRow.data));
+                }
+                return;
               }
             }
           )
