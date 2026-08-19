@@ -728,7 +728,7 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                 Quản Lý Định Mức Model (BOM)
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Đã đồng bộ cấu trúc Excel chuẩn nhà máy: Tự động bỏ qua 5 dòng đầu, nhận diện Cột B (Item), Cột C (Description), Cột F (Quantity định mức) & Cột G (ĐVT).
+                Cấu trúc Excel 5 cột: Cột A (lvl), Cột B (Item), Cột C (Description), Cột D (Trống), Cột E (Quantity định mức). Điền tên Model rồi tải file lên.
               </p>
             </div>
             <div className="flex items-center space-x-2">
@@ -762,12 +762,12 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
             <input
               type="text"
               id="modelBOMName"
-              placeholder="Tên Model (VD: RMVSHA76639LA hoặc để trống tự nhận diện)..."
+              placeholder="Nhập Tên Model (VD: SHA76210KL, SHB9101, RMVSHA76639LA...)..."
               className="flex-1 px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-pink-700 focus:ring-2 focus:ring-pink-500 outline-hidden"
             />
             <label className="px-5 py-2.5 bg-pink-600 hover:bg-pink-700 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shrink-0 flex items-center justify-center space-x-1.5 shadow-xs">
               <Upload className="w-4 h-4" />
-              <span>Nhập Từ Excel BOM</span>
+              <span>Chọn File Excel BOM Tải Lên</span>
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv"
@@ -782,9 +782,11 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                   reader.onload = (evt) => {
                     try {
                       const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-                      const parsed = parseFactoryBOMExcel(data, manualName, file.name);
+                      const currentParts = storageService.getParts();
+                      const allowedPartCodes = currentParts.map((p) => p.code);
+                      const parsed = parseFactoryBOMExcel(data, manualName, file.name, allowedPartCodes);
 
-                      if (parsed.items.length > 0) {
+                      if (parsed.acceptedCount > 0) {
                         const bom: ModelBOM = {
                           id: 'bom-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
                           name: parsed.modelName,
@@ -792,12 +794,24 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                           createdAt: new Date().toISOString(),
                         };
                         storageService.saveModelBOM(bom);
+
+                        let successMsg = `🎉 Thành công! Đã lưu định mức Model [${parsed.modelName}] với ${parsed.acceptedCount} linh kiện hợp lệ.`;
+                        if (parsed.skippedUnmatchedCount > 0) {
+                          const sampleSkipped = parsed.unmatchedCodes.slice(0, 3).join(', ');
+                          successMsg += ` (Đã tự động bỏ qua ${parsed.skippedUnmatchedCount} linh kiện chưa có trong kho: ${sampleSkipped}${parsed.unmatchedCodes.length > 3 ? '...' : ''})`;
+                        }
+
                         setMessage({
                           type: 'success',
-                          text: `🎉 Thành công! Đã lưu định mức Model [${parsed.modelName}] với ${parsed.items.length} linh kiện (Đã bỏ qua 5 dòng đầu, lấy đúng cột Item, Description, Quantity & ĐVT).`,
+                          text: successMsg,
                         });
                         if (nameInput) nameInput.value = '';
                         onRefreshAll();
+                      } else if (parsed.skippedUnmatchedCount > 0) {
+                        setMessage({
+                          type: 'error',
+                          text: `⚠️ Model [${parsed.modelName}]: Có ${parsed.skippedUnmatchedCount} mã linh kiện trong file nhưng KHÔNG CÓ mã nào khớp với Danh mục Linh Kiện trong kho! Hệ thống chỉ nhận linh kiện đã được khai báo trong kho. Vui lòng thêm linh kiện vào kho trước.`,
+                        });
                       } else {
                         setMessage({
                           type: 'error',
@@ -1464,58 +1478,57 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
               <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl p-4 space-y-3">
                 <h4 className="font-bold text-sm text-emerald-900 flex items-center">
                   <Info className="w-4 h-4 text-emerald-600 mr-2" />
-                  Quy Tắc Đọc Dữ Liệu Excel Của Hệ Thống
+                  Quy Tắc Đọc Dữ Liệu Excel BOM (Chuẩn 5 Cột)
                 </h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                   <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
                     <div className="font-bold text-slate-800 flex items-center space-x-1">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">1</span>
-                      <span>5 Dòng Đầu (Header / Metadata):</span>
+                      <span>Cột 1 (A): <code className="font-mono text-emerald-700">lvl</code> (STT)</span>
                     </div>
                     <p className="text-slate-600 pl-6 leading-relaxed">
-                      Chứa tiêu đề phiếu, tên Model (VD: <code className="bg-slate-100 px-1 py-0.5 rounded text-pink-700 font-bold">RMVSHA76639LA</code>), KHSX, Batch quantity... Hệ thống <strong>tự động nhận diện tên Model</strong> và <strong>bỏ qua</strong> các dòng thông tin này để bắt đầu đọc từ dòng thứ 6/7.
+                      Số thứ tự cấp linh kiện hoặc thứ tự dòng (1, 2, 3...).
                     </p>
                   </div>
 
                   <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
                     <div className="font-bold text-slate-800 flex items-center space-x-1">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">2</span>
-                      <span>Cột 1 (A): <code className="font-mono text-emerald-700">lvl</code> (STT)</span>
+                      <span>Cột 2 (B): <code className="font-mono text-emerald-700">Item</code> (Mã Linh Kiện)</span>
                     </div>
                     <p className="text-slate-600 pl-6 leading-relaxed">
-                      Số thứ tự linh kiện (1, 2, 3...) - dùng để kiểm soát vị trí linh kiện trong danh mục.
+                      Mã linh kiện trong kho (VD: <code className="bg-slate-100 px-1 rounded text-slate-800 font-bold">04-29-07-SHA76210KL-0007</code>, <code className="bg-slate-100 px-1 rounded text-slate-800 font-bold">VLP-BDDHX-K19X50</code>).
                     </p>
                   </div>
 
                   <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
                     <div className="font-bold text-slate-800 flex items-center space-x-1">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">3</span>
-                      <span>Cột 2 (B) & Cột 3 (C): <code className="font-mono text-emerald-700">Item</code> & <code className="font-mono text-emerald-700">Description</code></span>
+                      <span>Cột 3 (C): <code className="font-mono text-emerald-700">Description</code> (Tên Linh Kiện)</span>
                     </div>
                     <p className="text-slate-600 pl-6 leading-relaxed">
-                      <strong>Cột B (Item):</strong> Mã linh kiện (VD: <code className="bg-slate-100 px-1 rounded text-slate-800 font-bold">04-29-07-SHA76210KL-0007</code>).<br />
-                      <strong>Cột C (Description):</strong> Tên / mô tả linh kiện (VD: <code className="text-slate-800">Adapter NS2415V3C</code>).
+                      Tên hoặc mô tả chi tiết linh kiện (VD: <code className="text-slate-800">Adapter NS2415V3C</code>).
                     </p>
                   </div>
 
                   <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
                     <div className="font-bold text-slate-800 flex items-center space-x-1">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">4</span>
-                      <span>Cột 4 (D) & Cột 5 (E): Bỏ qua</span>
+                      <span>Cột 4 (D): [Trống / Bỏ qua] & Cột 5 (E): <code className="font-mono text-emerald-700">Quantity</code></span>
                     </div>
                     <p className="text-slate-600 pl-6 leading-relaxed">
-                      Cột trống và cột Tồn kho hiện tại trong file Excel sẽ được hệ thống <strong>bỏ qua</strong>, giữ nguyên cấu trúc gốc của nhà máy mà không cần sửa file trước khi up.
+                      <strong>Cột E (Quantity):</strong> Định mức số lượng (hỗ trợ số nguyên, số thập phân <code className="bg-slate-100 px-1 rounded font-bold">1,00</code>, <code className="bg-slate-100 px-1 rounded font-bold">0,01</code>, <code className="bg-slate-100 px-1 rounded font-bold">6,00</code>...).
                     </p>
                   </div>
 
-                  <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5 md:col-span-2">
-                    <div className="font-bold text-slate-800 flex items-center space-x-1">
-                      <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">5</span>
-                      <span>Cột 6 (F): <code className="font-mono text-emerald-700">Quantity</code> & Cột 7 (G): <code className="font-mono text-emerald-700">Đơn vị tính (ĐVT)</code></span>
+                  <div className="bg-amber-50 p-3 rounded-lg border border-amber-200 space-y-1.5 md:col-span-2">
+                    <div className="font-bold text-amber-900 flex items-center space-x-1">
+                      <span className="w-5 h-5 rounded-full bg-amber-200 text-amber-900 flex items-center justify-center text-[11px]">5</span>
+                      <span>⚡ Thao Tác & Quy Tắc Kiểm Soát Dữ Liệu</span>
                     </div>
-                    <p className="text-slate-600 pl-6 leading-relaxed">
-                      <strong>Cột F (Quantity):</strong> Định mức số lượng (hỗ trợ cả dạng số nguyên, số thập phân <code className="bg-slate-100 px-1 rounded font-bold">0,01</code>, <code className="bg-slate-100 px-1 rounded font-bold">1,00</code>...).<br />
-                      <strong>Cột G (bên cạnh Quantity):</strong> Đơn vị tính của linh kiện (<code className="text-slate-800 font-bold">Cái</code>, <code className="text-slate-800 font-bold">Cuộn</code>, <code className="text-slate-800 font-bold">kg</code>, <code className="text-slate-800 font-bold">Bộ</code>, <code className="text-slate-800 font-bold">M</code>...).
+                    <p className="text-amber-800 pl-6 leading-relaxed">
+                      • <strong>Điền Tên Model:</strong> Bạn nhập tên Model vào ô nhập liệu (VD: <code className="bg-amber-100 px-1 rounded font-mono font-bold">SHA76210KL</code>, <code className="bg-amber-100 px-1 rounded font-mono font-bold">SHB9101</code>...) rồi bấm chọn file tải lên cho nhanh.<br />
+                      • <strong>Chỉ nhận linh kiện có trong kho:</strong> Hệ thống tự động đối chiếu mã Item với danh sách linh kiện trong kho, tự động lọc bỏ các mã chưa khai báo để đảm bảo dữ liệu xuất kho chính xác 100%.
                     </p>
                   </div>
                 </div>
@@ -1540,92 +1553,86 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                         <th className="p-2">B (Col 2)</th>
                         <th className="p-2">C (Col 3)</th>
                         <th className="p-2 text-slate-400">D (Col 4)</th>
-                        <th className="p-2 text-slate-400">E (Col 5)</th>
-                        <th className="p-2 text-right">F (Col 6)</th>
-                        <th className="p-2 text-center">G (Col 7)</th>
+                        <th className="p-2 text-right">E (Col 5)</th>
                       </tr>
                       <tr className="text-slate-800 font-bold border-b border-slate-300">
-                        <th className="p-2.5 text-center text-slate-500">lvl (STT)</th>
-                        <th className="p-2.5 font-mono text-pink-700">Item (Mã LK)</th>
-                        <th className="p-2.5 text-slate-800">Description (Tên LK)</th>
-                        <th className="p-2.5 text-slate-400 italic">[Bỏ qua]</th>
-                        <th className="p-2.5 text-slate-400 italic">Tồn kho [Bỏ qua]</th>
-                        <th className="p-2.5 text-right font-mono text-emerald-700">Quantity (Định mức)</th>
-                        <th className="p-2.5 text-center font-bold text-slate-700">ĐVT</th>
+                        <th className="p-2.5 text-center text-slate-500">lvl</th>
+                        <th className="p-2.5 font-mono text-pink-700">Item</th>
+                        <th className="p-2.5 text-slate-800">Description</th>
+                        <th className="p-2.5 text-slate-400 italic">[Trống]</th>
+                        <th className="p-2.5 text-right font-mono text-emerald-700">Quantity</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
                       <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">1</td>
+                        <td className="p-2 text-center text-slate-400">6</td>
                         <td className="p-2 font-bold text-pink-700">04-29-07-SHA76210KL-0007</td>
                         <td className="p-2 font-sans text-slate-700">Adapter NS2415V3C</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">1.181</td>
+                        <td className="p-2 text-slate-300"></td>
                         <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
-                        <td className="p-2 text-center font-sans">Cái</td>
-                      </tr>
-                      <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">2</td>
-                        <td className="p-2 font-bold text-pink-700">VLP-BDDHX-K19X50</td>
-                        <td className="p-2 font-sans text-slate-700">Băng dính định hình màu xanh K19x50</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">181</td>
-                        <td className="p-2 text-right font-bold text-emerald-700">0,01</td>
-                        <td className="p-2 text-center font-sans">Cuộn</td>
-                      </tr>
-                      <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">3</td>
-                        <td className="p-2 font-bold text-pink-700">VLP-BDTT-4.8</td>
-                        <td className="p-2 font-sans text-slate-700">Băng dính trong to 4.8 cm</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">182</td>
-                        <td className="p-2 text-right font-bold text-emerald-700">0,02</td>
-                        <td className="p-2 text-center font-sans">Cuộn</td>
-                      </tr>
-                      <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">4</td>
-                        <td className="p-2 font-bold text-pink-700">02-35-06-SHB9101-0005</td>
-                        <td className="p-2 font-sans text-slate-700">Băng dính xốp dưới mặt bếp 9100/9101</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">2.238</td>
-                        <td className="p-2 text-right font-bold text-emerald-700">0,10</td>
-                        <td className="p-2 text-center font-sans">Cái</td>
                       </tr>
                       <tr className="hover:bg-slate-50">
                         <td className="p-2 text-center text-slate-400">5</td>
+                        <td className="p-2 font-bold text-pink-700">VLP-BDDHX-K19X50</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính định hình màu xanh</td>
+                        <td className="p-2 text-slate-300"></td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,01</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">4</td>
+                        <td className="p-2 font-bold text-pink-700">VLP-BDTT-4.8</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính trong to 4.8 cm</td>
+                        <td className="p-2 text-slate-300"></td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,02</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">3</td>
+                        <td className="p-2 font-bold text-pink-700">02-35-06-SHB9101-0005</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính xốp dưới mặt bếp 9</td>
+                        <td className="p-2 text-slate-300"></td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,10</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">2</td>
                         <td className="p-2 font-bold text-pink-700">VLP-BDX-XANH</td>
                         <td className="p-2 font-sans text-slate-700">Băng dính xốp xanh</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">1.736</td>
+                        <td className="p-2 text-slate-300"></td>
                         <td className="p-2 text-right font-bold text-emerald-700">0,02</td>
-                        <td className="p-2 text-center font-sans">Cuộn</td>
                       </tr>
                       <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">6</td>
+                        <td className="p-2 text-center text-slate-400">1</td>
                         <td className="p-2 font-bold text-pink-700">VLP-BTQMTD-12</td>
-                        <td className="p-2 font-sans text-slate-700">Băng tan quấn máy tự động khổ 12mm</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">29</td>
+                        <td className="p-2 font-sans text-slate-700">Băng tan quấn máy tự động kl</td>
+                        <td className="p-2 text-slate-300"></td>
                         <td className="p-2 text-right font-bold text-emerald-700">0,01</td>
-                        <td className="p-2 text-center font-sans">kg</td>
                       </tr>
                       <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">7</td>
+                        <td className="p-2 text-center text-slate-400">2</td>
                         <td className="p-2 font-bold text-pink-700">04-29-07-SHA76210KL-0005</td>
                         <td className="p-2 font-sans text-slate-700">Bầu nóng 1.5L</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">748</td>
+                        <td className="p-2 text-slate-300"></td>
                         <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
-                        <td className="p-2 text-center font-sans">Bộ</td>
                       </tr>
                       <tr className="hover:bg-slate-50">
-                        <td className="p-2 text-center text-slate-400">8</td>
+                        <td className="p-2 text-center text-slate-400">3</td>
                         <td className="p-2 font-bold text-pink-700">04-28-03-BRA590N-0006</td>
                         <td className="p-2 font-sans text-slate-700">Bình áp HK TANK Model 3.2G</td>
-                        <td className="p-2 text-slate-300">-</td>
-                        <td className="p-2 text-slate-400">1.125</td>
+                        <td className="p-2 text-slate-300"></td>
                         <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
-                        <td className="p-2 text-center font-sans">Cái</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">4</td>
+                        <td className="p-2 font-bold text-pink-700">04-29-07-SHA76213CK-0008</td>
+                        <td className="p-2 font-sans text-slate-700">Block ASV25H</td>
+                        <td className="p-2 text-slate-300"></td>
+                        <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">5</td>
+                        <td className="p-2 font-bold text-pink-700">04-28-03-SHA8838K-0002</td>
+                        <td className="p-2 font-sans text-slate-700">Bọ nhựa PP 15mm</td>
+                        <td className="p-2 text-slate-300"></td>
+                        <td className="p-2 text-right font-bold text-emerald-700">2,00</td>
                       </tr>
                     </tbody>
                   </table>

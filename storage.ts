@@ -1102,8 +1102,14 @@ export const storageService = {
     supabaseKeyStore.set(STORAGE_KEYS.MODEL_BOMS, boms);
   },
 
-  importModelBOMFromRows(rawRows: any[], modelName: string): { added: number; name: string } {
+  importModelBOMFromRows(rawRows: any[], modelName: string, allowedPartCodes?: string[]): { added: number; name: string; skippedUnmatched?: number } {
     const items: ModelBOMItem[] = [];
+    const allowedSet: Set<string> | null =
+      allowedPartCodes && allowedPartCodes.length > 0
+        ? new Set(allowedPartCodes.map((code) => code.trim().toLowerCase()))
+        : new Set(this.getParts().map((p) => p.code.trim().toLowerCase()));
+
+    let skippedUnmatched = 0;
 
     rawRows.forEach((row, idx) => {
       let itemCode = '';
@@ -1148,6 +1154,12 @@ export const storageService = {
       const lowerCode = itemCode.toLowerCase();
       if (lowerCode === 'item' || lowerCode === 'mã linh kiện' || lowerCode.includes('tổng') || lowerCode.includes('cộng') || lowerCode === 'lvl') return;
 
+      // Filter: Only accept part if it exists in system's parts list
+      if (allowedSet && !allowedSet.has(lowerCode)) {
+        skippedUnmatched++;
+        return;
+      }
+
       let quantity = 0;
       if (typeof quantityVal === 'number') {
         quantity = isNaN(quantityVal) ? 0 : quantityVal;
@@ -1182,9 +1194,9 @@ export const storageService = {
         createdAt: new Date().toISOString()
       };
       this.saveModelBOM(bom);
-      return { added: items.length, name: bom.name };
+      return { added: items.length, name: bom.name, skippedUnmatched };
     }
-    return { added: 0, name: modelName };
+    return { added: 0, name: modelName, skippedUnmatched };
   },
 
   // Used QR Tokens (To prevent scanning the same Cont QR tag twice)

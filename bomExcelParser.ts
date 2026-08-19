@@ -5,8 +5,11 @@ export interface BOMParseResult {
   modelName: string;
   modelDescription?: string;
   items: ModelBOMItem[];
-  totalRows: number;
-  skippedRows: number;
+  totalFileRows: number;
+  acceptedCount: number;
+  skippedUnmatchedCount: number;
+  unmatchedCodes: string[];
+  skippedHeaderRows: number;
 }
 
 /**
@@ -57,22 +60,18 @@ function getCellStr(worksheet: XLSX.WorkSheet, r: number, c: number): string {
 
 /**
  * Parse factory BOM Excel file matching Factory Standard Layout:
- * - Top 5 rows: Header / metadata (Row 1..5)
- *   - Row 4 (Index 3): Col A: Model Code (e.g. RMVSHA76639LA), Col B: Model Description
- * - Row 6 (Index 5): Header row:
- *   - Col A (0): lvl (STT)
- *   - Col B (1): Item (Mã linh kiện)
- *   - Col C (2): Description (Tên linh kiện)
- *   - Col D (3): [Bỏ qua]
- *   - Col E (4): Tồn kho [Bỏ qua]
- *   - Col F (5): Quantity (Định mức)
- *   - Col G (6): ĐVT (Đơn vị tính của linh kiện, e.g. Cái, Cuộn, kg, Bộ)
- * - Row 7+ (Index 6+): Data rows
+ * - Image 1 Layout (5 columns):
+ *   - Row 1: lvl | Item | Description | [Trống] | Quantity
+ *   - Row 2+: Data rows
+ * - Also supports legacy/extended layouts with top header metadata or explicit ĐVT column.
+ * 
+ * @param allowedPartCodes If provided, ONLY components present in this list will be accepted. All other components will be filtered out.
  */
 export function parseFactoryBOMExcel(
   fileData: ArrayBuffer | Uint8Array,
   fallbackModelName?: string,
-  fileName?: string
+  fileName?: string,
+  allowedPartCodes?: string[]
 ): BOMParseResult {
   const workbook = XLSX.read(fileData, { type: 'array', cellFormula: true, cellStyles: true });
   const sheetName = workbook.SheetNames[0];
@@ -85,49 +84,70 @@ export function parseFactoryBOMExcel(
   const ref = worksheet['!ref'] || 'A1:Z500';
   const range = XLSX.utils.decode_range(ref);
 
-  let detectedModelName = '';
+  let detectedModelCode = '';
   let detectedDescription = '';
 
-  // 1. Check top 6 rows for Model Name metadata (e.g. Row 4 has RMVSHA76639LA in Col A or Col B)
-  for (let r = range.s.r; r <= Math.min(range.s.r + 5, range.e.r); r++) {
-    const colA = getCellStr(worksheet, r, 0);
-    const colB = getCellStr(worksheet, r, 1);
+  // 1. Dynamic Model Name Detection across top rows (Row 0..5):
+  // Check Row 4 (index 3) first if it's a factory layout with metadata
+  const row4A = getCellStr(worksheet, 3, 0);
+  const row4B = getCellStr(worksheet, 3, 1);
 
-    if (colA && !colA.toLowerCase().includes('đề nghị') && !colA.toLowerCase().includes('overview') && !colA.toLowerCase().includes('lvl')) {
-      if (!detectedModelName && colA.length >= 3) {
-        detectedModelName = colA;
-      }
-    }
-    if (colB && (colB.toLowerCase().includes('sunhouse') || colB.toLowerCase().includes('máy') || colB.toLowerCase().includes('model'))) {
-      detectedDescription = colB;
-      if (!detectedModelName) {
-        // Extract Model token from text e.g. SHA76639LA
-        const match = colB.match(/([A-Z0-9]{5,})/);
-        if (match) detectedModelName = match[1];
-      }
+  if (row4A && !row4A.toLowerCase().startsWith('đề nghị') && !row4A.toLowerCase().startsWith('overview') && !row4A.toLowerCase().startsWith('lvl')) {
+    detectedModelCode = row4A.replace(/^(model|mã model|mã sp|mã|bom)\s*[:：\-]\s*/i, '').trim();
+    if (row4B) {
+      detectedDescription = row4B.trim();
     }
   }
 
-  // Determine final Model Name
+  // If not found in Row 4, scan rows 0..5 for any cell that has Model info
+  if (!detectedModelCode) {
+    for (let r = range.s.r; r <= Math.min(range.s.r + 5, range.e.r); r++) {
+      for (let c = range.s.c; c <= Math.min(range.s.c + 5, range.e.c); c++) {
+        const text = getCellStr(worksheet, r, c);
+        if (!text) continue;
+
+        // Check if cell explicitly says "Model: XYZ" or "RMV..."
+        const modelMatch = text.match(/(?:Model|Mã Model|KHSX|SP)\s*[:：\-]\s*([A-Za-z0-9_\-\.]+)/i);
+        if (modelMatch && modelMatch[1]) {
+          detectedModelCode = modelMatch[1].trim();
+          break;
+        }
+
+        // Check if cell matches typical uppercase Model code (e.g. RMV..., SHA..., SHB..., APB..., KG..., etc.)
+        if (!detectedModelCode && /^[A-Z0-9]{3,}[A-Z0-9_\-\.]{2,}$/.test(text) && !text.includes(' ') && text.length >= 4) {
+          if (!['OVERVIEW', 'QUANTITY', 'DESCRIPTION', 'TOTAL', 'ITEM', 'LVL'].includes(text.toUpperCase())) {
+            detectedModelCode = text.trim();
+          }
+        }
+      }
+      if (detectedModelCode) break;
+    }
+  }
+
+  // Determine final Model Name (Priority: user-typed > detected > file name > fallback)
   let finalModelName = (fallbackModelName || '').trim();
   if (!finalModelName) {
-    if (detectedModelName) {
-      finalModelName = detectedModelName;
+    if (detectedModelCode) {
+      finalModelName = detectedModelCode;
     } else if (fileName) {
-      // Remove extension
-      finalModelName = fileName.replace(/\.[^/.]+$/, '').trim();
+      // Extract clean model name from file name
+      // e.g. "BOM_SHA76639LA.xlsx" -> "SHA76639LA", "Dinh_muc_SHB9101_2026.xlsx" -> "SHB9101"
+      let cleanFileName = fileName.replace(/\.[^/.]+$/, '').trim();
+      cleanFileName = cleanFileName.replace(/^(mau_bom|bom|dinh_muc|bang_dinh_muc|mau)[_\-\s]+/i, '');
+      finalModelName = cleanFileName || fileName.replace(/\.[^/.]+$/, '').trim();
     } else {
       finalModelName = `Model-${Date.now().toString().substring(6)}`;
     }
   }
 
-  // 2. Find header row: scan rows 0..15 to find columns
-  // Default expected indices based on factory layout:
-  let headerRowIndex = 5; // Row 6 (0-indexed: 5)
+  // 2. Find header row: scan rows 0..15 to find columns dynamically
+  // Default expected indices based on Image 1 layout:
+  // Row 1 (index 0): lvl (0), Item (1), Description (2), [empty] (3), Quantity (4)
+  let headerRowIndex = 0; // Row 1 by default (0-indexed)
   let itemCol = 1;        // Col B (1) -> Item
   let descCol = 2;        // Col C (2) -> Description
-  let qtyCol = 5;         // Col F (5) -> Quantity (Định mức)
-  let unitCol = 6;        // Col G (6) -> ĐVT (Đơn vị tính bên cạnh Quantity)
+  let qtyCol = 4;         // Col E (4) -> Quantity (Image 1 standard)
+  let unitCol = -1;       // Optional unit column
 
   let foundHeader = false;
   for (let r = range.s.r; r <= Math.min(range.s.r + 15, range.e.r); r++) {
@@ -144,16 +164,16 @@ export function parseFactoryBOMExcel(
       const cellText = getCellStr(worksheet, r, c).toLowerCase().trim();
       if (!cellText) continue;
 
-      if (cellText === 'item' || cellText.includes('mã vt') || cellText.includes('mã linh kiện') || cellText.includes('mã hàng')) {
+      if (cellText === 'item' || cellText.includes('mã vt') || cellText.includes('mã linh kiện') || cellText.includes('mã hàng') || cellText === 'mã sp') {
         hasItem = true;
         tempItem = c;
       } else if (cellText.includes('description') || cellText.includes('tên vt') || cellText.includes('tên linh kiện') || cellText.includes('tên hàng') || cellText === 'mô tả') {
         hasDesc = true;
         tempDesc = c;
-      } else if (cellText.includes('quantity') || cellText.includes('định mức') || cellText === 'sl' || cellText.includes('số lượng')) {
+      } else if (cellText.includes('quantity') || cellText.includes('định mức') || cellText === 'sl' || cellText.includes('số lượng') || cellText === 'qty') {
         hasQty = true;
         tempQty = c;
-      } else if (cellText.includes('đvt') || cellText.includes('đơn vị') || cellText === 'unit') {
+      } else if (cellText.includes('đvt') || cellText.includes('đơn vị') || cellText === 'unit' || cellText === 'uom') {
         tempUnit = c;
       }
     }
@@ -164,25 +184,33 @@ export function parseFactoryBOMExcel(
       if (tempDesc !== -1) descCol = tempDesc;
       if (tempQty !== -1) qtyCol = tempQty;
       if (tempUnit !== -1) unitCol = tempUnit;
-      else unitCol = qtyCol + 1; // Default to column right next to Quantity
       foundHeader = true;
       break;
     }
   }
 
-  // If header not found dynamically, default to factory layout: header at row 5 (0-indexed), data starts at row 6
+  // If header not found dynamically, default to Image 1 layout: header at row 0, data starts at row 1
   if (!foundHeader) {
-    headerRowIndex = 5;
+    headerRowIndex = 0;
     itemCol = 1;
     descCol = 2;
-    qtyCol = 5;
-    unitCol = 6;
+    qtyCol = 4;
+    unitCol = -1;
   }
 
-  const items: ModelBOMItem[] = [];
-  let skippedRows = 0;
+  // 3. Build Allowed Part Codes Set for filtering
+  // Requirement: "chỉ nhận những linh kiện nào đang có trong danh sách linh kiện thôi nhé"
+  const allowedSet: Set<string> | null =
+    allowedPartCodes && allowedPartCodes.length > 0
+      ? new Set(allowedPartCodes.map((code) => code.trim().toLowerCase()))
+      : null;
 
-  // 3. Parse Data Rows starting from headerRowIndex + 1
+  const items: ModelBOMItem[] = [];
+  let skippedHeaderOrEmpty = 0;
+  let skippedUnmatchedCount = 0;
+  const unmatchedCodes: string[] = [];
+
+  // 4. Parse Data Rows starting from headerRowIndex + 1
   for (let r = headerRowIndex + 1; r <= range.e.r; r++) {
     const rawCode = getCellStr(worksheet, r, itemCol);
     const rawName = getCellStr(worksheet, r, descCol);
@@ -198,9 +226,9 @@ export function parseFactoryBOMExcel(
     const cleanName = rawName.trim() || cleanCode;
     const cleanUnit = rawUnit.trim() || 'Cái';
 
-    // Validation
+    // Skip empty or blank lines
     if (!cleanCode) {
-      skippedRows++;
+      skippedHeaderOrEmpty++;
       continue;
     }
 
@@ -215,8 +243,18 @@ export function parseFactoryBOMExcel(
       lowerCode === 'cộng' ||
       lowerCode === 'lvl'
     ) {
-      skippedRows++;
+      skippedHeaderOrEmpty++;
       continue;
+    }
+
+    // FILTER: Check against allowed system parts list if provided
+    if (allowedSet) {
+      if (!allowedSet.has(lowerCode)) {
+        // Part code does NOT exist in warehouse parts catalog -> SKIP IT
+        skippedUnmatchedCount++;
+        unmatchedCodes.push(cleanCode);
+        continue;
+      }
     }
 
     items.push({
@@ -231,57 +269,54 @@ export function parseFactoryBOMExcel(
     modelName: finalModelName,
     modelDescription: detectedDescription,
     items,
-    totalRows: items.length + skippedRows,
-    skippedRows,
+    totalFileRows: items.length + skippedUnmatchedCount,
+    acceptedCount: items.length,
+    skippedUnmatchedCount,
+    unmatchedCodes,
+    skippedHeaderRows: headerRowIndex + 1 + skippedHeaderOrEmpty,
   };
 }
 
 /**
  * Generate Factory Standard BOM Sample Excel File (.xlsx)
- * Matching the exact image layout provided:
- * - Row 1: ĐỀ NGHỊ LÃNH VẬT TƯ DÂY CHUYỀN LẮP RÁP | KHSX : 21/08
- * - Row 2: Overview: BOM | 57 - BD-Bo tem bom (Minh 08.7.26)
- * - Row 4: RMVSHA76639LA | Máy lọc nước ion kiềm Hydrogen UltraX Sunhouse SHA76639LA | NHẬP SL IN
- * - Row 5: Batch quantity : | 1 | Cái
- * - Row 6: lvl | Item | Description | [Trống] | Tồn kho | Quantity | ĐVT
- * - Row 7+: Sample parts
+ * Matching the exact image layout provided in Image 1:
+ * - Row 1: lvl | Item | Description | [Trống] | Quantity
+ * - Row 2+: Sample components matching factory standard
  */
 export function generateSampleBOMExcel(): Uint8Array {
   const rows: any[][] = [
-    ['ĐỀ NGHỊ LÃNH VẬT TƯ DÂY CHUYỀN LẮP RÁP', '', '', '', 'KHSX : 21/08', '', ''],
-    ['Overview: BOM', '', '', '57 - BD-Bo tem bom (Minh 08.7.26)', '', '', ''],
-    ['', '', '', '', '', '', ''],
-    ['RMVSHA76639LA', 'Máy lọc nước ion kiềm Hydrogen UltraX Sunhouse SHA76639LA', '', '', '', 'NHẬP SL IN', ''],
-    ['', '', '', 'Batch quantity :', '', 1, 'Cái'],
-    ['lvl', 'Item', 'Description', '', 'Tồn kho', 'Quantity', 'ĐVT'],
-    [1, '04-29-07-SHA76210KL-0007', 'Adapter NS2415V3C', '', 1181, 1.00, 'Cái'],
-    [2, 'VLP-BDDHX-K19X50', 'Băng dính định hình màu xanh K19x50', '', 181, 0.01, 'Cuộn'],
-    [3, 'VLP-BDTT-4.8', 'Băng dính trong to 4.8 cm', '', 182, 0.02, 'Cuộn'],
-    [4, '02-35-06-SHB9101-0005', 'Băng dính xốp dưới mặt bếp 9100/9101', '', 2238, 0.10, 'Cái'],
-    [5, 'VLP-BDX-XANH', 'Băng dính xốp xanh', '', 1736, 0.02, 'Cuộn'],
-    [6, 'VLP-BTQMTD-12', 'Băng tan quấn máy tự động khổ 12mm', '', 29, 0.01, 'kg'],
-    [7, '04-29-07-SHA76210KL-0005', 'Bầu nóng 1.5L', '', 748, 1.00, 'Bộ'],
-    [8, '04-28-03-BRA590N-0006', 'Bình áp HK TANK Model 3.2G', '', 1125, 1.00, 'Cái'],
-    [9, '04-29-07-SHA76213CK-0008', 'Block ASV25H', '', 478, 1.00, 'Cái'],
-    [10, '04-28-03-SHA8838K-0002', 'Bọ nhựa PP 15mm', '', 30596, 2.00, 'Cái'],
-    [11, '04-28-03-SHA8800KL-0011', 'Bộ cốc lọc thô màu trắng NN', '', 4268, 2.00, 'Bộ'],
-    [12, '04-28-03-SHA8800KL-0010', 'Bộ cốc lọc thô màu trong xanh SH NN', '', 2665, 1.00, 'Bộ'],
-    [13, '04-29-07-SHA76636KL-0002', 'Bộ dây điện rời SHA76636KL', '', 3217, 1.00, 'Bộ'],
-    [14, '04-29-07-SHA76636KL-0003', 'Bộ dây nguồn tổng SHA76636KL', '', 4812, 1.00, 'Cái'],
-    [15, 'VLP-BHT-BOM2', 'Bột hàn the (BD)', '', '-', 0.00, 'kg']
+    ['lvl', 'Item', 'Description', '', 'Quantity'],
+    [6, '04-29-07-SHA76210KL-0007', 'Adapter NS2415V3C', '', 1.00],
+    [5, 'VLP-BDDHX-K19X50', 'Băng dính định hình màu xanh', '', 0.01],
+    [4, 'VLP-BDTT-4.8', 'Băng dính trong to 4.8 cm', '', 0.02],
+    [3, '02-35-06-SHB9101-0005', 'Băng dính xốp dưới mặt bếp 9', '', 0.10],
+    [2, 'VLP-BDX-XANH', 'Băng dính xốp xanh', '', 0.02],
+    [1, 'VLP-BTQMTD-12', 'Băng tan quấn máy tự động kl', '', 0.01],
+    [2, '04-29-07-SHA76210KL-0005', 'Bầu nóng 1.5L', '', 1.00],
+    [3, '04-28-03-BRA590N-0006', 'Bình áp HK TANK Model 3.2G', '', 1.00],
+    [4, '04-29-07-SHA76213CK-0008', 'Block ASV25H', '', 1.00],
+    [5, '04-28-03-SHA8838K-0002', 'Bọ nhựa PP 15mm', '', 2.00],
+    [6, '04-28-03-SHA8800KL-0011', 'Bộ cốc lọc thô màu trắng NN', '', 2.00],
+    [7, '04-28-03-SHA8800KL-0010', 'Bộ cốc lọc thô màu trong xan', '', 1.00],
+    [8, '04-29-07-SHA76636KL-0002', 'Bộ dây điện rời SHA76636KL', '', 1.00],
+    [9, '04-29-07-SHA76636KL-0003', 'Bộ dây nguồn tổng SHA76636', '', 1.00],
+    [10, 'VLP-BHT-BOM2', 'Bột hàn the (BD)', '', 0.00],
+    [11, '04-28-07-SHA8800KL-0003', 'Bơm tăng áp GFP-75K', '', 1.00],
+    [12, '04-29-09-SHA76213CK-0004', 'Bulong M4x16, inox, mũ Ø7.5', '', 6.00],
+    [13, '04-29-09-SHA76214CKNK-0001', 'Bulong M5x16, inox, mũ Ø8.3', '', 6.00],
+    [14, '04-29-03-SHA76215CK-0003', 'C hãm cút ống 3/8"', '', 1.00],
+    [15, '04-28-03-SHA8858K-0007', 'C hãm MLN R.O (TS)', '', 15.00]
   ];
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
 
   // Set column widths
   ws['!cols'] = [
-    { wch: 6 },  // A: lvl
-    { wch: 28 }, // B: Item
+    { wch: 8 },  // A: lvl
+    { wch: 30 }, // B: Item
     { wch: 45 }, // C: Description
-    { wch: 18 }, // D: Trống / Metadata
-    { wch: 12 }, // E: Tồn kho
-    { wch: 12 }, // F: Quantity
-    { wch: 10 }  // G: ĐVT
+    { wch: 8 },  // D: [Trống]
+    { wch: 14 }  // E: Quantity
   ];
 
   const wb = XLSX.utils.book_new();
