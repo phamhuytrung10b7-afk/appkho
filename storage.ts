@@ -1104,64 +1104,85 @@ export const storageService = {
 
   importModelBOMFromRows(rawRows: any[], modelName: string): { added: number; name: string } {
     const items: ModelBOMItem[] = [];
-    const validPartCodes = new Set(this.getParts().map(p => p.code.toLowerCase()));
 
-    rawRows.forEach(row => {
+    rawRows.forEach((row, idx) => {
       let itemCode = '';
       let itemName = '';
       let quantityVal: any = 0;
       let unit = '';
 
       if (Array.isArray(row)) {
-        itemCode = String(row[0] ?? '').trim();
-        itemName = String(row[1] ?? '').trim();
-        quantityVal = row[2];
-        unit = String(row[3] ?? '').trim();
+        // Factory layout: [lvl, Item, Description, (empty), Tồn kho, Quantity, ĐVT]
+        if (row.length >= 6) {
+          // Check if index 1 is Item code
+          const colB = String(row[1] ?? '').trim();
+          const colC = String(row[2] ?? '').trim();
+          const colF = row[5];
+          const colG = String(row[6] ?? '').trim();
+
+          if (colB && colB.toLowerCase() !== 'item' && !colB.toLowerCase().includes('mã')) {
+            itemCode = colB;
+            itemName = colC || colB;
+            quantityVal = colF;
+            unit = colG;
+          } else {
+            itemCode = String(row[0] ?? '').trim();
+            itemName = String(row[1] ?? '').trim();
+            quantityVal = row[2];
+            unit = String(row[3] ?? '').trim();
+          }
+        } else if (row.length >= 3) {
+          itemCode = String(row[0] ?? '').trim();
+          itemName = String(row[1] ?? '').trim();
+          quantityVal = row[2];
+          unit = String(row[3] ?? '').trim();
+        }
       } else if (typeof row === 'object' && row !== null) {
-        itemCode = String(row['Item'] || row['Mã linh kiện'] || row['Code'] || '').trim();
-        itemName = String(row['Description'] || row['Tên linh kiện'] || row['Name'] || '').trim();
-        quantityVal = row['Quantity'] ?? row['Số lượng'] ?? row['Định mức'] ?? 0;
-        unit = String(row['Unit'] || row['Đơn vị'] || row['ĐVT'] || '').trim();
+        itemCode = String(row['Item'] || row['item'] || row['Mã linh kiện'] || row['Mã VT'] || row['Code'] || '').trim();
+        itemName = String(row['Description'] || row['description'] || row['Tên linh kiện'] || row['Tên VT'] || row['Name'] || '').trim();
+        quantityVal = row['Quantity'] ?? row['quantity'] ?? row['Số lượng'] ?? row['Định mức'] ?? 0;
+        unit = String(row['ĐVT'] || row['đvt'] || row['Unit'] || row['unit'] || row['Đơn vị'] || '').trim();
       }
 
-      if (!itemCode || !itemName) return;
-      if (itemCode.toLowerCase() === 'item') return;
-
-      // Only import items that exist in our valid parts list
-      if (!validPartCodes.has(itemCode.toLowerCase())) return;
+      if (!itemCode) return;
+      const lowerCode = itemCode.toLowerCase();
+      if (lowerCode === 'item' || lowerCode === 'mã linh kiện' || lowerCode.includes('tổng') || lowerCode.includes('cộng') || lowerCode === 'lvl') return;
 
       let quantity = 0;
       if (typeof quantityVal === 'number') {
-        quantity = quantityVal;
+        quantity = isNaN(quantityVal) ? 0 : quantityVal;
       } else {
-        let s = String(quantityVal).trim();
-        if (s.includes(',') && s.includes('.')) {
-          s = s.replace(/\./g, '').replace(',', '.');
+        let s = String(quantityVal || '').trim();
+        if (s.includes('.') && s.includes(',')) {
+          if (s.indexOf('.') < s.indexOf(',')) {
+            s = s.replace(/\./g, '').replace(',', '.');
+          } else {
+            s = s.replace(/,/g, '');
+          }
         } else if (s.includes(',')) {
           s = s.replace(',', '.');
         }
         quantity = parseFloat(s) || 0;
       }
 
-      if (quantity > 0) {
-        items.push({
-          partCode: itemCode,
-          partName: itemName,
-          quantity,
-          unit: unit || 'Cái'
-        });
-      }
+      // Add item to BOM (allow 0 or positive định mức)
+      items.push({
+        partCode: itemCode,
+        partName: itemName || itemCode,
+        quantity: Math.max(0, quantity),
+        unit: unit || 'Cái'
+      });
     });
 
     if (items.length > 0) {
       const bom: ModelBOM = {
         id: 'bom-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-        name: modelName,
+        name: modelName || `Model-${Date.now().toString().substring(6)}`,
         items,
         createdAt: new Date().toISOString()
       };
       this.saveModelBOM(bom);
-      return { added: items.length, name: modelName };
+      return { added: items.length, name: bom.name };
     }
     return { added: 0, name: modelName };
   },

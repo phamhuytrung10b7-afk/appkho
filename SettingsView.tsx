@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { AppSettings } from './types';
+import { AppSettings, ModelBOM } from './types';
 import { storageService } from './storage';
 import { ConversionFactorManager } from './ConversionFactorManager';
 import { getSupabaseCredentials, saveSupabaseCredentials, getActiveSupabaseClient } from './supabase';
 import { egressStats } from './supabaseStorage';
+import { parseFactoryBOMExcel, downloadSampleBOMFile } from './bomExcelParser';
 import {
   Settings,
   Building2,
@@ -33,6 +34,13 @@ import {
   ShieldCheck,
   Activity,
   HardDrive,
+  FileSpreadsheet,
+  Eye,
+  Info,
+  X,
+  Search,
+  Layers,
+  Table,
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -81,6 +89,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialCreds.anonKey);
   const [supabaseSyncing, setSupabaseSyncing] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+
+  // BOM Management State
+  const [viewingBOM, setViewingBOM] = useState<ModelBOM | null>(null);
+  const [showBOMTemplateModal, setShowBOMTemplateModal] = useState(false);
+  const [bomItemSearchTerm, setBomItemSearchTerm] = useState('');
 
   const handleSaveSupabaseConfig = () => {
     saveSupabaseCredentials(supabaseUrl.trim(), supabaseAnonKey.trim());
@@ -708,87 +721,154 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
 
         {/* QUẢN LÝ ĐỊNH MỨC MODEL (BOM) */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-slate-800 text-sm flex items-center">
-              <FileCode className="w-4 h-4 text-pink-600 mr-2" />
-              Quản Lý Định Mức Model (BOM)
-            </h3>
-            <span className="text-xs text-slate-400 font-medium">{storageService.getModelBOMs().length} Models</span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center">
+                <FileCode className="w-4 h-4 text-pink-600 mr-2" />
+                Quản Lý Định Mức Model (BOM)
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Đã đồng bộ cấu trúc Excel chuẩn nhà máy: Tự động bỏ qua 5 dòng đầu, nhận diện Cột B (Item), Cột C (Description), Cột F (Quantity định mức) & Cột G (ĐVT).
+              </p>
+            </div>
+            <div className="flex items-center space-x-2">
+              <span className="text-xs bg-pink-50 text-pink-700 px-2.5 py-1 rounded-full font-bold border border-pink-200">
+                {storageService.getModelBOMs().length} Models
+              </span>
+            </div>
           </div>
-          <p className="text-xs text-slate-500">
-            Tải lên file Excel định mức linh kiện cho từng Model (Lệnh sản xuất).
-            Hệ thống sẽ dựa vào định mức này để xuất kho tự động hàng loạt.
-          </p>
 
-          <div className="flex items-center space-x-2">
+          {/* Quick Actions: Download Sample & View Layout */}
+          <div className="flex flex-wrap items-center gap-2 p-3 bg-pink-50/60 border border-pink-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => downloadSampleBOMFile()}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 shadow-xs cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Tải File Excel Mẫu BOM (.xlsx)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowBOMTemplateModal(true)}
+              className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold transition-all flex items-center space-x-1.5 shadow-xs cursor-pointer"
+            >
+              <Eye className="w-3.5 h-3.5 text-pink-600" />
+              <span>Xem Cấu Trúc Cột File Mẫu</span>
+            </button>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             <input
               type="text"
               id="modelBOMName"
-              placeholder="Tên Model (VD: APB3551)..."
-              className="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-pink-700 focus:ring-2 focus:ring-pink-500 outline-hidden"
+              placeholder="Tên Model (VD: RMVSHA76639LA hoặc để trống tự nhận diện)..."
+              className="flex-1 px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold text-pink-700 focus:ring-2 focus:ring-pink-500 outline-hidden"
             />
-            <label className="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shrink-0 flex items-center space-x-1">
+            <label className="px-5 py-2.5 bg-pink-600 hover:bg-pink-700 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shrink-0 flex items-center justify-center space-x-1.5 shadow-xs">
               <Upload className="w-4 h-4" />
-              <span>Nhập Từ Excel</span>
-              <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => {
-                const nameInput = document.getElementById('modelBOMName') as HTMLInputElement;
-                const name = nameInput.value.trim();
-                if (!name) {
-                  setMessage({ type: 'error', text: 'Vui lòng nhập tên Model trước khi tải lên Excel!' });
-                  e.target.value = '';
-                  return;
-                }
-                const file = e.target.files?.[0];
-                if (!file) return;
+              <span>Nhập Từ Excel BOM</span>
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={(e) => {
+                  const nameInput = document.getElementById('modelBOMName') as HTMLInputElement;
+                  const manualName = nameInput ? nameInput.value.trim() : '';
+                  const file = e.target.files?.[0];
+                  if (!file) return;
 
-                import('xlsx').then(XLSX => {
                   const reader = new FileReader();
                   reader.onload = (evt) => {
-                    const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-                    const workbook = XLSX.read(data, { type: 'array' });
-                    const firstSheetName = workbook.SheetNames[0];
-                    const worksheet = workbook.Sheets[firstSheetName];
-                    const rawRows = XLSX.utils.sheet_to_json(worksheet);
+                    try {
+                      const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+                      const parsed = parseFactoryBOMExcel(data, manualName, file.name);
 
-                    const result = storageService.importModelBOMFromRows(rawRows, name);
-                    if (result.added > 0) {
-                      setMessage({ type: 'success', text: `Đã lưu định mức cho Model ${result.name} với ${result.added} linh kiện!` });
-                      nameInput.value = '';
-                      onRefreshAll(); // Refresh to update count
-                    } else {
-                      setMessage({ type: 'error', text: 'Không tìm thấy dữ liệu hợp lệ trong file Excel!' });
+                      if (parsed.items.length > 0) {
+                        const bom: ModelBOM = {
+                          id: 'bom-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+                          name: parsed.modelName,
+                          items: parsed.items,
+                          createdAt: new Date().toISOString(),
+                        };
+                        storageService.saveModelBOM(bom);
+                        setMessage({
+                          type: 'success',
+                          text: `🎉 Thành công! Đã lưu định mức Model [${parsed.modelName}] với ${parsed.items.length} linh kiện (Đã bỏ qua 5 dòng đầu, lấy đúng cột Item, Description, Quantity & ĐVT).`,
+                        });
+                        if (nameInput) nameInput.value = '';
+                        onRefreshAll();
+                      } else {
+                        setMessage({
+                          type: 'error',
+                          text: 'Không tìm thấy dữ liệu linh kiện hợp lệ trong file Excel. Vui lòng kiểm tra lại dòng tiêu đề hoặc nhấn "Tải File Mẫu BOM" để đối chiếu!',
+                        });
+                      }
+                    } catch (err: any) {
+                      console.error('Lỗi khi đọc file BOM Excel:', err);
+                      setMessage({
+                        type: 'error',
+                        text: `Lỗi khi đọc file Excel: ${err?.message || 'Định dạng file không tương thích'}`,
+                      });
                     }
                   };
                   reader.readAsArrayBuffer(file);
-                });
-                e.target.value = '';
-              }} />
+                  e.target.value = '';
+                }}
+              />
             </label>
           </div>
 
-          <div className="flex flex-col gap-2 pt-1 max-h-60 overflow-y-auto">
-            {storageService.getModelBOMs().map((bom, idx) => (
-              <div
-                key={bom.id}
-                className="flex items-center justify-between p-3 bg-pink-50 border border-pink-200 text-pink-900 rounded-xl text-xs font-mono"
-              >
-                <div>
-                  <strong className="text-sm">{bom.name}</strong>
-                  <p className="text-[10px] text-pink-600 font-sans mt-0.5">{bom.items.length} linh kiện trong định mức</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    storageService.deleteModelBOM(bom.id);
-                    onRefreshAll();
-                    setMessage({ type: 'success', text: `Đã xóa Model BOM ${bom.name}` });
-                  }}
-                  className="p-1.5 bg-white text-pink-400 hover:text-red-600 rounded-lg shadow-xs cursor-pointer"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+          <div className="flex flex-col gap-2 pt-1 max-h-72 overflow-y-auto">
+            {storageService.getModelBOMs().length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+                Chưa có Model BOM nào. Nhấn <strong className="text-pink-600">"Tải File Excel Mẫu BOM"</strong> hoặc tải lên file BOM cố định của nhà máy để bắt đầu.
               </div>
-            ))}
+            ) : (
+              storageService.getModelBOMs().map((bom) => (
+                <div
+                  key={bom.id}
+                  className="flex items-center justify-between p-3.5 bg-pink-50/70 border border-pink-200/80 text-pink-900 rounded-xl text-xs hover:border-pink-300 transition-colors"
+                >
+                  <div className="space-y-0.5">
+                    <div className="flex items-center space-x-2">
+                      <strong className="text-sm font-mono font-bold text-slate-800">{bom.name}</strong>
+                      <span className="text-[10px] bg-pink-200/70 text-pink-800 font-bold px-2 py-0.5 rounded-full font-mono">
+                        {bom.items.length} LK
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-pink-700/80">
+                      Tạo lúc: {bom.createdAt ? new Date(bom.createdAt).toLocaleDateString('vi-VN') : 'Mặc định'}
+                    </p>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setViewingBOM(bom)}
+                      className="px-2.5 py-1.5 bg-white text-slate-700 hover:text-pink-700 hover:bg-pink-100/50 border border-pink-200 rounded-lg text-xs font-semibold shadow-xs flex items-center space-x-1 cursor-pointer transition-colors"
+                      title="Xem danh sách linh kiện trong BOM"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-pink-600" />
+                      <span>Xem LK</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Bạn có chắc muốn xóa Model BOM [${bom.name}]?`)) {
+                          storageService.deleteModelBOM(bom.id);
+                          onRefreshAll();
+                          setMessage({ type: 'success', text: `Đã xóa Model BOM ${bom.name}` });
+                        }
+                      }}
+                      className="p-1.5 bg-white text-slate-400 hover:text-red-600 hover:bg-red-50 border border-pink-200 rounded-lg shadow-xs cursor-pointer transition-colors"
+                      title="Xóa định mức này"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
@@ -1241,6 +1321,339 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
       )}
 
 
+      {/* MODAL: XEM CHI TIẾT LINH KIỆN TRONG BOM */}
+      {viewingBOM && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 bg-gradient-to-r from-pink-700 to-rose-700 text-white flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <FileCode className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base sm:text-lg tracking-tight">ĐỊNH MỨC MODEL: {viewingBOM.name}</h3>
+                  <p className="text-xs text-pink-100 font-medium">
+                    Tổng cộng: <strong className="text-white font-mono">{viewingBOM.items.length}</strong> mã linh kiện
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setViewingBOM(null);
+                  setBomItemSearchTerm('');
+                }}
+                className="p-2 hover:bg-white/20 text-white rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Search Bar */}
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center space-x-3">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={bomItemSearchTerm}
+                  onChange={(e) => setBomItemSearchTerm(e.target.value)}
+                  placeholder="Tìm kiếm theo mã linh kiện hoặc tên linh kiện..."
+                  className="w-full pl-9 pr-4 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-pink-500 outline-hidden"
+                />
+              </div>
+              <span className="text-xs text-slate-500 whitespace-nowrap font-medium">
+                {
+                  viewingBOM.items.filter(
+                    (i) =>
+                      i.partCode.toLowerCase().includes(bomItemSearchTerm.toLowerCase()) ||
+                      i.partName.toLowerCase().includes(bomItemSearchTerm.toLowerCase())
+                  ).length
+                }{' '}
+                / {viewingBOM.items.length} mã
+              </span>
+            </div>
+
+            {/* Modal Body Table */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+              <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
+                    <tr>
+                      <th className="p-3 w-12 text-center text-slate-400">STT</th>
+                      <th className="p-3 font-mono">Mã Linh Kiện (Item)</th>
+                      <th className="p-3">Tên / Mô Tả Linh Kiện (Description)</th>
+                      <th className="p-3 text-right">Định Mức (Qty)</th>
+                      <th className="p-3 text-center">ĐVT</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {viewingBOM.items
+                      .filter(
+                        (i) =>
+                          !bomItemSearchTerm ||
+                          i.partCode.toLowerCase().includes(bomItemSearchTerm.toLowerCase()) ||
+                          i.partName.toLowerCase().includes(bomItemSearchTerm.toLowerCase())
+                      )
+                      .map((item, idx) => (
+                        <tr key={idx} className="hover:bg-pink-50/40 transition-colors">
+                          <td className="p-3 text-center font-semibold text-slate-400">{idx + 1}</td>
+                          <td className="p-3 font-mono font-bold text-pink-700">{item.partCode}</td>
+                          <td className="p-3 text-slate-700 font-medium">{item.partName}</td>
+                          <td className="p-3 text-right font-mono font-black text-slate-900">
+                            {item.quantity.toLocaleString('vi-VN', { maximumFractionDigits: 4 })}
+                          </td>
+                          <td className="p-3 text-center">
+                            <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px] font-semibold">
+                              {item.unit || 'Cái'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setViewingBOM(null);
+                  setBomItemSearchTerm('');
+                }}
+                className="px-5 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: XEM CẤU TRÚC FILE MẪU BOM CHUẨN NHÀ MÁY */}
+      {showBOMTemplateModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white w-full max-w-5xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh]">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 bg-gradient-to-r from-emerald-700 to-teal-700 text-white flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <FileSpreadsheet className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base sm:text-lg tracking-tight">CẤU TRÚC FILE EXCEL BOM CỐ ĐỊNH NHÀ MÁY</h3>
+                  <p className="text-xs text-emerald-100 font-medium">
+                    Hệ thống tự động bỏ qua 5 dòng đầu & trích xuất đúng 4 cột chính
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBOMTemplateModal(false)}
+                className="p-2 hover:bg-white/20 text-white rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6">
+              {/* Column Mapping Guide */}
+              <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-emerald-900 flex items-center">
+                  <Info className="w-4 h-4 text-emerald-600 mr-2" />
+                  Quy Tắc Đọc Dữ Liệu Excel Của Hệ Thống
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
+                    <div className="font-bold text-slate-800 flex items-center space-x-1">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">1</span>
+                      <span>5 Dòng Đầu (Header / Metadata):</span>
+                    </div>
+                    <p className="text-slate-600 pl-6 leading-relaxed">
+                      Chứa tiêu đề phiếu, tên Model (VD: <code className="bg-slate-100 px-1 py-0.5 rounded text-pink-700 font-bold">RMVSHA76639LA</code>), KHSX, Batch quantity... Hệ thống <strong>tự động nhận diện tên Model</strong> và <strong>bỏ qua</strong> các dòng thông tin này để bắt đầu đọc từ dòng thứ 6/7.
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
+                    <div className="font-bold text-slate-800 flex items-center space-x-1">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">2</span>
+                      <span>Cột 1 (A): <code className="font-mono text-emerald-700">lvl</code> (STT)</span>
+                    </div>
+                    <p className="text-slate-600 pl-6 leading-relaxed">
+                      Số thứ tự linh kiện (1, 2, 3...) - dùng để kiểm soát vị trí linh kiện trong danh mục.
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
+                    <div className="font-bold text-slate-800 flex items-center space-x-1">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">3</span>
+                      <span>Cột 2 (B) & Cột 3 (C): <code className="font-mono text-emerald-700">Item</code> & <code className="font-mono text-emerald-700">Description</code></span>
+                    </div>
+                    <p className="text-slate-600 pl-6 leading-relaxed">
+                      <strong>Cột B (Item):</strong> Mã linh kiện (VD: <code className="bg-slate-100 px-1 rounded text-slate-800 font-bold">04-29-07-SHA76210KL-0007</code>).<br />
+                      <strong>Cột C (Description):</strong> Tên / mô tả linh kiện (VD: <code className="text-slate-800">Adapter NS2415V3C</code>).
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5">
+                    <div className="font-bold text-slate-800 flex items-center space-x-1">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">4</span>
+                      <span>Cột 4 (D) & Cột 5 (E): Bỏ qua</span>
+                    </div>
+                    <p className="text-slate-600 pl-6 leading-relaxed">
+                      Cột trống và cột Tồn kho hiện tại trong file Excel sẽ được hệ thống <strong>bỏ qua</strong>, giữ nguyên cấu trúc gốc của nhà máy mà không cần sửa file trước khi up.
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-lg border border-emerald-100 space-y-1.5 md:col-span-2">
+                    <div className="font-bold text-slate-800 flex items-center space-x-1">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-[11px]">5</span>
+                      <span>Cột 6 (F): <code className="font-mono text-emerald-700">Quantity</code> & Cột 7 (G): <code className="font-mono text-emerald-700">Đơn vị tính (ĐVT)</code></span>
+                    </div>
+                    <p className="text-slate-600 pl-6 leading-relaxed">
+                      <strong>Cột F (Quantity):</strong> Định mức số lượng (hỗ trợ cả dạng số nguyên, số thập phân <code className="bg-slate-100 px-1 rounded font-bold">0,01</code>, <code className="bg-slate-100 px-1 rounded font-bold">1,00</code>...).<br />
+                      <strong>Cột G (bên cạnh Quantity):</strong> Đơn vị tính của linh kiện (<code className="text-slate-800 font-bold">Cái</code>, <code className="text-slate-800 font-bold">Cuộn</code>, <code className="text-slate-800 font-bold">kg</code>, <code className="text-slate-800 font-bold">Bộ</code>, <code className="text-slate-800 font-bold">M</code>...).
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Visual Table Preview */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-sm text-slate-800 flex items-center">
+                    <Table className="w-4 h-4 text-emerald-600 mr-2" />
+                    Xem Trước Bảng Dữ Liệu Mẫu (Khớp Ảnh Nhà Máy)
+                  </h4>
+                  <span className="text-[11px] text-slate-400 italic">Hiển thị mẫu 10 dòng đầu</span>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-x-auto shadow-xs text-xs">
+                  <table className="w-full text-left whitespace-nowrap">
+                    {/* Header rows representation */}
+                    <thead className="bg-slate-100 border-b border-slate-200">
+                      <tr className="bg-slate-200/70 text-slate-500 text-[10px]">
+                        <th className="p-2 text-center">A (Col 1)</th>
+                        <th className="p-2">B (Col 2)</th>
+                        <th className="p-2">C (Col 3)</th>
+                        <th className="p-2 text-slate-400">D (Col 4)</th>
+                        <th className="p-2 text-slate-400">E (Col 5)</th>
+                        <th className="p-2 text-right">F (Col 6)</th>
+                        <th className="p-2 text-center">G (Col 7)</th>
+                      </tr>
+                      <tr className="text-slate-800 font-bold border-b border-slate-300">
+                        <th className="p-2.5 text-center text-slate-500">lvl (STT)</th>
+                        <th className="p-2.5 font-mono text-pink-700">Item (Mã LK)</th>
+                        <th className="p-2.5 text-slate-800">Description (Tên LK)</th>
+                        <th className="p-2.5 text-slate-400 italic">[Bỏ qua]</th>
+                        <th className="p-2.5 text-slate-400 italic">Tồn kho [Bỏ qua]</th>
+                        <th className="p-2.5 text-right font-mono text-emerald-700">Quantity (Định mức)</th>
+                        <th className="p-2.5 text-center font-bold text-slate-700">ĐVT</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-mono">
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">1</td>
+                        <td className="p-2 font-bold text-pink-700">04-29-07-SHA76210KL-0007</td>
+                        <td className="p-2 font-sans text-slate-700">Adapter NS2415V3C</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">1.181</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
+                        <td className="p-2 text-center font-sans">Cái</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">2</td>
+                        <td className="p-2 font-bold text-pink-700">VLP-BDDHX-K19X50</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính định hình màu xanh K19x50</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">181</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,01</td>
+                        <td className="p-2 text-center font-sans">Cuộn</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">3</td>
+                        <td className="p-2 font-bold text-pink-700">VLP-BDTT-4.8</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính trong to 4.8 cm</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">182</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,02</td>
+                        <td className="p-2 text-center font-sans">Cuộn</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">4</td>
+                        <td className="p-2 font-bold text-pink-700">02-35-06-SHB9101-0005</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính xốp dưới mặt bếp 9100/9101</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">2.238</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,10</td>
+                        <td className="p-2 text-center font-sans">Cái</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">5</td>
+                        <td className="p-2 font-bold text-pink-700">VLP-BDX-XANH</td>
+                        <td className="p-2 font-sans text-slate-700">Băng dính xốp xanh</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">1.736</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,02</td>
+                        <td className="p-2 text-center font-sans">Cuộn</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">6</td>
+                        <td className="p-2 font-bold text-pink-700">VLP-BTQMTD-12</td>
+                        <td className="p-2 font-sans text-slate-700">Băng tan quấn máy tự động khổ 12mm</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">29</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">0,01</td>
+                        <td className="p-2 text-center font-sans">kg</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">7</td>
+                        <td className="p-2 font-bold text-pink-700">04-29-07-SHA76210KL-0005</td>
+                        <td className="p-2 font-sans text-slate-700">Bầu nóng 1.5L</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">748</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
+                        <td className="p-2 text-center font-sans">Bộ</td>
+                      </tr>
+                      <tr className="hover:bg-slate-50">
+                        <td className="p-2 text-center text-slate-400">8</td>
+                        <td className="p-2 font-bold text-pink-700">04-28-03-BRA590N-0006</td>
+                        <td className="p-2 font-sans text-slate-700">Bình áp HK TANK Model 3.2G</td>
+                        <td className="p-2 text-slate-300">-</td>
+                        <td className="p-2 text-slate-400">1.125</td>
+                        <td className="p-2 text-right font-bold text-emerald-700">1,00</td>
+                        <td className="p-2 text-center font-sans">Cái</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => downloadSampleBOMFile()}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 shadow-xs cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Tải Ngay File Mẫu .XLSX Này</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowBOMTemplateModal(false)}
+                className="px-5 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
