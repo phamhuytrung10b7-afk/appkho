@@ -1496,6 +1496,63 @@ export const storageService = {
     return fifoLots;
   },
 
+  // --- 35-DAY RETENTION POLICY & HISTORY PRUNING ---
+  pruneHistoryOlderThan35Days(maxDays: number = 35): { prunedKitting: number; prunedCalls: number } {
+    const cutoffTime = Date.now() - maxDays * 24 * 60 * 60 * 1000;
+    let prunedKitting = 0;
+    let prunedCalls = 0;
+
+    // 1. Prune completed Kitting records older than maxDays
+    const rawKitting = localStorage.getItem(KITTING_QUEUE_KEY);
+    if (rawKitting) {
+      try {
+        const kQueue: KittingQueueItem[] = JSON.parse(rawKitting);
+        const filteredQueue = kQueue.filter((item) => {
+          const isCompleted = item.status === 'IN_BUFFER' || item.status === 'DELIVERED';
+          if (!isCompleted) return true; // keep pending items
+          const itemTime = new Date(item.endTime || item.createdAt).getTime();
+          if (itemTime < cutoffTime) {
+            prunedKitting++;
+            return false;
+          }
+          return true;
+        });
+        if (prunedKitting > 0) {
+          localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(filteredQueue));
+          supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, filteredQueue);
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    // 2. Prune completed Material Call (Andon) records older than maxDays
+    const rawCalls = localStorage.getItem(MATERIAL_CALLS_KEY);
+    if (rawCalls) {
+      try {
+        const calls: MaterialCallRequest[] = JSON.parse(rawCalls);
+        const filteredCalls = calls.filter((item) => {
+          const isCompleted = item.status === 'COMPLETED';
+          if (!isCompleted) return true; // keep active calling/delivering
+          const itemTime = new Date(item.deliveredAt || item.requestedAt).getTime();
+          if (itemTime < cutoffTime) {
+            prunedCalls++;
+            return false;
+          }
+          return true;
+        });
+        if (prunedCalls > 0) {
+          localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(filteredCalls));
+          supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, filteredCalls);
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    return { prunedKitting, prunedCalls };
+  },
+
   // --- KITTING QUEUE METHODS ---
   getKittingQueue(): KittingQueueItem[] {
     const raw = localStorage.getItem(KITTING_QUEUE_KEY);
@@ -1504,7 +1561,26 @@ export const storageService = {
       return INITIAL_KITTING_QUEUE;
     }
     try {
-      return JSON.parse(raw);
+      const items: KittingQueueItem[] = JSON.parse(raw);
+      // Auto-enforce 35-day retention policy on completed records
+      const cutoffTime = Date.now() - 35 * 24 * 60 * 60 * 1000;
+      let hasPruned = false;
+      const validItems = items.filter((item) => {
+        const isCompleted = item.status === 'IN_BUFFER' || item.status === 'DELIVERED';
+        if (!isCompleted) return true;
+        const itemTime = new Date(item.endTime || item.createdAt).getTime();
+        if (itemTime < cutoffTime) {
+          hasPruned = true;
+          return false;
+        }
+        return true;
+      });
+
+      if (hasPruned) {
+        localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(validItems));
+        supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, validItems);
+      }
+      return validItems;
     } catch {
       return INITIAL_KITTING_QUEUE;
     }
@@ -1839,7 +1915,26 @@ export const storageService = {
       return INITIAL_MATERIAL_CALLS;
     }
     try {
-      return JSON.parse(raw);
+      const items: MaterialCallRequest[] = JSON.parse(raw);
+      // Auto-enforce 35-day retention policy on completed records
+      const cutoffTime = Date.now() - 35 * 24 * 60 * 60 * 1000;
+      let hasPruned = false;
+      const validItems = items.filter((item) => {
+        const isCompleted = item.status === 'COMPLETED';
+        if (!isCompleted) return true;
+        const itemTime = new Date(item.deliveredAt || item.requestedAt).getTime();
+        if (itemTime < cutoffTime) {
+          hasPruned = true;
+          return false;
+        }
+        return true;
+      });
+
+      if (hasPruned) {
+        localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(validItems));
+        supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, validItems);
+      }
+      return validItems;
     } catch {
       return INITIAL_MATERIAL_CALLS;
     }

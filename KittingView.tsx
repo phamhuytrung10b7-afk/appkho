@@ -27,6 +27,10 @@ import {
   XCircle,
   MapPin,
   ShieldCheck,
+  Calendar,
+  Filter,
+  Search,
+  RotateCcw,
 } from 'lucide-react';
 
 interface KittingViewProps {
@@ -116,6 +120,78 @@ export const KittingView: React.FC<KittingViewProps> = ({
   const rawPendingItems = queue.filter((i) => i.status === 'PENDING_KITTING');
   const pendingItems = rawPendingItems;
   const completedItems = queue.filter((i) => i.status === 'IN_BUFFER' || i.status === 'DELIVERED');
+
+  // Date Filtering State for History Tab (Lịch sử bóc tách) - Defaults to Today
+  const getTodayStr = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const getDaysAgoStr = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const [historyStartDate, setHistoryStartDate] = useState<string>(getTodayStr);
+  const [historyEndDate, setHistoryEndDate] = useState<string>(getTodayStr);
+  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'custom'>('today');
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+
+  const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days') => {
+    setHistoryPreset(preset);
+    const today = getTodayStr();
+    setHistoryEndDate(today);
+    if (preset === 'today') {
+      setHistoryStartDate(today);
+    } else if (preset === '3days') {
+      setHistoryStartDate(getDaysAgoStr(2));
+    } else if (preset === '7days') {
+      setHistoryStartDate(getDaysAgoStr(6));
+    } else if (preset === '35days') {
+      setHistoryStartDate(getDaysAgoStr(34));
+    }
+  };
+
+  // Filter completed items by date range and search keyword
+  const filteredCompletedItems = completedItems.filter((item) => {
+    const timeStr = item.endTime || item.createdAt;
+    if (timeStr) {
+      const itemDate = new Date(timeStr);
+      if (!isNaN(itemDate.getTime())) {
+        if (historyStartDate) {
+          const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
+          const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
+          if (itemDate.getTime() < start.getTime()) return false;
+        }
+        if (historyEndDate) {
+          const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
+          const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+          if (itemDate.getTime() > end.getTime()) return false;
+        }
+      }
+    }
+
+    if (historySearchQuery.trim()) {
+      const q = historySearchQuery.toLowerCase().trim();
+      const match =
+        item.partCode.toLowerCase().includes(q) ||
+        item.partName.toLowerCase().includes(q) ||
+        (item.operatorName && item.operatorName.toLowerCase().includes(q)) ||
+        (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  const totalFilteredKittedQty = filteredCompletedItems.reduce((sum, i) => sum + (i.kittedQuantity || 0), 0);
+  const totalFilteredScrapQty = filteredCompletedItems.reduce((sum, i) => sum + (i.scrapQuantity || 0), 0);
 
   // Group pending items by partCode (case insensitive)
   interface PendingGroup {
@@ -879,14 +955,157 @@ export const KittingView: React.FC<KittingViewProps> = ({
           </div>
         )}
 
-        {/* Tab 3: Completed History */}
+        {/* Tab 3: Completed History with Date Range Filter & 35-Day Retention */}
         {activeTab === 'history' && (
-          <div className="p-4 sm:p-6 space-y-4">
-            <div className="overflow-x-auto">
+          <div className="p-4 sm:p-6 space-y-5">
+            {/* Filter Toolbar */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center space-x-2">
+                  <div className="p-2 bg-blue-100 text-blue-800 rounded-xl">
+                    <Filter className="w-4 h-4 text-blue-700" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-xs sm:text-sm text-slate-900">
+                      BỘ LỌC NGÀY LỊCH SỬ BÓC TÁCH
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Chỉ hiển thị các ngày bạn chọn xem (Dữ liệu lưu trữ tối đa trong 35 ngày gần nhất).
+                    </p>
+                  </div>
+                </div>
+
+                {/* Quick presets */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('today')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === 'today'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    📅 Hôm nay
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('3days')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === '3days'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    3 ngày qua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('7days')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === '7days'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    7 ngày qua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('35days')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === '35days'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    Toàn bộ (35 ngày)
+                  </button>
+                </div>
+              </div>
+
+              {/* Date Inputs & Search Box */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 pt-2 border-t border-slate-200">
+                <div className="sm:col-span-3 flex items-center space-x-2">
+                  <span className="text-xs font-bold text-slate-600 shrink-0">Từ ngày:</span>
+                  <input
+                    type="date"
+                    value={historyStartDate}
+                    onChange={(e) => {
+                      setHistoryStartDate(e.target.value);
+                      setHistoryPreset('custom');
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-600 outline-hidden"
+                  />
+                </div>
+
+                <div className="sm:col-span-3 flex items-center space-x-2">
+                  <span className="text-xs font-bold text-slate-600 shrink-0">Đến ngày:</span>
+                  <input
+                    type="date"
+                    value={historyEndDate}
+                    onChange={(e) => {
+                      setHistoryEndDate(e.target.value);
+                      setHistoryPreset('custom');
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-600 outline-hidden"
+                  />
+                </div>
+
+                <div className="sm:col-span-6 relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={historySearchQuery}
+                    onChange={(e) => setHistorySearchQuery(e.target.value)}
+                    placeholder="Tìm theo mã LK, tên LK, người bóc, kệ buffer..."
+                    className="w-full pl-9 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-blue-600 outline-hidden"
+                  />
+                  {historySearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setHistorySearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Result Summary Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 text-xs font-bold">
+                <div className="flex items-center space-x-2 text-slate-600">
+                  <span>
+                    Kết quả lọc: <strong className="text-blue-700">{filteredCompletedItems.length}</strong> / {completedItems.length} bản ghi
+                  </span>
+                  {historyStartDate && historyEndDate && (
+                    <span className="bg-blue-100 text-blue-900 px-2 py-0.5 rounded-md text-[11px] font-mono">
+                      {historyStartDate} ➜ {historyEndDate}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <span className="text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                    Tổng Thực Bóc: <strong>{totalFilteredKittedQty.toLocaleString()}</strong>
+                  </span>
+                  {totalFilteredScrapQty > 0 && (
+                    <span className="text-rose-800 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-lg">
+                      Phế Phẩm: <strong>{totalFilteredScrapQty.toLocaleString()}</strong>
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* History Table */}
+            <div className="overflow-x-auto border border-slate-200 rounded-2xl">
               <table className="w-full text-left text-xs whitespace-nowrap">
                 <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[11px] border-b border-slate-200">
                   <tr>
                     <th className="p-3 w-10 text-center">STT</th>
+                    <th className="p-3">Thời Gian Bóc</th>
                     <th className="p-3">Mã Linh Kiện</th>
                     <th className="p-3">Tên Linh Kiện</th>
                     <th className="p-3 text-right text-emerald-800 bg-emerald-50">SL Thực Bóc</th>
@@ -894,42 +1113,96 @@ export const KittingView: React.FC<KittingViewProps> = ({
                     <th className="p-3">Vị Trí Kệ Buffer</th>
                     <th className="p-3">Người Bóc Tách</th>
                     <th className="p-3 text-center">Trạng Thái</th>
+                    {isAdmin && <th className="p-3 text-center text-rose-700 font-bold">Thao Tác</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {completedItems.length === 0 ? (
+                  {filteredCompletedItems.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="p-8 text-center text-slate-400 italic">
-                        Chưa có dữ liệu lịch sử bóc tách
+                      <td colSpan={isAdmin ? 10 : 9} className="p-12 text-center text-slate-400">
+                        <Clock className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                        <p className="font-extrabold text-slate-700 text-sm">
+                          Không có dữ liệu bóc tách trong khoảng ngày đã chọn
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                          {historyStartDate && historyEndDate ? (
+                            <span>Từ ngày <strong>{historyStartDate}</strong> đến <strong>{historyEndDate}</strong> chưa có lượt bóc tách nào.</span>
+                          ) : (
+                            <span>Chưa có dữ liệu lịch sử bóc tách trong hệ thống.</span>
+                          )}
+                        </p>
+                        <div className="mt-3 flex justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => applyHistoryPreset('35days')}
+                            className="px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-900 rounded-xl font-bold text-xs cursor-pointer"
+                          >
+                            Xem Toàn Bộ 35 Ngày
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyHistoryPreset('today')}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer"
+                          >
+                            Về Ngày Hôm Nay
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ) : (
-                    completedItems.map((item, idx) => (
-                      <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
-                        <td className="p-3 font-mono font-bold text-blue-700">{item.partCode}</td>
-                        <td className="p-3 font-semibold text-slate-900">{item.partName}</td>
-                        <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/50">
-                          {item.kittedQuantity} {item.unit}
-                        </td>
-                        <td className="p-3 text-right font-bold text-rose-600 bg-rose-50/50">
-                          {item.scrapQuantity || 0}
-                        </td>
-                        <td className="p-3 font-bold text-blue-700">📍 {item.bufferLocation}</td>
-                        <td className="p-3 text-slate-700 font-medium">{item.operatorName}</td>
-                        <td className="p-3 text-center">
-                          {item.status === 'DELIVERED' ? (
-                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-md">
-                              Đã Giao Dây Chuyền
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-md">
-                              Đang Trên Kệ Buffer
-                            </span>
+                    filteredCompletedItems.map((item, idx) => {
+                      const timeStr = item.endTime || item.createdAt;
+                      const formattedTime = timeStr
+                        ? new Date(timeStr).toLocaleString('vi-VN', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                          })
+                        : '---';
+
+                      return (
+                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
+                          <td className="p-3 font-mono font-bold text-slate-700 text-[11px]">{formattedTime}</td>
+                          <td className="p-3 font-mono font-bold text-blue-700">{item.partCode}</td>
+                          <td className="p-3 font-semibold text-slate-900">{item.partName}</td>
+                          <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/50">
+                            {item.kittedQuantity} {item.unit}
+                          </td>
+                          <td className="p-3 text-right font-bold text-rose-600 bg-rose-50/50">
+                            {item.scrapQuantity || 0}
+                          </td>
+                          <td className="p-3 font-bold text-blue-700">📍 {item.bufferLocation}</td>
+                          <td className="p-3 text-slate-700 font-medium">{item.operatorName}</td>
+                          <td className="p-3 text-center">
+                            {item.status === 'DELIVERED' ? (
+                              <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-md">
+                                Đã Giao Dây Chuyền
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-md">
+                                Đang Trên Kệ Buffer
+                              </span>
+                            )}
+                          </td>
+                          {isAdmin && (
+                            <td className="p-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteItem(item.id)}
+                                className="p-1.5 text-rose-500 hover:bg-rose-50 hover:text-rose-700 rounded-lg cursor-pointer transition-colors"
+                                title="Xóa bản ghi lịch sử này (Chỉ Quản trị viên)"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
                           )}
-                        </td>
-                      </tr>
-                    ))
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

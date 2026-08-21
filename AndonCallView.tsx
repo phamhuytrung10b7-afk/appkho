@@ -34,6 +34,8 @@ import {
   AlertTriangle,
   RotateCcw,
   ShieldAlert,
+  Calendar,
+  Filter,
 } from 'lucide-react';
 
 interface AndonCallViewProps {
@@ -601,6 +603,79 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   const completedReqs = materialCalls
     .filter((m) => m.status === 'COMPLETED')
     .sort((a, b) => new Date(b.deliveredAt || b.requestedAt).getTime() - new Date(a.deliveredAt || a.requestedAt).getTime());
+
+  // Date Filtering State for Tab 4 (Lịch sử giao cấp hàng) - Defaults to Today
+  const getTodayStr = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const getDaysAgoStr = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const [historyStartDate, setHistoryStartDate] = useState<string>(getTodayStr);
+  const [historyEndDate, setHistoryEndDate] = useState<string>(getTodayStr);
+  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'custom'>('today');
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+
+  const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days') => {
+    setHistoryPreset(preset);
+    const today = getTodayStr();
+    setHistoryEndDate(today);
+    if (preset === 'today') {
+      setHistoryStartDate(today);
+    } else if (preset === '3days') {
+      setHistoryStartDate(getDaysAgoStr(2));
+    } else if (preset === '7days') {
+      setHistoryStartDate(getDaysAgoStr(6));
+    } else if (preset === '35days') {
+      setHistoryStartDate(getDaysAgoStr(34));
+    }
+  };
+
+  // Filter completed delivery records
+  const filteredCompletedReqs = completedReqs.filter((item) => {
+    const timeStr = item.deliveredAt || item.requestedAt;
+    if (timeStr) {
+      const itemDate = new Date(timeStr);
+      if (!isNaN(itemDate.getTime())) {
+        if (historyStartDate) {
+          const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
+          const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
+          if (itemDate.getTime() < start.getTime()) return false;
+        }
+        if (historyEndDate) {
+          const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
+          const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+          if (itemDate.getTime() > end.getTime()) return false;
+        }
+      }
+    }
+
+    if (historySearchQuery.trim()) {
+      const q = historySearchQuery.toLowerCase().trim();
+      const match =
+        item.partCode.toLowerCase().includes(q) ||
+        item.partName.toLowerCase().includes(q) ||
+        item.assemblyLine.toLowerCase().includes(q) ||
+        (item.requestedBy && item.requestedBy.toLowerCase().includes(q)) ||
+        (item.deliveredBy && item.deliveredBy.toLowerCase().includes(q)) ||
+        (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  const totalFilteredDeliveredQty = filteredCompletedReqs.reduce((sum, r) => sum + (r.requestedQty || 0), 0);
 
   const formatVietnamDateTime = (isoString: string) => {
     if (!isoString) return 'Chưa ghi nhận';
@@ -1469,10 +1544,147 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 4: CALL HISTORY - ONLY COMPLETED DELIVERIES */}
+        {/* TAB 4: CALL HISTORY - ONLY COMPLETED DELIVERIES WITH DATE FILTER & 35-DAY RETENTION */}
         {activeTab === 'history' && (
-          <div className="p-4 sm:p-6 space-y-4">
-            <div className="overflow-x-auto">
+          <div className="p-4 sm:p-6 space-y-5">
+            {/* Filter Toolbar */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center space-x-2">
+                  <div className="p-2 bg-amber-100 text-amber-900 rounded-xl">
+                    <Filter className="w-4 h-4 text-amber-700" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-xs sm:text-sm text-slate-900">
+                      BỘ LỌC NGÀY LỊCH SỬ GIAO CẤP HÀNG
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Chỉ hiển thị các đơn hoàn tất giao trong khoảng ngày bạn chọn (Lưu trữ tối đa 35 ngày gần nhất).
+                    </p>
+                  </div>
+                </div>
+
+                {/* Quick presets */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('today')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === 'today'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    📅 Hôm nay
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('3days')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === '3days'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    3 ngày qua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('7days')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === '7days'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    7 ngày qua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('35days')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === '35days'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    Toàn bộ (35 ngày)
+                  </button>
+                </div>
+              </div>
+
+              {/* Date Inputs & Search Box */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 pt-2 border-t border-slate-200">
+                <div className="sm:col-span-3 flex items-center space-x-2">
+                  <span className="text-xs font-bold text-slate-600 shrink-0">Từ ngày:</span>
+                  <input
+                    type="date"
+                    value={historyStartDate}
+                    onChange={(e) => {
+                      setHistoryStartDate(e.target.value);
+                      setHistoryPreset('custom');
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
+                  />
+                </div>
+
+                <div className="sm:col-span-3 flex items-center space-x-2">
+                  <span className="text-xs font-bold text-slate-600 shrink-0">Đến ngày:</span>
+                  <input
+                    type="date"
+                    value={historyEndDate}
+                    onChange={(e) => {
+                      setHistoryEndDate(e.target.value);
+                      setHistoryPreset('custom');
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
+                  />
+                </div>
+
+                <div className="sm:col-span-6 relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={historySearchQuery}
+                    onChange={(e) => setHistorySearchQuery(e.target.value)}
+                    placeholder="Tìm theo mã LK, tên LK, bàn máy, người gọi, người giao, kệ..."
+                    className="w-full pl-9 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
+                  />
+                  {historySearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setHistorySearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Result Summary Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 text-xs font-bold">
+                <div className="flex items-center space-x-2 text-slate-600">
+                  <span>
+                    Kết quả lọc: <strong className="text-amber-700">{filteredCompletedReqs.length}</strong> / {completedReqs.length} đơn hoàn tất
+                  </span>
+                  {historyStartDate && historyEndDate && (
+                    <span className="bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md text-[11px] font-mono">
+                      {historyStartDate} ➜ {historyEndDate}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <span className="text-amber-900 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
+                    Tổng SL Đã Cấp: <strong>{totalFilteredDeliveredQty.toLocaleString()}</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* History Table */}
+            <div className="overflow-x-auto border border-slate-200 rounded-2xl">
               <table className="w-full text-left text-xs whitespace-nowrap">
                 <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[11px] border-b border-slate-200">
                   <tr>
@@ -1491,18 +1703,40 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {completedReqs.length === 0 ? (
+                  {filteredCompletedReqs.length === 0 ? (
                     <tr>
                       <td colSpan={isAdmin ? 12 : 11} className="p-12 text-center text-slate-400">
                         <Clock className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                        <p className="font-extrabold text-slate-700 text-sm">Chưa Có Lịch Sử Giao Cấp Hàng Hoàn Tất</p>
-                        <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                          Hệ thống chỉ tự động ghi nhận vào lịch sử sau khi nhân viên hoàn tất vận chuyển và bấm nút <strong className="text-emerald-700 font-bold">"XÁC NHẬN ĐÃ GIAO HÀNG TỚI BÀN MÁY"</strong>.
+                        <p className="font-extrabold text-slate-700 text-sm">
+                          Không Có Lịch Sử Giao Hàng Trong Khoảng Ngày Đã Chọn
                         </p>
+                        <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                          {historyStartDate && historyEndDate ? (
+                            <span>Từ ngày <strong>{historyStartDate}</strong> đến <strong>{historyEndDate}</strong> chưa ghi nhận đơn giao hoàn tất nào.</span>
+                          ) : (
+                            <span>Chưa có dữ liệu lịch sử giao cấp hàng trong hệ thống.</span>
+                          )}
+                        </p>
+                        <div className="mt-3 flex justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => applyHistoryPreset('35days')}
+                            className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl font-bold text-xs cursor-pointer"
+                          >
+                            Xem Toàn Bộ 35 Ngày
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyHistoryPreset('today')}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-xs cursor-pointer"
+                          >
+                            Về Ngày Hôm Nay
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ) : (
-                    completedReqs.map((m, idx) => (
+                    filteredCompletedReqs.map((m, idx) => (
                       <tr key={m.requestId} className="hover:bg-slate-50 transition-colors">
                         <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
                         <td className="p-3 text-slate-600 font-semibold">{formatVietnamDateTime(m.deliveredAt || m.requestedAt)}</td>
