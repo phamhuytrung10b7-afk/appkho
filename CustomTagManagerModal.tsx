@@ -283,14 +283,14 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
         }
         .tag-card-title {
           font-weight: 900;
-          font-size: 12.5px;
+          font-size: 11.5px;
           letter-spacing: -0.2px;
           color: #000;
           white-space: nowrap;
         }
         .tag-card-stt {
           font-weight: 900;
-          font-size: 11px;
+          font-size: 10.5px;
           font-family: monospace;
           border: 1px solid #000;
           padding: 0 4px;
@@ -301,8 +301,8 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           width: 100%;
           border-collapse: collapse;
           table-layout: fixed;
-          border: 1.5px solid #000;
-          font-size: 10.5px;
+          border: 1px solid #000;
+          font-size: 9.5px;
           color: #000;
           box-sizing: border-box;
         }
@@ -318,16 +318,15 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           -webkit-print-color-adjust: exact !important;
           print-color-adjust: exact !important;
           font-weight: 800;
-          font-size: 10.5px;
+          font-size: 9.5px;
           color: #000;
         }
         .tag-card-footer {
           display: flex;
-          justify-content: flex-end;
+          justify-content: space-between;
           align-items: center;
-          font-size: 10px;
-          font-family: Arial, sans-serif;
-          font-weight: 900;
+          font-size: 9px;
+          font-family: monospace;
           color: #000;
           padding-top: 1px;
           height: 3.5mm;
@@ -343,20 +342,6 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
     const grp = tag.groupConfig;
     const rawStt = tag.stt || '1';
     const displayStt = rawStt.toLowerCase().includes('số') ? rawStt : `Số ${rawStt}`;
-
-    const getPartNameFontSize = (text: string) => {
-      if (text.length > 40) return '9.5px';
-      if (text.length > 25) return '10.5px';
-      if (text.length > 15) return '11.5px';
-      return '12.5px';
-    };
-
-    const getPartCodeFontSize = (text: string) => {
-      if (text.length > 30) return '9.5px';
-      if (text.length > 20) return '10.5px';
-      if (text.length > 14) return '11.5px';
-      return '12.5px';
-    };
 
     return (
       <div
@@ -399,7 +384,7 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             className="tag-card-title"
             style={{
               fontWeight: 900,
-              fontSize: '12.5px',
+              fontSize: '11.5px',
               letterSpacing: '-0.2px',
               color: '#000',
               whiteSpace: 'nowrap',
@@ -411,10 +396,10 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             className="tag-card-stt"
             style={{
               fontWeight: 900,
-              fontSize: '11px',
+              fontSize: '10.5px',
               fontFamily: 'monospace',
               border: '1px solid #000',
-              padding: '0 4px',
+              padding: '0 3px',
               backgroundColor: '#fff',
               whiteSpace: 'nowrap',
             }}
@@ -429,8 +414,8 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             width: '100%',
             borderCollapse: 'collapse',
             tableLayout: 'fixed',
-            border: '1.5px solid #000',
-            fontSize: '10.5px',
+            border: '1px solid #000',
+            fontSize: '9.5px',
             color: '#000',
             boxSizing: 'border-box',
           }}
@@ -443,105 +428,108 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           </colgroup>
           <tbody>
             <tr style={{ height: '6.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Nhóm
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '11.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 900, fontSize: '10.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {tag.groupName}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 NCC
               </td>
               <td style={{ border: '1px solid #000', padding: '1px', textAlign: 'center', verticalAlign: 'middle' }}>
-                <div style={{ backgroundColor: grp.colorHex, color: grp.textColorHex, padding: '1.5px 3px', borderRadius: '3px', border: '1px solid #000', fontWeight: 900, fontSize: '10px', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: '1.15', maxHeight: '5.5mm' }}>
+                <div style={{ backgroundColor: grp.colorHex, color: grp.textColorHex, padding: '1px 2px', borderRadius: '3px', border: '1px solid #000', fontWeight: 900, fontSize: '9px', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: '1.1', maxHeight: '5.5mm' }}>
                   {grp.name}
                 </div>
               </td>
             </tr>
 
             <tr style={{ height: '7.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Tên linh kiện
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: getPartNameFontSize(tag.partName || ''), lineHeight: '1.15', wordBreak: 'break-word', overflow: 'hidden', maxHeight: '7.5mm' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 900, fontSize: '10.5px', lineHeight: '1.1', wordBreak: 'break-word', overflow: 'hidden' }}>
                 {tag.partName}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Quy cách CCDC
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '12px' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 900, fontSize: '10.5px' }}>
                 {tag.ccdcSpec || 'Thùng dư lẻ'}
               </td>
             </tr>
 
             <tr style={{ height: '6.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Mã linh kiện
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontFamily: 'monospace', fontWeight: 900, fontSize: getPartCodeFontSize(tag.partCode || ''), lineHeight: '1.15', wordBreak: 'break-all', overflow: 'hidden' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontFamily: 'monospace', fontWeight: 900, fontSize: '10.5px', lineHeight: '1.1', wordBreak: 'break-all', overflow: 'hidden' }}>
                 {tag.partCode}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Ghi chú
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontFamily: 'monospace', fontWeight: 700, fontSize: '10px' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontFamily: 'monospace', fontSize: '9px' }}>
                 Phát sinh
               </td>
             </tr>
 
             <tr style={{ height: '6.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Số lượng
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '14.5px', color: '#1e3a8a' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 900, fontSize: '13px', color: '#1e3a8a' }}>
                 {tag.standardQty}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 ĐVT
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '11.5px' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 900, fontSize: '10.5px' }}>
                 {tag.unit || 'cái/bộ'}
               </td>
             </tr>
 
             <tr style={{ height: '6.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Khối lượng
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '11px' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 'bold', fontSize: '10px' }}>
                 -
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Tần suất
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '11px' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontWeight: 900, fontSize: '10px' }}>
                 1h / 1 lần
               </td>
             </tr>
 
             <tr style={{ height: '12mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Mã vạch QR
               </td>
               <td style={{ border: '1px solid #000', padding: '1px', textAlign: 'center', backgroundColor: '#ffffff', verticalAlign: 'middle' }}>
-                <div style={{ display: 'inline-block', padding: '2px 4px', backgroundColor: '#eff6ff', border: '1px dashed #2563eb', borderRadius: '3px', textAlign: 'center', lineHeight: 1.15 }}>
-                  <span style={{ fontSize: '10px', fontWeight: 900, color: '#1e40af' }}>MẶT SAU</span>
+                <div style={{ display: 'inline-block', padding: '1px 3px', backgroundColor: '#eff6ff', border: '1px dashed #2563eb', borderRadius: '2px', textAlign: 'center', lineHeight: 1.1 }}>
+                  <span style={{ fontSize: '9px', fontWeight: 900, color: '#1e40af' }}>MẶT SAU</span>
                   <br />
-                  <span style={{ fontSize: '8.5px', fontWeight: 800, color: '#2563eb' }}>(QR 30x30mm)</span>
+                  <span style={{ fontSize: '7.5px', fontWeight: 'bold', color: '#2563eb' }}>(QR 30x30mm)</span>
                 </div>
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 2px', backgroundColor: '#f1f5f9', fontWeight: 'bold', fontSize: '9.5px' }}>
                 Thời gian cần thực
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontFamily: 'monospace', fontWeight: 700, fontSize: '10px' }}>
+              <td style={{ border: '1px solid #000', padding: '1px 2px', fontFamily: 'monospace', fontSize: '9px' }}>
                 ......(h)
               </td>
             </tr>
           </tbody>
         </table>
 
-        <div className="tag-card-footer" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', fontSize: '10px', fontFamily: 'Arial, Helvetica, sans-serif', fontWeight: 900, color: '#000', paddingTop: '1px', height: '3.5mm', boxSizing: 'border-box' }}>
-          <span style={{ fontWeight: 900, letterSpacing: '0.5px' }}>NMBD - SUNHOUSE</span>
+        <div className="tag-card-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '9px', fontFamily: 'monospace', color: '#000', paddingTop: '1px', height: '3.5mm', boxSizing: 'border-box' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65mm' }}>
+            Payload: {tag.qrPayload}
+          </span>
+          <span style={{ fontWeight: 'bold' }}>NMBD - SUNHOUSE</span>
         </div>
       </div>
     );

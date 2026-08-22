@@ -245,14 +245,14 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
         }
         .tag-card-title {
           font-weight: 900;
-          font-size: 12.5px;
+          font-size: 11.5px;
           letter-spacing: -0.2px;
           color: #000;
           white-space: nowrap;
         }
         .tag-card-stt {
           font-weight: 900;
-          font-size: 11px;
+          font-size: 10.5px;
           font-family: monospace;
           border: 1px solid #000;
           padding: 0 4px;
@@ -263,8 +263,8 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
           width: 100%;
           border-collapse: collapse;
           table-layout: fixed;
-          border: 1.5px solid #000;
-          font-size: 10.5px;
+          border: 1px solid #000;
+          font-size: 9.5px;
           color: #000;
           box-sizing: border-box;
         }
@@ -280,16 +280,15 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
           -webkit-print-color-adjust: exact !important;
           print-color-adjust: exact !important;
           font-weight: 800;
-          font-size: 10.5px;
+          font-size: 9.5px;
           color: #000;
         }
         .tag-card-footer {
           display: flex;
-          justify-content: flex-end;
+          justify-content: space-between;
           align-items: center;
-          font-size: 10px;
-          font-family: Arial, sans-serif;
-          font-weight: 900;
+          font-size: 9px;
+          font-family: monospace;
           color: #000;
           padding-top: 1px;
           height: 3.5mm;
@@ -308,19 +307,19 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
     const rawStt = tag.stt || '1';
     const displayStt = rawStt.toLowerCase().includes('số') ? rawStt : `Số ${rawStt}`;
 
-    // Dynamic auto-scaling font size for long part names and codes (larger & optimized)
+    // Dynamic auto-scaling font size for long part names and codes
     const getPartNameFontSize = (text: string) => {
-      if (text.length > 40) return '9.5px';
-      if (text.length > 25) return '10.5px';
-      if (text.length > 15) return '11.5px';
-      return '12.5px';
+      if (text.length > 40) return '8.5px';
+      if (text.length > 28) return '9.5px';
+      if (text.length > 18) return '10.5px';
+      return '11.5px';
     };
 
     const getPartCodeFontSize = (text: string) => {
-      if (text.length > 30) return '9.5px';
-      if (text.length > 20) return '10.5px';
-      if (text.length > 14) return '11.5px';
-      return '12.5px';
+      if (text.length > 30) return '8.5px';
+      if (text.length > 20) return '9.5px';
+      if (text.length > 14) return '10.5px';
+      return '11.5px';
     };
 
     return (
@@ -365,7 +364,7 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
             className="tag-card-title"
             style={{
               fontWeight: 900,
-              fontSize: '12.5px',
+              fontSize: '11.5px',
               letterSpacing: '-0.2px',
               color: '#000',
               whiteSpace: 'nowrap',
@@ -377,10 +376,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
             className="tag-card-stt"
             style={{
               fontWeight: 900,
-              fontSize: '11px',
+              fontSize: '10.5px',
               fontFamily: 'monospace',
               border: '1px solid #000',
-              padding: '0 4px',
+              padding: '0 3px',
               backgroundColor: '#fff',
               whiteSpace: 'nowrap',
             }}
@@ -396,8 +395,8 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
             width: '100%',
             borderCollapse: 'collapse',
             tableLayout: 'fixed',
-            border: '1.5px solid #000',
-            fontSize: '10.5px',
+            border: '1px solid #000',
+            fontSize: '9.5px',
             color: '#000',
             boxSizing: 'border-box',
           }}
@@ -415,10 +414,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Nhóm
@@ -426,9 +425,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontWeight: 900,
-                  fontSize: '11.5px',
+                  fontSize: '10.5px',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
@@ -440,10 +439,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 NCC
@@ -460,16 +459,16 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                   style={{
                     backgroundColor: grp.colorHex,
                     color: grp.textColorHex,
-                    padding: '1.5px 3px',
+                    padding: '1px 2px',
                     borderRadius: '3px',
                     border: '1px solid #000',
                     fontWeight: 900,
-                    fontSize: '10px',
+                    fontSize: '9px',
                     textAlign: 'center',
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
-                    lineHeight: '1.15',
+                    lineHeight: '1.1',
                     maxHeight: '5.5mm',
                   }}
                 >
@@ -484,10 +483,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Tên linh kiện
@@ -495,13 +494,13 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontWeight: 900,
                   fontSize: getPartNameFontSize(tag.partName || ''),
-                  lineHeight: '1.15',
+                  lineHeight: '1.1',
                   wordBreak: 'break-word',
                   overflow: 'hidden',
-                  maxHeight: '7.5mm',
+                  maxHeight: '7mm',
                 }}
               >
                 {tag.partName}
@@ -510,10 +509,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Quy cách CCDC
@@ -521,9 +520,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontWeight: 900,
-                  fontSize: '12px',
+                  fontSize: '10.5px',
                 }}
               >
                 {tag.ccdcSpec || '0'}
@@ -536,10 +535,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Mã linh kiện
@@ -547,11 +546,11 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontFamily: 'monospace',
                   fontWeight: 900,
                   fontSize: getPartCodeFontSize(tag.partCode || ''),
-                  lineHeight: '1.15',
+                  lineHeight: '1.1',
                   wordBreak: 'break-all',
                   overflow: 'hidden',
                 }}
@@ -562,10 +561,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Ghi chú
@@ -573,10 +572,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontFamily: 'monospace',
-                  fontWeight: 700,
-                  fontSize: '10px',
+                  fontSize: '9px',
                 }}
               >
                 Số ......
@@ -589,10 +587,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Số lượng
@@ -600,9 +598,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontWeight: 900,
-                  fontSize: '14.5px',
+                  fontSize: '13px',
                 }}
               >
                 {tag.standardQty > 0 ? tag.standardQty : ''}
@@ -611,10 +609,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 ĐVT
@@ -622,9 +620,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontWeight: 900,
-                  fontSize: '11.5px',
+                  fontSize: '10.5px',
                 }}
               >
                 {tag.unit || 'cái/bộ'}
@@ -637,10 +635,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Khối lượng
@@ -648,9 +646,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
-                  fontWeight: 900,
-                  fontSize: '11px',
+                  padding: '1px 2px',
+                  fontWeight: 'bold',
+                  fontSize: '10px',
                 }}
               >
                 -
@@ -659,10 +657,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Tần suất
@@ -670,9 +668,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontWeight: 900,
-                  fontSize: '11px',
+                  fontSize: '10px',
                 }}
               >
                 {tag.mfgFrequency || '1h / 1 lần'}
@@ -685,10 +683,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Mã vạch QR
@@ -705,19 +703,19 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 <div
                   style={{
                     display: 'inline-block',
-                    padding: '2px 4px',
+                    padding: '1px 3px',
                     backgroundColor: '#eff6ff',
                     border: '1px dashed #2563eb',
-                    borderRadius: '3px',
+                    borderRadius: '2px',
                     textAlign: 'center',
-                    lineHeight: 1.15,
+                    lineHeight: 1.1,
                   }}
                 >
-                  <span style={{ fontSize: '10px', fontWeight: 900, color: '#1e40af' }}>
+                  <span style={{ fontSize: '9px', fontWeight: 900, color: '#1e40af' }}>
                     MẶT SAU
                   </span>
                   <br />
-                  <span style={{ fontSize: '8.5px', fontWeight: 800, color: '#2563eb' }}>
+                  <span style={{ fontSize: '7.5px', fontWeight: 'bold', color: '#2563eb' }}>
                     (QR 30x30mm)
                   </span>
                 </div>
@@ -726,10 +724,10 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 className="lbl-cell"
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   backgroundColor: '#f1f5f9',
-                  fontWeight: 800,
-                  fontSize: '10.5px',
+                  fontWeight: 'bold',
+                  fontSize: '9.5px',
                 }}
               >
                 Thời gian cần thực
@@ -737,10 +735,9 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               <td
                 style={{
                   border: '1px solid #000',
-                  padding: '1px 3px',
+                  padding: '1px 2px',
                   fontFamily: 'monospace',
-                  fontWeight: 700,
-                  fontSize: '10px',
+                  fontSize: '9px',
                 }}
               >
                 ......(h)
@@ -749,22 +746,33 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
           </tbody>
         </table>
 
-        {/* Footer: NMBD - SUNHOUSE (Cleanly removed payload string) */}
+        {/* Footer Payload string */}
         <div
           className="tag-card-footer"
           style={{
             display: 'flex',
-            justifyContent: 'flex-end',
+            justifyContent: 'space-between',
             alignItems: 'center',
-            fontSize: '10px',
-            fontFamily: 'Arial, Helvetica, sans-serif',
+            fontSize: '9px',
+            fontFamily: 'monospace',
             color: '#000',
             paddingTop: '1px',
             height: '3.5mm',
             boxSizing: 'border-box',
           }}
         >
-          <span style={{ fontWeight: 900, letterSpacing: '0.5px' }}>
+          <span
+            style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              maxWidth: '65mm',
+              fontWeight: 800,
+            }}
+          >
+            Payload: {tag.qrPayload}
+          </span>
+          <span style={{ fontWeight: 900, flexShrink: 0 }}>
             NMBD - SUNHOUSE
           </span>
         </div>
