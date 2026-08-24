@@ -190,35 +190,50 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     const bufferEntry = bufferPartsMap.get(targetPartCode.trim());
     const pendingItemsForCode = pendingKittingItems.filter((k) => k.partCode.trim().toLowerCase() === targetPartCode.trim().toLowerCase());
 
+    const stockOnBuffer = bufferEntry ? bufferEntry.totalBufferStock : 0;
+    const pendingRawQty = pendingItemsForCode.reduce((sum, i) => sum + i.rawQuantity, 0);
+    const totalAvailable = stockOnBuffer + pendingRawQty;
+
+    // STRICT USER REQUIREMENT: Only accept parts that exist in either Pending Kitting Queue (Chờ bóc tách) OR on Outbuffer Shelves
+    if (totalAvailable <= 0) {
+      setAndonErrorModal({
+        isOpen: true,
+        title: '⛔ TỪ CHỐI GỌI HÀNG - LINH KIỆN CHƯA CÓ HÀNG',
+        message: `Linh kiện [${targetPartCode}] - ${targetPartName} HIỆN CHƯA CÓ HÀNG ĐỂ GỌI!\n\n• Danh Sách Chờ Bóc Tách: 0 ${targetUnit} (Chưa xuất kho thô)\n• Tồn Kệ Outbuffer: 0 ${targetUnit} (Chưa bóc tách kitting lên kệ)\n\n👉 Quy định hệ thống: Chỉ chấp nhận phát tín hiệu gọi hàng cho những linh kiện ĐÃ CÓ trong "Danh Sách Chờ Bóc Tách" (giao trực tiếp qua DCLR) hoặc ĐÃ BÓC TÁCH nằm trên Kệ OUTBUFFER.\n\nVui lòng liên hệ Kho Tổng thực hiện Phiếu Xuất Thô linh kiện trước khi phát tín hiệu gọi hàng!`,
+      });
+      return;
+    }
+
     // Determine Kitting status & location recommendation
     let isKitted = false;
     let recLocation = 'DCLR';
     let availableShelves: string[] = [];
-    let stockOnBuffer = 0;
-    let pendingRawQty = 0;
     let statusText = '';
     let locationGuideText = '';
 
-    if (bufferEntry && bufferEntry.totalBufferStock > 0 && bufferEntry.availableBuffers.length > 0) {
+    if (stockOnBuffer > 0 && bufferEntry && bufferEntry.availableBuffers.length > 0) {
       isKitted = true;
-      stockOnBuffer = bufferEntry.totalBufferStock;
       availableShelves = bufferEntry.availableBuffers.map((b) => b.locationId);
       recLocation = availableShelves[0]; // FIFO shelf recommendation
       setSelectedPickShelf(recLocation);
-      statusText = `🟢 ĐÃ KITTING (Sẵn sàng trên Kệ Outbuffer)`;
-      locationGuideText = `📍 Linh kiện ĐÃ KITTING. Có ${bufferEntry.availableBuffers.length} kệ chứa linh kiện này. Kệ gợi ý FIFO: ${recLocation} (Tồn kệ: ${stockOnBuffer} ${targetUnit})`;
+      statusText = `🟢 ĐÃ BÓC TÁCH KITTING (Sẵn sàng trên ${availableShelves.length} Kệ Outbuffer)`;
+      locationGuideText = `📍 Linh kiện ĐÃ KITTING lên Kệ Outbuffer. Kệ gợi ý FIFO: ${recLocation} (Tồn kệ: ${bufferEntry.availableBuffers[0]?.currentStockQty || stockOnBuffer} ${targetUnit} | Tổng tồn Outbuffer: ${stockOnBuffer} ${targetUnit}). Logistics sẽ lấy từ kệ này và trừ tồn kho kệ khi hoàn tất giao.`;
     } else {
+      // Not on Outbuffer shelves, but available in Pending Kitting Queue -> Direct delivery via DCLR!
       isKitted = false;
       recLocation = 'DCLR';
       setSelectedPickShelf('DCLR');
-      pendingRawQty = pendingItemsForCode.reduce((sum, i) => sum + i.rawQuantity, 0);
-      statusText = `🟡 CHƯA KITTING (Giao trực tiếp qua DCLR / Kho Thô)`;
-      locationGuideText = `🚚 Linh kiện CHƯA KITTING lên Kệ Outbuffer. Tín hiệu Andon sẽ giao cấp trực tiếp qua DCLR (Kho Thô)`;
+      statusText = `🟡 CHƯA KITTING - GIAO TRỰC TIẾP QUA DCLR (Tồn Chờ Bóc Tách: ${pendingRawQty} ${targetUnit})`;
+      locationGuideText = `🚚 Linh kiện chưa kịp bóc tách kitting nhưng ĐÃ CÓ trong Danh Sách Chờ Bóc Tách (${pendingRawQty} ${targetUnit}). Logistics sẽ giao trực tiếp qua DCLR và hệ thống sẽ TIÊU HAO/TRỪ TỒN ${Math.min(targetQty, pendingRawQty)} ${targetUnit} trong Danh Sách Chờ Bóc Tách khi hoàn tất giao hàng!`;
     }
 
     // Auto update selected part code & values
     setSelectedPartCode(targetPartCode);
-    setRequestedQty(targetQty);
+    const initialCallQty = isKitted
+      ? Math.min(targetQty, stockOnBuffer)
+      : Math.min(targetQty, pendingRawQty);
+    setRequestedQty(initialCallQty > 0 ? initialCallQty : targetQty);
+
     if (assemblyLinesList && assemblyLinesList.length > 0) {
       setAssemblyLine(assemblyLinesList[0]);
     }
@@ -448,7 +463,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       });
 
       onRefresh();
-      setActiveTab('logistics');
+      setActiveTab('calling');
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Lỗi khi tạo tín hiệu Andon' });
     }
@@ -521,7 +536,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       });
 
       onRefresh();
-      setActiveTab('logistics');
+      setActiveTab('calling');
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Lỗi khi tạo tín hiệu Andon' });
     }
