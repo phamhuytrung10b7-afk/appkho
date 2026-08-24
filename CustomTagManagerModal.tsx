@@ -239,29 +239,29 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           font-family: Arial, Helvetica, sans-serif;
         }
         .a4-page {
-          width: 190mm;
-          height: 275mm;
+          width: 206mm;
+          height: 290mm;
           box-sizing: border-box;
           page-break-after: always;
           break-after: page;
           display: grid;
-          grid-template-columns: repeat(2, 90mm);
-          grid-template-rows: repeat(4, 65mm);
-          gap: 2.5mm 8mm;
+          grid-template-columns: repeat(2, 100mm);
+          grid-template-rows: repeat(4, 70mm);
+          gap: 2mm 3mm;
           justify-content: center;
           align-content: center;
           margin: 0 auto;
         }
         .tag-card {
-          width: 90mm !important;
-          height: 65mm !important;
-          min-width: 90mm !important;
-          min-height: 65mm !important;
-          max-width: 90mm !important;
-          max-height: 65mm !important;
+          width: 100mm !important;
+          height: 70mm !important;
+          min-width: 100mm !important;
+          min-height: 70mm !important;
+          max-width: 100mm !important;
+          max-height: 70mm !important;
           box-sizing: border-box !important;
           border: 1.5px solid #000 !important;
-          padding: 1.2mm 2mm !important;
+          padding: 1.5mm 2.5mm !important;
           background: #ffffff !important;
           color: #000000 !important;
           font-family: Arial, Helvetica, sans-serif !important;
@@ -278,24 +278,24 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           justify-content: space-between;
           align-items: center;
           border-bottom: 1.5px solid #000;
-          padding-bottom: 1px;
-          margin-bottom: 1px;
-          height: 5.5mm;
+          padding-bottom: 1.5px;
+          margin-bottom: 1.5px;
+          height: 6mm;
           box-sizing: border-box;
         }
         .tag-card-title {
           font-weight: 900;
-          font-size: 12px;
+          font-size: 13px;
           letter-spacing: -0.2px;
           color: #000;
           white-space: nowrap;
         }
         .tag-card-stt {
           font-weight: 900;
-          font-size: 11px;
+          font-size: 12px;
           font-family: monospace;
           border: 1px solid #000;
-          padding: 0 4px;
+          padding: 0 5px;
           background: #fff;
           white-space: nowrap;
         }
@@ -304,13 +304,13 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           border-collapse: collapse;
           table-layout: fixed;
           border: 1.5px solid #000;
-          font-size: 10.5px;
+          font-size: 11px;
           color: #000;
           box-sizing: border-box;
         }
         .tag-card-table td {
           border: 1px solid #000;
-          padding: 1px 3px;
+          padding: 1.5px 3.5px;
           vertical-align: middle;
           box-sizing: border-box;
           overflow: hidden;
@@ -327,24 +327,24 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           display: flex;
           justify-content: flex-end;
           align-items: center;
-          font-size: 10px;
+          font-size: 10.5px;
           font-family: Arial, sans-serif;
           font-weight: 900;
           color: #000;
           padding-top: 1px;
-          height: 3.5mm;
+          height: 4mm;
           box-sizing: border-box;
         }
         .tag-card-back {
-          width: 90mm !important;
-          height: 65mm !important;
-          min-width: 90mm !important;
-          min-height: 65mm !important;
-          max-width: 90mm !important;
-          max-height: 65mm !important;
+          width: 100mm !important;
+          height: 70mm !important;
+          min-width: 100mm !important;
+          min-height: 70mm !important;
+          max-width: 100mm !important;
+          max-height: 70mm !important;
           box-sizing: border-box !important;
           border: 1.5px solid #000 !important;
-          padding: 2.5mm !important;
+          padding: 3mm !important;
           background: #ffffff !important;
           color: #000000 !important;
           font-family: Arial, Helvetica, sans-serif !important;
@@ -363,30 +363,30 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
     }
   };
 
-  // Render Front Card (Mặt Trước 90mm x 65mm)
+  // Render Front Card (Mặt Trước 100mm x 70mm)
   const renderTagCardFront = (tag: CustomGeneratedContainerTag, copyIndex?: number) => {
     const grp = tag.groupConfig;
     const rawStt = tag.stt || '1';
     const displayStt = rawStt.toLowerCase().includes('số') ? rawStt : `Số ${rawStt}`;
 
     const getPartNameFontSize = (text: string) => {
-      if (text.length > 50) return '10px';
-      if (text.length > 30) return '11px';
-      if (text.length > 18) return '12px';
-      return '13px';
+      if (text.length > 50) return '11px';
+      if (text.length > 30) return '12.5px';
+      if (text.length > 18) return '13.5px';
+      return '15px';
     };
 
     const getPartCodeFontSize = (text: string) => {
-      if (text.length > 30) return '9.5px';
-      if (text.length > 20) return '10.5px';
-      if (text.length > 14) return '11.5px';
-      return '12px';
+      if (text.length > 30) return '10px';
+      if (text.length > 20) return '11.5px';
+      if (text.length > 14) return '12.5px';
+      return '13px';
     };
 
     const getCcdcSpecFontSize = (text: string) => {
-      if (text.length > 30) return '8.5px';
-      if (text.length > 18) return '9px';
-      return '9.5px';
+      if (text.length > 35) return '9px';
+      if (text.length > 20) return '9.5px';
+      return '10.5px';
     };
 
     const displayCcdc = tag.ccdcSpec && tag.ccdcSpec !== '0' ? tag.ccdcSpec : '-';
@@ -396,15 +396,15 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
         key={`front-${tag.id}-${copyIndex ?? 0}`}
         className="tag-card"
         style={{
-          width: '90mm',
-          height: '65mm',
-          minWidth: '90mm',
-          minHeight: '65mm',
-          maxWidth: '90mm',
-          maxHeight: '65mm',
+          width: '100mm',
+          height: '70mm',
+          minWidth: '100mm',
+          minHeight: '70mm',
+          maxWidth: '100mm',
+          maxHeight: '70mm',
           boxSizing: 'border-box',
           border: '1.5px solid #000',
-          padding: '1.2mm 2mm',
+          padding: '1.5mm 2.5mm',
           backgroundColor: '#ffffff',
           color: '#000000',
           fontFamily: 'Arial, Helvetica, sans-serif',
@@ -424,9 +424,9 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             justifyContent: 'space-between',
             alignItems: 'center',
             borderBottom: '1.5px solid #000',
-            paddingBottom: '1px',
-            marginBottom: '1px',
-            height: '5.5mm',
+            paddingBottom: '1.5px',
+            marginBottom: '1.5px',
+            height: '6mm',
             boxSizing: 'border-box',
           }}
         >
@@ -434,7 +434,7 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             className="tag-card-title"
             style={{
               fontWeight: 900,
-              fontSize: '12px',
+              fontSize: '13px',
               letterSpacing: '-0.2px',
               color: '#000',
               whiteSpace: 'nowrap',
@@ -446,10 +446,10 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             className="tag-card-stt"
             style={{
               fontWeight: 900,
-              fontSize: '11px',
+              fontSize: '12px',
               fontFamily: 'monospace',
               border: '1px solid #000',
-              padding: '0 4px',
+              padding: '0 5px',
               backgroundColor: '#fff',
               whiteSpace: 'nowrap',
             }}
@@ -465,136 +465,136 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
             borderCollapse: 'collapse',
             tableLayout: 'fixed',
             border: '1.5px solid #000',
-            fontSize: '10.5px',
+            fontSize: '11px',
             color: '#000',
             boxSizing: 'border-box',
           }}
         >
           <colgroup>
-            <col style={{ width: '20%' }} />
-            <col style={{ width: '36%' }} />
+            <col style={{ width: '19%' }} />
+            <col style={{ width: '37%' }} />
             <col style={{ width: '21%' }} />
             <col style={{ width: '23%' }} />
           </colgroup>
           <tbody>
-            <tr style={{ height: '7mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+            <tr style={{ height: '7.5mm' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Nhóm
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '10.5px', lineHeight: '1.2', wordBreak: 'break-word' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 900, fontSize: '11px', lineHeight: '1.2', wordBreak: 'break-word' }}>
                 {tag.groupName || grp.name}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 NCC
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px', textAlign: 'center', verticalAlign: 'middle' }}>
-                <div style={{ backgroundColor: grp.colorHex, color: grp.textColorHex, padding: '1.5px 3px', borderRadius: '3px', border: '1px solid #000', fontWeight: 900, fontSize: '9.5px', textAlign: 'center', whiteSpace: 'normal', lineHeight: '1.15' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px', textAlign: 'center', verticalAlign: 'middle' }}>
+                <div style={{ backgroundColor: grp.colorHex, color: grp.textColorHex, padding: '2px 4px', borderRadius: '3px', border: '1px solid #000', fontWeight: 900, fontSize: '10px', textAlign: 'center', whiteSpace: 'normal', lineHeight: '1.15' }}>
                   {grp.name}
                 </div>
               </td>
             </tr>
 
-            <tr style={{ height: '11mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+            <tr style={{ height: '12mm' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Tên linh kiện
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: getPartNameFontSize(tag.partName || ''), lineHeight: '1.25', wordBreak: 'break-word', color: '#000' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 900, fontSize: getPartNameFontSize(tag.partName || ''), lineHeight: '1.25', wordBreak: 'break-word', color: '#000' }}>
                 {tag.partName}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Quy cách CCDC
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 700, fontSize: getCcdcSpecFontSize(displayCcdc), lineHeight: '1.2', wordBreak: 'break-word', color: '#334155' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 700, fontSize: getCcdcSpecFontSize(displayCcdc), lineHeight: '1.2', wordBreak: 'break-word', color: '#334155' }}>
                 {displayCcdc}
               </td>
             </tr>
 
-            <tr style={{ height: '7.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+            <tr style={{ height: '8mm' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Mã linh kiện
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontFamily: 'monospace', fontWeight: 900, fontSize: getPartCodeFontSize(tag.partCode || ''), lineHeight: '1.15', wordBreak: 'break-all', color: '#000' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontFamily: 'monospace', fontWeight: 900, fontSize: getPartCodeFontSize(tag.partCode || ''), lineHeight: '1.15', wordBreak: 'break-all', color: '#000' }}>
                 {tag.partCode}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Ghi chú
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontFamily: 'monospace', fontWeight: 700, fontSize: '10px' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontFamily: 'monospace', fontWeight: 700, fontSize: '10.5px' }}>
                 Phát sinh
               </td>
             </tr>
 
-            <tr style={{ height: '8.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+            <tr style={{ height: '9.5mm' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Số lượng
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '16.5px', color: '#000', letterSpacing: '-0.3px' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 900, fontSize: '18px', color: '#000', letterSpacing: '-0.3px' }}>
                 {tag.standardQty}
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 ĐVT
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '11.5px' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 900, fontSize: '12px' }}>
                 {tag.unit || 'cái/bộ'}
               </td>
             </tr>
 
-            <tr style={{ height: '6.5mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+            <tr style={{ height: '7.5mm' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Khối lượng
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '11px' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 900, fontSize: '11.5px' }}>
                 -
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Tần suất
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontWeight: 900, fontSize: '10.5px' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontWeight: 900, fontSize: '11px' }}>
                 1h / 1 lần
               </td>
             </tr>
 
-            <tr style={{ height: '11mm' }}>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+            <tr style={{ height: '12mm' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Mã vạch QR
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px', textAlign: 'center', backgroundColor: '#ffffff', verticalAlign: 'middle' }}>
-                <div style={{ display: 'inline-block', padding: '2px 4px', backgroundColor: '#eff6ff', border: '1px dashed #2563eb', borderRadius: '3px', textAlign: 'center', lineHeight: 1.15 }}>
-                  <span style={{ fontSize: '9.5px', fontWeight: 900, color: '#1e40af' }}>MẶT SAU</span>
+              <td style={{ border: '1px solid #000', padding: '1.5px', textAlign: 'center', backgroundColor: '#ffffff', verticalAlign: 'middle' }}>
+                <div style={{ display: 'inline-block', padding: '2.5px 5px', backgroundColor: '#eff6ff', border: '1px dashed #2563eb', borderRadius: '3px', textAlign: 'center', lineHeight: 1.15 }}>
+                  <span style={{ fontSize: '10px', fontWeight: 900, color: '#1e40af' }}>MẶT SAU</span>
                   <br />
-                  <span style={{ fontSize: '8px', fontWeight: 800, color: '#2563eb' }}>(QR 30x30mm)</span>
+                  <span style={{ fontSize: '8.5px', fontWeight: 800, color: '#2563eb' }}>(QR 35x35mm)</span>
                 </div>
               </td>
-              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1px 3px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10px' }}>
+              <td className="lbl-cell" style={{ border: '1px solid #000', padding: '1.5px 3.5px', backgroundColor: '#f1f5f9', fontWeight: 800, fontSize: '10.5px' }}>
                 Thời gian cần thực
               </td>
-              <td style={{ border: '1px solid #000', padding: '1px 3px', fontFamily: 'monospace', fontWeight: 700, fontSize: '10px' }}>
+              <td style={{ border: '1px solid #000', padding: '1.5px 3.5px', fontFamily: 'monospace', fontWeight: 700, fontSize: '10.5px' }}>
                 ......(h)
               </td>
             </tr>
           </tbody>
         </table>
 
-        <div className="tag-card-footer" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', fontSize: '10px', fontFamily: 'Arial, Helvetica, sans-serif', fontWeight: 900, color: '#000', paddingTop: '1px', height: '3.5mm', boxSizing: 'border-box' }}>
+        <div className="tag-card-footer" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', fontSize: '10.5px', fontFamily: 'Arial, Helvetica, sans-serif', fontWeight: 900, color: '#000', paddingTop: '1px', height: '4mm', boxSizing: 'border-box' }}>
           <span style={{ fontWeight: 900, letterSpacing: '0.5px' }}>NMBD - SUNHOUSE</span>
         </div>
       </div>
     );
   };
 
-  // Render Back Card (Mặt Sau 90mm x 65mm with 30x30mm QR code centered)
+  // Render Back Card (Mặt Sau 100mm x 70mm with 35x35mm QR code centered)
   const renderTagCardBack = (tag: CustomGeneratedContainerTag | null, copyIndex?: number) => {
     if (!tag) {
       return (
         <div
           key={`empty-back-${Math.random()}`}
           style={{
-            width: '90mm',
-            height: '65mm',
-            minWidth: '90mm',
-            minHeight: '65mm',
-            maxWidth: '90mm',
-            maxHeight: '65mm',
+            width: '100mm',
+            height: '70mm',
+            minWidth: '100mm',
+            minHeight: '70mm',
+            maxWidth: '100mm',
+            maxHeight: '70mm',
             boxSizing: 'border-box',
             border: '1.5px dashed #cbd5e1',
             backgroundColor: '#ffffff',
@@ -608,15 +608,15 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
         key={`back-${tag.id}-${copyIndex ?? 0}`}
         className="tag-card-back"
         style={{
-          width: '90mm',
-          height: '65mm',
-          minWidth: '90mm',
-          minHeight: '65mm',
-          maxWidth: '90mm',
-          maxHeight: '65mm',
+          width: '100mm',
+          height: '70mm',
+          minWidth: '100mm',
+          minHeight: '70mm',
+          maxWidth: '100mm',
+          maxHeight: '70mm',
           boxSizing: 'border-box',
           border: '1.5px solid #000',
-          padding: '2.5mm',
+          padding: '3mm',
           backgroundColor: '#ffffff',
           color: '#000000',
           fontFamily: 'Arial, Helvetica, sans-serif',
@@ -634,14 +634,14 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
         <div
           style={{
             fontWeight: 900,
-            fontSize: '11.5px',
+            fontSize: '12.5px',
             color: '#000',
-            maxWidth: '84mm',
+            maxWidth: '92mm',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
             textTransform: 'uppercase',
-            marginBottom: '1px',
+            marginBottom: '1.5px',
           }}
           title={tag.partName}
         >
@@ -652,10 +652,10 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
           style={{
             fontFamily: 'monospace',
             fontWeight: 900,
-            fontSize: '11px',
+            fontSize: '12px',
             color: '#000',
             letterSpacing: '0.3px',
-            marginBottom: '1.5mm',
+            marginBottom: '2mm',
           }}
         >
           MÃ LINH KIỆN: {tag.partCode}
@@ -663,10 +663,10 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
 
         <div
           style={{
-            width: '32mm',
-            height: '32mm',
+            width: '35mm',
+            height: '35mm',
             border: '1.5px solid #000',
-            padding: '1mm',
+            padding: '1.5mm',
             backgroundColor: '#fff',
             borderRadius: '2px',
             display: 'flex',
@@ -677,8 +677,8 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
         >
           <QRCodeSVG
             value={tag.qrPayload}
-            size={110}
-            style={{ width: '29mm', height: '29mm' }}
+            size={120}
+            style={{ width: '32mm', height: '32mm' }}
             level="M"
             includeMargin={false}
           />
@@ -687,10 +687,10 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
         <div
           style={{
             fontFamily: 'monospace',
-            fontSize: '8.5px',
+            fontSize: '9px',
             fontWeight: 'bold',
             color: '#000',
-            marginTop: '1.5mm',
+            marginTop: '2mm',
             letterSpacing: '-0.2px',
           }}
         >
@@ -731,7 +731,7 @@ export const CustomTagManagerModal: React.FC<CustomTagManagerModalProps> = ({
                 </span>
               </h3>
               <p className="text-xs text-purple-200">
-                Kích thước thẻ chuẩn <strong>90mm x 65mm</strong>. Lưu trữ độc lập các thẻ sinh ra khi bóc tách khác định mức. Hỗ trợ <strong>In 2 mặt A4 (Mã QR 30x30mm)</strong>.
+                Kích thước thẻ chuẩn <strong>100mm x 70mm</strong>. Lưu trữ độc lập các thẻ sinh ra khi bóc tách khác định mức. Hỗ trợ <strong>In 2 mặt A4 (Mã QR 35x35mm)</strong>.
               </p>
             </div>
           </div>
