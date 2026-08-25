@@ -43,7 +43,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [tagCopies, setTagCopies] = useState<number>(1);
   const [showCompanyHeader, setShowCompanyHeader] = useState<boolean>(true);
-  const [labelLayout, setLabelLayout] = useState<PrintLayout>('single'); // 'single' = 35x22mm, 'double' = 73x22mm, 'a7' = 74x105mm
+  const [labelLayout, setLabelLayout] = useState<PrintLayout>('150x100'); // '150x100' = 150x100mm, '100x75' = 100x75mm, 'a7' = 74x105mm, 'double' = 73x22mm, 'single' = 35x22mm
   const [printConfigs, setPrintConfigs] = useState<AllPrintConfigs>(getSavedPrintConfigs());
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -118,6 +118,14 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
   const handlePrint = () => {
     if (printRef.current) {
       const styles = `
+        @page {
+          size: ${currentConf.pageWidth}mm ${currentConf.pageHeight}mm;
+          margin: 0mm;
+        }
+        body {
+          margin: 0;
+          padding: 0;
+        }
         .label-row {
           display: flex;
           flex-direction: row;
@@ -126,6 +134,8 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
           box-sizing: border-box;
           page-break-after: always;
           break-after: page;
+          page-break-inside: avoid;
+          break-inside: avoid;
           overflow: hidden;
           background-color: white;
         }
@@ -158,6 +168,23 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
     }));
   };
 
+  const getLayoutLabel = (layout: PrintLayout) => {
+    switch (layout) {
+      case '150x100':
+        return 'Tem Ngang Lớn (150x100mm)';
+      case '100x75':
+        return 'Tem Ngang Vừa (100x75mm)';
+      case 'a7':
+        return 'Khổ A7 Dọc (74x105mm)';
+      case 'double':
+        return 'Tem Đôi (73x22mm)';
+      case 'single':
+        return 'Tem Đơn (35x22mm)';
+      default:
+        return layout;
+    }
+  };
+
   const currentConf = printConfigs[labelLayout];
 
   return (
@@ -174,7 +201,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                 <span className="px-2.5 py-0.5 bg-emerald-400 text-slate-950 text-[10px] font-black rounded-md uppercase tracking-wider">
                   IN TEM NHÃN KỆ KHO
                 </span>
-                <span className="text-xs text-blue-200 font-medium">Chuẩn máy in nhiệt barcode</span>
+                <span className="text-xs text-blue-200 font-medium">Chuẩn máy in nhiệt & in tem ngoài</span>
               </div>
               <h2 className="text-base sm:text-lg font-black text-white mt-0.5">
                 In Mã QR Vị Trí / Khoang Kệ Lưu Trữ
@@ -212,9 +239,11 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                   onChange={(e) => setLabelLayout(e.target.value as PrintLayout)}
                   className="bg-transparent font-extrabold text-blue-700 outline-hidden cursor-pointer"
                 >
-                  <option value="single">Tem Đơn (35x22mm)</option>
+                  <option value="150x100">⭐ Tem Ngang Lớn (150x100mm) - Chuẩn mới</option>
+                  <option value="100x75">⭐ Tem Ngang Vừa (100x75mm) - Chuẩn mới</option>
+                  <option value="a7">Khổ A7 Dọc (74x105mm)</option>
                   <option value="double">Tem Đôi (73x22mm)</option>
-                  <option value="a7">Khổ A7 (74x105mm)</option>
+                  <option value="single">Tem Đơn Nhỏ (35x22mm)</option>
                 </select>
               </div>
 
@@ -250,7 +279,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                   onChange={(e) => setShowCompanyHeader(e.target.checked)}
                   className="rounded text-blue-600 focus:ring-blue-500"
                 />
-                <span>In Tên Kho</span>
+                <span>In Tên Doanh Nghiệp</span>
               </label>
             </div>
 
@@ -265,7 +294,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                 <span className="font-extrabold text-slate-800 flex items-center space-x-1">
                   <Sliders className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Tuỳ Chỉnh Kích Thước Tem - Khổ {labelLayout === 'a7' ? 'A7 (74x105mm)' : labelLayout === 'double' ? 'Tem Đôi (73x22mm)' : 'Tem Đơn (35x22mm)'}</span>
+                  <span>Tuỳ Chỉnh Kích Thước - {getLayoutLabel(labelLayout)}</span>
                 </span>
                 <button
                   type="button"
@@ -285,7 +314,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                   <input
                     type="number"
                     min={6}
-                    max={36}
+                    max={72}
                     value={currentConf.nameFontSize}
                     onChange={(e) => handleConfigChange('nameFontSize', parseInt(e.target.value) || 8)}
                     className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-800 outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500"
@@ -299,7 +328,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                   <input
                     type="number"
                     min={5}
-                    max={28}
+                    max={36}
                     value={currentConf.codeFontSize}
                     onChange={(e) => handleConfigChange('codeFontSize', parseInt(e.target.value) || 7)}
                     className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-800 outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500"
@@ -313,7 +342,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                   <input
                     type="number"
                     min={8}
-                    max={80}
+                    max={90}
                     value={currentConf.qrSize}
                     onChange={(e) => handleConfigChange('qrSize', parseInt(e.target.value) || 12)}
                     className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-800 outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500"
@@ -405,7 +434,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
             <div className="flex items-center justify-between flex-wrap gap-2">
               <h3 className="text-xs font-extrabold text-slate-800 flex items-center space-x-1.5 uppercase tracking-wider">
                 <Eye className="w-4 h-4 text-blue-600" />
-                <span>MÔ PHỎNG MẪU TEM ({labelLayout === 'a7' ? 'A7 74x105mm' : labelLayout === 'double' ? 'Tem Đôi 73x22mm' : 'Tem Đơn 35x22mm'})</span>
+                <span>MÔ PHỎNG MẪU TEM ({getLayoutLabel(labelLayout)})</span>
               </h3>
               <span className="text-[11px] text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-md border border-emerald-200 font-bold">
                 ✓ Đã tối ưu vừa khít 100% không bị tràn hay mất chữ
@@ -423,31 +452,123 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                 </p>
 
                 {/* Grid Visual Preview */}
-                <div className="flex flex-wrap justify-center gap-3">
+                <div className="flex flex-wrap justify-center gap-4">
                   {labelRows.map((row, rowIndex) => (
                     <div
                       key={`preview-row-${rowIndex}`}
-                      className={`bg-white border-2 border-dashed border-slate-400 p-1.5 rounded-xl shadow-md flex items-center gap-1.5 bg-amber-50/20 ${
-                        labelLayout === 'a7' ? 'flex-col' : 'flex-row'
-                      }`}
+                      className="bg-white border-2 border-dashed border-slate-400 p-2 rounded-2xl shadow-md flex items-center justify-center gap-2 bg-amber-50/20"
                       style={{
-                        width: labelLayout === 'a7' ? '280px' : labelLayout === 'double' ? '420px' : '210px',
-                        height: labelLayout === 'a7' ? '400px' : '120px',
+                        width:
+                          labelLayout === '150x100'
+                            ? '380px'
+                            : labelLayout === '100x75'
+                            ? '320px'
+                            : labelLayout === 'a7'
+                            ? '280px'
+                            : labelLayout === 'double'
+                            ? '420px'
+                            : '210px',
+                        height:
+                          labelLayout === '150x100'
+                            ? '253px'
+                            : labelLayout === '100x75'
+                            ? '240px'
+                            : labelLayout === 'a7'
+                            ? '400px'
+                            : '120px',
                       }}
                     >
                       {row.map((loc, colIndex) => (
                         <div
                           key={`preview-item-${rowIndex}-${colIndex}`}
-                          className={`flex-1 w-full h-full bg-white border border-slate-300 rounded-md overflow-hidden shadow-2xs relative flex ${
-                            labelLayout === 'a7' ? 'flex-col items-center p-5 justify-between' : 'flex-row items-center p-2'
-                          }`}
+                          className="flex-1 w-full h-full bg-white border border-slate-400 rounded-xl overflow-hidden shadow-2xs relative flex flex-col justify-between"
                         >
-                          {labelLayout === 'a7' ? (
-                            <>
+                          {labelLayout === '150x100' ? (
+                            /* 150x100mm TEM NGANG LỚN */
+                            <div className="w-full h-full flex flex-col justify-between p-3 box-border">
+                              {/* Header */}
+                              {showCompanyHeader && (
+                                <div className="text-center border-b border-slate-800 pb-1 mb-1">
+                                  <p className="text-[11px] font-black text-slate-900 uppercase tracking-tight leading-tight">
+                                    {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Middle: Left Info + Right QR */}
+                              <div className="flex-1 flex flex-row items-center justify-between gap-2 px-1">
+                                <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                                  <p className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                                    VỊ TRÍ KỆ
+                                  </p>
+                                  <p className="text-4xl font-black text-slate-950 font-mono tracking-tight my-0.5">
+                                    {loc.name}
+                                  </p>
+                                  {loc.description && (
+                                    <p className="text-xs font-bold text-slate-800 leading-snug line-clamp-2">
+                                      {loc.description}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="shrink-0 flex items-center justify-center">
+                                  <QRCodeSVG value={loc.name} size={120} level="Q" marginSize={0} />
+                                </div>
+                              </div>
+
+                              {/* Footer */}
+                              <div className="text-center border-t border-slate-800 pt-1 mt-1 text-[10px] font-mono font-bold text-slate-800 tracking-wider">
+                                MÃ SCAN TỰ ĐỘNG - KHO HÀNG
+                              </div>
+                            </div>
+                          ) : labelLayout === '100x75' ? (
+                            /* 100x75mm TEM NGANG VỪA */
+                            <div className="w-full h-full flex flex-col justify-between p-2.5 box-border">
+                              {/* Header */}
+                              {showCompanyHeader && (
+                                <div className="text-center border-b border-slate-400 pb-1 mb-1">
+                                  <p className="text-[9.5px] font-black text-slate-900 uppercase tracking-tight leading-tight">
+                                    {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Middle: Left Name + Center QR + Right Description */}
+                              <div className="flex-1 flex flex-row items-center justify-between gap-1 px-1">
+                                <div className="shrink-0 flex flex-col justify-center min-w-[70px]">
+                                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight">
+                                    VỊ TRÍ KỆ
+                                  </p>
+                                  <p className="text-2xl font-black text-slate-950 font-mono tracking-tight leading-tight">
+                                    {loc.name}
+                                  </p>
+                                </div>
+
+                                <div className="shrink-0 flex items-center justify-center mx-1">
+                                  <QRCodeSVG value={loc.name} size={80} level="Q" marginSize={0} />
+                                </div>
+
+                                <div className="flex-1 min-w-0 pl-1">
+                                  {loc.description && (
+                                    <p className="text-[9px] font-bold text-slate-700 leading-tight line-clamp-3">
+                                      {loc.description}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Footer */}
+                              <div className="text-center border-t border-slate-400 pt-1 mt-1 text-[9px] font-mono font-bold text-slate-600 tracking-wider">
+                                MÃ SCAN TỰ ĐỘNG - KHO HÀNG
+                              </div>
+                            </div>
+                          ) : labelLayout === 'a7' ? (
+                            /* A7 (74x105mm) */
+                            <div className="w-full h-full flex flex-col items-center justify-between p-5 text-center">
                               <div className="w-full text-center">
                                 {showCompanyHeader && (
                                   <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 border-b border-slate-200 pb-1">
-                                    {settings.warehouseName || 'KHO LINH KIỆN'}
+                                    {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
                                   </p>
                                 )}
                                 <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
@@ -470,9 +591,10 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                               <div className="w-full text-center border-t border-slate-200 pt-2 text-[10px] text-slate-400 font-mono">
                                 KHU VỰC LƯU TRỮ • SCAN TO LOCATE
                               </div>
-                            </>
+                            </div>
                           ) : (
-                            <>
+                            /* SINGLE & DOUBLE */
+                            <div className="w-full h-full flex flex-row items-center p-2">
                               {/* Left: QR Code */}
                               <div className="shrink-0 pr-2 flex items-center justify-center">
                                 <QRCodeSVG value={loc.name} size={68} level="M" marginSize={0} />
@@ -502,7 +624,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                               <span className="absolute top-0.5 right-1 text-[7px] font-mono text-slate-300">
                                 {labelLayout === 'double' ? '35x22mm' : '35x22mm'}
                               </span>
-                            </>
+                            </div>
                           )}
                         </div>
                       ))}
@@ -523,7 +645,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
         {/* Modal Footer */}
         <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs shrink-0">
           <span className="text-slate-500 font-medium">
-            💡 Hỗ trợ cài đặt máy in: Chọn Khổ giấy tương ứng ({labelLayout === 'a7' ? '74x105mm' : labelLayout === 'double' ? '73x22mm' : '35x22mm'}), Lề (Margins) = None.
+            💡 Hỗ trợ cài đặt máy in: Chọn Khổ giấy tương ứng ({getLayoutLabel(labelLayout)}), Lề (Margins) = None.
           </span>
 
           <div className="flex items-center space-x-2">
@@ -570,18 +692,320 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                       key={`print-col-${colIndex}`}
                       className="single-label"
                       style={{
-                        width: labelLayout === 'double' ? '35mm' : labelLayout === 'single' ? '33mm' : '100%',
-                        height: labelLayout === 'a7' ? '100%' : '20mm',
-                        flexDirection: labelLayout === 'a7' ? 'column' : 'row',
-                        justifyContent: labelLayout === 'a7' ? 'space-between' : 'flex-start',
-                        alignItems: labelLayout === 'a7' ? 'center' : 'center',
-                        border: labelLayout === 'a7' ? '1px solid #94a3b8' : '0.5px solid #ccc',
-                        borderRadius: labelLayout === 'a7' ? '3mm' : '1.5mm',
-                        padding: labelLayout === 'a7' ? '3.5mm' : '1mm',
+                        width:
+                          labelLayout === 'double'
+                            ? '35mm'
+                            : labelLayout === 'single'
+                            ? '33mm'
+                            : '100%',
+                        height:
+                          labelLayout === 'single' || labelLayout === 'double'
+                            ? '20mm'
+                            : '100%',
+                        flexDirection:
+                          labelLayout === 'single' || labelLayout === 'double'
+                            ? 'row'
+                            : 'column',
+                        justifyContent: 'space-between',
+                        alignItems: 'stretch',
+                        border:
+                          labelLayout === '150x100'
+                            ? '1.5px solid #000000'
+                            : labelLayout === '100x75'
+                            ? '1.5px solid #000000'
+                            : labelLayout === 'a7'
+                            ? '1px solid #94a3b8'
+                            : '0.5px solid #ccc',
+                        borderRadius:
+                          labelLayout === '150x100'
+                            ? '4mm'
+                            : labelLayout === '100x75'
+                            ? '3.5mm'
+                            : labelLayout === 'a7'
+                            ? '3mm'
+                            : '1.5mm',
+                        padding:
+                          labelLayout === '150x100'
+                            ? '3.5mm'
+                            : labelLayout === '100x75'
+                            ? '2.5mm'
+                            : labelLayout === 'a7'
+                            ? '3.5mm'
+                            : '1mm',
                         boxSizing: 'border-box',
                       }}
                     >
-                      {labelLayout === 'a7' ? (
+                      {labelLayout === '150x100' ? (
+                        /* 150x100mm TEM NGANG LỚN */
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'space-between',
+                            boxSizing: 'border-box',
+                          }}
+                        >
+                          {/* Header */}
+                          {showCompanyHeader && (
+                            <div
+                              style={{
+                                textAlign: 'center',
+                                width: '100%',
+                                borderBottom: '1.5px solid #000000',
+                                paddingBottom: '1.5mm',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: `${conf.metaFontSize}px`,
+                                  fontWeight: 'bold',
+                                  color: '#000000',
+                                  textTransform: 'uppercase',
+                                  lineHeight: '1.2',
+                                }}
+                              >
+                                {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Middle: Left Info + Right QR */}
+                          <div
+                            style={{
+                              flex: 1,
+                              display: 'flex',
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '2mm 3mm',
+                            }}
+                          >
+                            <div
+                              style={{
+                                flex: 1,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                justifyContent: 'center',
+                                paddingRight: '4mm',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: `${Math.round(conf.nameFontSize * 0.4)}px`,
+                                  fontWeight: '800',
+                                  color: '#000000',
+                                  textTransform: 'uppercase',
+                                }}
+                              >
+                                VỊ TRÍ KỆ
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: `${conf.nameFontSize}px`,
+                                  fontWeight: '900',
+                                  fontFamily: 'monospace',
+                                  color: '#000000',
+                                  margin: '1mm 0 2mm 0',
+                                  lineHeight: '1',
+                                }}
+                              >
+                                {loc.name}
+                              </div>
+                              {loc.description && (
+                                <div
+                                  style={{
+                                    fontSize: `${conf.codeFontSize}px`,
+                                    fontWeight: 'bold',
+                                    color: '#000000',
+                                    lineHeight: '1.3',
+                                  }}
+                                >
+                                  {loc.description}
+                                </div>
+                              )}
+                            </div>
+
+                            <div
+                              style={{
+                                width: `${conf.qrSize}mm`,
+                                height: `${conf.qrSize}mm`,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                              }}
+                            >
+                              <QRCodeSVG
+                                value={loc.name}
+                                size={240}
+                                level="Q"
+                                marginSize={0}
+                                style={{ width: '100%', height: '100%' }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Footer */}
+                          <div
+                            style={{
+                              width: '100%',
+                              textAlign: 'center',
+                              fontSize: `${conf.metaFontSize - 2}px`,
+                              fontWeight: 'bold',
+                              color: '#000000',
+                              borderTop: '1.5px solid #000000',
+                              paddingTop: '1.5mm',
+                              letterSpacing: '1px',
+                              fontFamily: 'monospace',
+                            }}
+                          >
+                            MÃ SCAN TỰ ĐỘNG - KHO HÀNG
+                          </div>
+                        </div>
+                      ) : labelLayout === '100x75' ? (
+                        /* 100x75mm TEM NGANG VỪA */
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'space-between',
+                            boxSizing: 'border-box',
+                          }}
+                        >
+                          {/* Header */}
+                          {showCompanyHeader && (
+                            <div
+                              style={{
+                                textAlign: 'center',
+                                width: '100%',
+                                borderBottom: '1.5px solid #94a3b8',
+                                paddingBottom: '1.2mm',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: `${conf.metaFontSize}px`,
+                                  fontWeight: 'bold',
+                                  color: '#000000',
+                                  textTransform: 'uppercase',
+                                  lineHeight: '1.2',
+                                }}
+                              >
+                                {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Middle: Left Name + Center QR + Right Description */}
+                          <div
+                            style={{
+                              flex: 1,
+                              display: 'flex',
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '1mm 1.5mm',
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                                minWidth: '22mm',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: `${Math.round(conf.nameFontSize * 0.38)}px`,
+                                  fontWeight: 'bold',
+                                  color: '#64748b',
+                                  textTransform: 'uppercase',
+                                }}
+                              >
+                                VỊ TRÍ KỆ
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: `${conf.nameFontSize}px`,
+                                  fontWeight: '900',
+                                  fontFamily: 'monospace',
+                                  color: '#000000',
+                                  marginTop: '0.5mm',
+                                  lineHeight: '1',
+                                }}
+                              >
+                                {loc.name}
+                              </div>
+                            </div>
+
+                            <div
+                              style={{
+                                width: `${conf.qrSize}mm`,
+                                height: `${conf.qrSize}mm`,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                margin: '0 2mm',
+                                flexShrink: 0,
+                              }}
+                            >
+                              <QRCodeSVG
+                                value={loc.name}
+                                size={180}
+                                level="Q"
+                                marginSize={0}
+                                style={{ width: '100%', height: '100%' }}
+                              />
+                            </div>
+
+                            <div
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                paddingLeft: '1.5mm',
+                              }}
+                            >
+                              {loc.description && (
+                                <div
+                                  style={{
+                                    fontSize: `${conf.codeFontSize}px`,
+                                    fontWeight: '600',
+                                    color: '#334155',
+                                    lineHeight: '1.3',
+                                    wordBreak: 'break-word',
+                                  }}
+                                >
+                                  {loc.description}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Footer */}
+                          <div
+                            style={{
+                              width: '100%',
+                              textAlign: 'center',
+                              fontSize: `${conf.metaFontSize - 2}px`,
+                              fontWeight: 'bold',
+                              color: '#475569',
+                              borderTop: '1.5px solid #94a3b8',
+                              paddingTop: '1.2mm',
+                              letterSpacing: '0.5px',
+                              fontFamily: 'monospace',
+                            }}
+                          >
+                            MÃ SCAN TỰ ĐỘNG - KHO HÀNG
+                          </div>
+                        </div>
+                      ) : labelLayout === 'a7' ? (
+                        /* A7 */
                         <>
                           <div style={{ textAlign: 'center', width: '100%' }}>
                             {showCompanyHeader && (
@@ -596,7 +1020,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                                   paddingBottom: '1.5mm',
                                 }}
                               >
-                                {settings.warehouseName || 'KHO LINH KIỆN'}
+                                {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
                               </div>
                             )}
 
@@ -672,6 +1096,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                           </div>
                         </>
                       ) : (
+                        /* SINGLE & DOUBLE */
                         <>
                           {/* QR Code on Left */}
                           <div
