@@ -13,14 +13,18 @@ import {
   FileSpreadsheet,
   Boxes,
   ArrowRight,
+  ArrowRightLeft,
   Info,
   Download,
   Upload,
   Printer,
   QrCode,
+  Eye,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationQrPrintModal } from './LocationQrPrintModal';
+import { LocationDetailModal } from './LocationDetailModal';
+import { LocationTransferModal } from './LocationTransferModal';
 
 interface WarehouseMapViewProps {
   parts: Part[];
@@ -41,6 +45,17 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   const [selectedLocation, setSelectedLocation] = useState<WarehouseLocation | null>(
     locations.length > 0 ? locations[0] : null
   );
+
+  // Popup Detail Modal State
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [detailModalLocation, setDetailModalLocation] = useState<WarehouseLocation | null>(null);
+
+  // Transfer Modal State from Right Column
+  const [transferringInfo, setTransferringInfo] = useState<{
+    part: Part;
+    fromLocation: string;
+    availableQty: number;
+  } | null>(null);
   
   // New Location inputs
   const [newLocationName, setNewLocationName] = useState('');
@@ -57,6 +72,13 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
 
   // Hidden File Input Ref for Excel Import
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle opening shelf details popup
+  const handleOpenShelfDetails = (loc: WarehouseLocation) => {
+    setSelectedLocation(loc);
+    setDetailModalLocation(loc);
+    setIsDetailModalOpen(true);
+  };
 
   // Filter locations based on search and filter mode
   const filteredLocations = locations.filter((loc) => {
@@ -540,8 +562,8 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
                   return (
                     <div
                       key={loc.id}
-                      onClick={() => setSelectedLocation(loc)}
-                      className={`relative p-3.5 rounded-xl border-2 cursor-pointer transition-all flex flex-col justify-between group ${
+                      onClick={() => handleOpenShelfDetails(loc)}
+                      className={`relative p-3.5 rounded-2xl border-2 cursor-pointer transition-all flex flex-col justify-between group active:scale-98 ${
                         isSelected
                           ? 'border-blue-600 bg-blue-50/80 shadow-md ring-2 ring-blue-500/20'
                           : isOccupied
@@ -562,6 +584,17 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
                         </span>
 
                         <div className="flex items-center space-x-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenShelfDetails(loc);
+                            }}
+                            className="p-1 text-blue-600 hover:bg-blue-100 rounded-lg transition-all cursor-pointer"
+                            title="Mở bảng chi tiết linh kiện"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
                           <button
                             type="button"
                             onClick={(e) => {
@@ -591,7 +624,7 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
 
                       {/* Title & Description */}
                       <div className="my-2.5 text-center">
-                        <div className="text-base font-black text-slate-900 group-hover:text-blue-600 transition-colors">
+                        <div className="text-base font-black text-slate-900 group-hover:text-blue-600 transition-colors font-mono">
                           {loc.name}
                         </div>
                         {loc.description && (
@@ -603,7 +636,7 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
 
                       {/* Stock summary */}
                       <div className="text-[11px] font-bold text-center border-t border-slate-200/60 pt-2 flex items-center justify-between text-slate-500">
-                        <span>Tồn vị trí:</span>
+                        <span className="text-[10px]">Tồn vị trí:</span>
                         <span className="font-mono font-black text-emerald-700">
                           {totalStockInLoc.toLocaleString('vi-VN')}
                         </span>
@@ -626,21 +659,30 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
                   <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">
                     Chi tiết vị trí đang chọn
                   </span>
-                  <h3 className="text-lg font-black text-slate-900">{selectedLocation.name}</h3>
+                  <h3 className="text-lg font-black text-slate-900 font-mono">{selectedLocation.name}</h3>
                   {selectedLocation.description && (
                     <p className="text-xs text-slate-500 mt-0.5">{selectedLocation.description}</p>
                   )}
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenShelfDetails(selectedLocation)}
+                    className="p-2 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all cursor-pointer flex items-center space-x-1 text-xs font-bold"
+                    title="Mở popup chi tiết & điều chuyển"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Mở Bảng</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleOpenPrintModal(selectedLocation.id)}
                     className="p-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-all cursor-pointer flex items-center space-x-1 text-xs font-bold"
-                    title="In tem QR Code 35x22mm cho vị trí này"
+                    title="In tem QR Code cho vị trí này"
                   >
-                    <QrCode className="w-4 h-4 text-emerald-600" />
-                    <span>In Tem QR</span>
+                    <QrCode className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="hidden sm:inline">In Tem</span>
                   </button>
                 </div>
               </div>
@@ -670,41 +712,62 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
                         Chưa có linh kiện nào được gán ở vị trí "{selectedLocation.name}".
                       </div>
                     ) : (
-                      <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                      <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
                         {partsAtSelectedLoc.map(({ part, locationQty }) => (
                           <div
                             key={part.id}
-                            className="p-3 bg-slate-50 hover:bg-blue-50/50 rounded-xl border border-slate-200 transition-all flex items-center justify-between text-xs group"
+                            className="p-3.5 bg-slate-50 hover:bg-blue-50/50 rounded-2xl border border-slate-200 transition-all space-y-2 group"
                           >
-                            <div className="space-y-0.5 min-w-0 pr-2">
-                              <div className="font-mono font-bold text-blue-700 text-[11px]">
-                                {part.code}
-                              </div>
-                              <div className="font-semibold text-slate-800 truncate" title={part.name}>
-                                {part.name}
-                              </div>
-                              {part.currentStock !== locationQty && (
-                                <div className="text-[10px] text-slate-500 font-medium">
-                                  Tổng tồn các kệ:{' '}
-                                  <span className="font-bold text-slate-700">
-                                    {part.currentStock.toLocaleString('vi-VN')}
-                                  </span>{' '}
-                                  {part.unit}
+                            <div className="flex items-start justify-between">
+                              <div className="space-y-0.5 min-w-0 pr-2">
+                                <div className="font-mono font-bold text-blue-700 text-[11px]">
+                                  {part.code}
                                 </div>
-                              )}
+                                <div className="font-semibold text-slate-800 text-xs truncate" title={part.name}>
+                                  {part.name}
+                                </div>
+                                {part.currentStock !== locationQty && (
+                                  <div className="text-[10px] text-slate-500 font-medium">
+                                    Tổng tồn các kệ:{' '}
+                                    <span className="font-bold text-slate-700">
+                                      {part.currentStock.toLocaleString('vi-VN')}
+                                    </span>{' '}
+                                    {part.unit}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="text-right shrink-0">
+                                <div className="font-mono font-black text-emerald-600 text-sm">
+                                  {locationQty.toLocaleString('vi-VN')} {part.unit}
+                                </div>
+                              </div>
                             </div>
 
-                            <div className="text-right shrink-0">
-                              <div className="font-mono font-black text-emerald-600 text-sm">
-                                {locationQty.toLocaleString('vi-VN')} {part.unit}
-                              </div>
+                            {/* Action Buttons: Move & Bin Card */}
+                            <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
                               <button
                                 type="button"
                                 onClick={() => onOpenBinCard(part)}
-                                className="text-[10px] text-blue-600 hover:underline font-bold mt-0.5 inline-flex items-center space-x-0.5 cursor-pointer"
+                                className="text-[11px] text-blue-600 hover:underline font-bold inline-flex items-center space-x-0.5 cursor-pointer"
                               >
                                 <span>Thẻ kho</span>
                                 <ArrowRight className="w-2.5 h-2.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setTransferringInfo({
+                                    part,
+                                    fromLocation: selectedLocation.name,
+                                    availableQty: locationQty,
+                                  })
+                                }
+                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold shadow-2xs flex items-center space-x-1 transition-colors cursor-pointer"
+                              >
+                                <ArrowRightLeft className="w-3 h-3" />
+                                <span>Điều chuyển</span>
                               </button>
                             </div>
                           </div>
@@ -733,6 +796,54 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Shelf Detail Popup Modal (Full view on mobile & desktop) */}
+      <LocationDetailModal
+        isOpen={isDetailModalOpen}
+        onClose={() => {
+          setIsDetailModalOpen(false);
+          setDetailModalLocation(null);
+        }}
+        location={detailModalLocation}
+        parts={parts}
+        settings={settings}
+        onOpenBinCard={(part) => {
+          setIsDetailModalOpen(false);
+          onOpenBinCard(part);
+        }}
+        onOpenPrintModal={(locId) => {
+          setIsDetailModalOpen(false);
+          handleOpenPrintModal(locId);
+        }}
+        onTransferSuccess={(updatedPart) => {
+          setMessage({
+            type: 'success',
+            text: `🎉 Đã điều chuyển linh kiện "${updatedPart.name}" thành công!`,
+          });
+          setTimeout(() => setMessage(null), 4000);
+          if (onRefreshData) onRefreshData();
+        }}
+      />
+
+      {/* Location Transfer Modal from Right Column */}
+      {transferringInfo && (
+        <LocationTransferModal
+          isOpen={!!transferringInfo}
+          onClose={() => setTransferringInfo(null)}
+          part={transferringInfo.part}
+          fromLocation={transferringInfo.fromLocation}
+          availableQty={transferringInfo.availableQty}
+          settings={settings}
+          onSuccess={(updatedPart) => {
+            setMessage({
+              type: 'success',
+              text: `🎉 Đã điều chuyển linh kiện "${updatedPart.name}" sang vị trí mới thành công!`,
+            });
+            setTimeout(() => setMessage(null), 4000);
+            if (onRefreshData) onRefreshData();
+          }}
+        />
+      )}
 
       {/* Location QR Code Labels Print Modal */}
       <LocationQrPrintModal

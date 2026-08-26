@@ -594,6 +594,93 @@ export const storageService = {
     return newTx;
   },
 
+  // Transfer part stock between warehouse locations
+  transferPartLocationStock(params: {
+    partId: string;
+    fromLocation: string;
+    toLocation: string;
+    quantity: number;
+    person: string;
+    notes?: string;
+  }): { updatedPart: Part; transaction: Transaction } {
+    const part = this.getPartById(params.partId);
+    if (!part) throw new Error('Linh kiện không tồn tại trong hệ thống');
+
+    const fromLoc = params.fromLocation.trim();
+    const toLoc = params.toLocation.trim();
+
+    if (!fromLoc || !toLoc) {
+      throw new Error('Vui lòng chọn đầy đủ vị trí xuất phát và vị trí tiếp nhận');
+    }
+
+    if (fromLoc.toLowerCase() === toLoc.toLowerCase()) {
+      throw new Error('Vị trí tiếp nhận phải khác vị trí xuất phát');
+    }
+
+    if (params.quantity <= 0) {
+      throw new Error('Số lượng điều chuyển phải lớn hơn 0');
+    }
+
+    const locs = this.getPartLocations(part);
+    const fromIndex = locs.findIndex(
+      (l) => l.locationName.toLowerCase() === fromLoc.toLowerCase()
+    );
+
+    const availableInFrom = fromIndex >= 0 ? locs[fromIndex].quantity : 0;
+    if (availableInFrom < params.quantity) {
+      throw new Error(
+        `Số lượng điều chuyển (${params.quantity.toLocaleString('vi-VN')} ${part.unit}) vượt quá số lượng hiện có tại vị trí "${fromLoc}" (${availableInFrom.toLocaleString('vi-VN')} ${part.unit})!`
+      );
+    }
+
+    // Deduct from fromLocation
+    locs[fromIndex].quantity -= params.quantity;
+
+    // Add to toLocation
+    const toIndex = locs.findIndex(
+      (l) => l.locationName.toLowerCase() === toLoc.toLowerCase()
+    );
+    if (toIndex >= 0) {
+      locs[toIndex].quantity += params.quantity;
+    } else {
+      locs.push({ locationName: toLoc, quantity: params.quantity });
+    }
+
+    // Keep locations with non-zero or all if empty
+    const activeLocs = locs.filter((l) => l.quantity > 0);
+    const newLocationSummary = this.formatPartLocationSummary(activeLocs.length > 0 ? activeLocs : locs);
+
+    const updatedPart = this.updatePart(part.id, {
+      locations: locs,
+      location: newLocationSummary,
+    });
+
+    // Record an adjustment transaction for audit & bin card tracking
+    const newTx: Transaction = {
+      id: 'tx-trans-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      partId: part.id,
+      partCode: part.code,
+      partName: part.name,
+      unit: part.unit,
+      type: 'AUDIT_ADJUSTMENT',
+      quantity: params.quantity,
+      date: new Date().toISOString(),
+      person: params.person || 'Thủ kho',
+      reasonOrPurpose: `Điều chuyển vị trí: ${fromLoc} ➔ ${toLoc}`,
+      notes: params.notes || `Chuyển ${params.quantity.toLocaleString('vi-VN')} ${part.unit} từ ${fromLoc} sang ${toLoc}`,
+      locationId: toLoc,
+      stockBefore: part.currentStock,
+      stockAfter: part.currentStock,
+    };
+
+    const txs = this.getTransactions();
+    txs.push(newTx);
+    this.saveTransactions(txs);
+    supabaseRelationalStore.insertTransaction(newTx);
+
+    return { updatedPart, transaction: newTx };
+  },
+
   // Stock Audit Check & Adjustment
   performStockCheck(params: {
     partId: string;

@@ -3,6 +3,7 @@ import { Part, AppSettings, WarehouseLocation } from './types';
 import { storageService } from './storage';
 import { ArrowDownLeft, CheckCircle2, AlertCircle, Package, Clock, User, FileText, QrCode, FileSpreadsheet, Zap, X, MapPin, Camera } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
+import { SearchableLocationSelect } from './SearchableLocationSelect';
 import { QrScannerModal } from './QrScannerModal';
 import { ContainerImportPrintModal } from './ContainerImportPrintModal';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -800,42 +801,26 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                   </div>
                 )}
 
-                {/* SECONDARY: Location Select Dropdown */}
+                {/* SECONDARY: Searchable Location Select */}
                 <div className="pt-1">
                   <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                    Hoặc chọn chọn tay vị trí trong danh sách kệ (khi không quét):
+                    Hoặc tìm kiếm / chọn tay vị trí trong danh sách kệ:
                   </label>
-                  <select
-                    ref={modalLocationSelectRef}
+                  <SearchableLocationSelect
+                    locations={settings.locations || []}
                     value={selectedLocation}
-                    onChange={(e) => {
-                      setSelectedLocation(e.target.value);
-                      if (e.target.value !== '__custom__') {
+                    onChange={(val) => {
+                      setSelectedLocation(val);
+                      if (val !== '__custom__') {
                         setCustomLocation('');
                       }
                     }}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-xs font-semibold text-slate-800 outline-hidden"
-                  >
-                    <option value="">-- Bắt buộc chọn khoang / kệ lưu trữ --</option>
-                    {settings.locations?.map((loc) => (
-                      <option key={loc.id} value={loc.name}>
-                        📍 {loc.name} {loc.description ? `(${loc.description})` : ''}
-                      </option>
-                    ))}
-                    <option value="__custom__">➕ Tự nhập vị trí mới...</option>
-                  </select>
-
-                  {/* Custom Location Text Input if custom selected or no predefined locations */}
-                  {(selectedLocation === '__custom__' || (!settings.locations || settings.locations.length === 0)) && (
-                    <input
-                      type="text"
-                      value={customLocation}
-                      onChange={(e) => setCustomLocation(e.target.value)}
-                      placeholder="Gõ tên kệ / khoang mới (VD: Kệ A1, Tủ B2)..."
-                      className="w-full mt-2 px-3 py-2 bg-white border-2 border-emerald-400 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-hidden"
-                      required
-                    />
-                  )}
+                    placeholder="-- Tìm kiếm nhanh tên kệ hoặc mô tả kệ --"
+                    allowCustom={true}
+                    customValue={customLocation}
+                    onCustomChange={(val) => setCustomLocation(val)}
+                    theme="emerald"
+                  />
                 </div>
               </div>
               
@@ -982,30 +967,21 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                 <span>📍 BẮT BUỘC CHỌN KỆ / VỊ TRÍ NHẬP HÀNG *</span>
                 <span className="text-[11px] font-normal text-emerald-800">Cộng tồn kho cụ thể cho kệ được chọn</span>
               </label>
-              <select
-                ref={locationSelectRef}
+              <SearchableLocationSelect
+                locations={settings.locations || []}
                 value={selectedLocation}
-                onChange={(e) => setSelectedLocation(e.target.value)}
-                className="w-full px-3.5 py-2.5 border-2 border-emerald-400 rounded-xl text-xs font-bold bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-hidden"
-              >
-                <option value="">-- Bắt buộc chọn khoang / kệ lưu trữ --</option>
-                {(settings.locations || []).map((loc) => (
-                  <option key={loc.id} value={loc.name}>
-                    📍 {loc.name} {loc.description ? `(${loc.description})` : ''}
-                  </option>
-                ))}
-                <option value="__custom__">➕ Tự nhập vị trí mới...</option>
-              </select>
-
-              {selectedLocation === '__custom__' && (
-                <input
-                  type="text"
-                  value={customLocation}
-                  onChange={(e) => setCustomLocation(e.target.value)}
-                  placeholder="Gõ tên vị trí/kệ mới..."
-                  className="w-full mt-2 px-3.5 py-2 bg-white border-2 border-emerald-400 rounded-xl text-xs font-bold text-slate-900 outline-hidden"
-                />
-              )}
+                onChange={(val) => {
+                  setSelectedLocation(val);
+                  if (val !== '__custom__') {
+                    setCustomLocation('');
+                  }
+                }}
+                placeholder="-- Tìm kiếm nhanh tên kệ hoặc mô tả kệ --"
+                allowCustom={true}
+                customValue={customLocation}
+                onCustomChange={(val) => setCustomLocation(val)}
+                theme="emerald"
+              />
             </div>
           )}
 
