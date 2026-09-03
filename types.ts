@@ -162,6 +162,7 @@ export interface MaterialCallRequest {
   requestedAt: string;
   requiredTime?: string; // Giờ cần chính xác linh kiện đó (e.g. "08:30" hoặc "09:15"...)
   status: 'CALLING' | 'DELIVERING' | 'COMPLETED';
+  isStockDeducted?: boolean; // Đã trừ tồn trong danh sách chờ bóc tách hoặc kệ outbuffer
   deliveredBy?: string;
   deliveredAt?: string;
 }

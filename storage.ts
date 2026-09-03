@@ -1,6 +1,7 @@
 import { Part, PartLocationStock, Transaction, StockCheckRecord, AppSettings, ContainerBatch, ContainerQrTag, FifoLot, ModelBOM, ModelBOMItem, KittingQueueItem, BufferLocationMap, BufferPartItem, MaterialCallRequest, BomExportVoucher, BomExportVoucherItem, UserAccount, ViewTab, ConversionFactor, KittingScanLog, ProductivityPersonnelConfig, HourlyPersonnelSlot } from './types';
 import { initialParts, initialTransactions, initialSettings } from './sampleData';
 import { MasterKittingTag, SAMPLE_MASTER_TAGS } from './masterExcelParser';
+import { getPartGroupConfig } from './partGroupColors';
 import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS } from './supabaseStorage';
 import { getActiveSupabaseClient } from './supabase';
 import * as XLSX from 'xlsx';
@@ -2044,6 +2045,13 @@ export const storageService = {
     requiredTime?: string;
   }): MaterialCallRequest {
     const reqs = this.getMaterialCallRequests();
+    const isDirect =
+      params.isDirectKitting ||
+      params.bufferLocation === 'DCLR' ||
+      params.bufferLocation === 'KHU BÓC TÁCH KITTING' ||
+      params.bufferLocation?.toUpperCase().includes('DCLR') ||
+      params.bufferLocation?.toUpperCase().includes('KITTING');
+
     const newReq: MaterialCallRequest = {
       requestId: 'call-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       assemblyLine: params.assemblyLine,
@@ -2057,20 +2065,104 @@ export const storageService = {
       requestedAt: new Date().toISOString(),
       requiredTime: params.requiredTime || new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
       status: 'CALLING',
+      isStockDeducted: false,
     };
-    reqs.unshift(newReq);
-    this.saveMaterialCallRequests(reqs);
 
-    // Set buffer location status to CALL_PENDING if it matches an actual buffer shelf
-    if (!params.isDirectKitting && params.bufferLocation) {
+    // IMMEDIATELY CONSUME / DEDUCT STOCK AT MOMENT OF CALL (User requirement)
+    if (isDirect) {
+      // Consume from Pending Kitting Queue (Danh Sách Chờ Bóc Tách)
+      const queue = this.getKittingQueue();
+      const pendingIndices: number[] = [];
+      queue.forEach((item, index) => {
+        if (
+          item.status === 'PENDING_KITTING' &&
+          item.partCode.trim().toLowerCase() === params.partCode.trim().toLowerCase()
+        ) {
+          pendingIndices.push(index);
+        }
+      });
+
+      // Sort by FIFO (createdAt ASC)
+      pendingIndices.sort((a, b) => new Date(queue[a].createdAt).getTime() - new Date(queue[b].createdAt).getTime());
+
+      let remainingToDeduct = params.requestedQty;
+      const nowIso = new Date().toISOString();
+
+      for (const pIdx of pendingIndices) {
+        if (remainingToDeduct <= 0) break;
+        const pItem = queue[pIdx];
+        if (pItem.rawQuantity <= remainingToDeduct) {
+          remainingToDeduct -= pItem.rawQuantity;
+          queue[pIdx] = {
+            ...pItem,
+            kittedQuantity: pItem.rawQuantity,
+            status: 'DELIVERED',
+            bufferLocation: 'Giao trực tiếp DCLR',
+            operatorName: params.requestedBy || 'Logistics (Giao Trực Tiếp DCLR)',
+            endTime: nowIso,
+            durationMinutes: 5,
+          };
+        } else {
+          const consumedPortion = remainingToDeduct;
+          queue[pIdx] = {
+            ...pItem,
+            rawQuantity: pItem.rawQuantity - consumedPortion,
+          };
+          queue.push({
+            id: 'kit-dclr-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+            transactionId: pItem.transactionId,
+            partCode: pItem.partCode,
+            partName: pItem.partName,
+            unit: pItem.unit,
+            rawQuantity: consumedPortion,
+            kittedQuantity: consumedPortion,
+            scrapQuantity: 0,
+            bufferLocation: 'Giao trực tiếp DCLR',
+            status: 'DELIVERED',
+            operatorName: params.requestedBy || 'Logistics (Giao Trực Tiếp DCLR)',
+            createdAt: pItem.createdAt,
+            endTime: nowIso,
+            durationMinutes: 5,
+          });
+          remainingToDeduct = 0;
+        }
+      }
+      this.saveKittingQueue(queue);
+      newReq.isStockDeducted = true;
+    } else if (params.bufferLocation) {
+      // Deduct from Outbuffer Shelf Stock
       const buffers = this.getBufferLocations();
       const bIdx = buffers.findIndex((b) => b.locationId === params.bufferLocation);
       if (bIdx >= 0) {
-        buffers[bIdx].status = 'CALL_PENDING';
-        buffers[bIdx].lastUpdated = new Date().toISOString();
+        const targetBuf = buffers[bIdx];
+        let items: BufferPartItem[] = targetBuf.items ? [...targetBuf.items] : [];
+
+        const itemIdx = items.findIndex((i) => i.partCode?.trim().toLowerCase() === params.partCode?.trim().toLowerCase());
+        if (itemIdx >= 0) {
+          items[itemIdx].currentStockQty = Math.max(0, items[itemIdx].currentStockQty - params.requestedQty);
+          if (items[itemIdx].currentStockQty <= 0) {
+            items.splice(itemIdx, 1);
+          }
+        }
+
+        const remaining = items.reduce((sum, i) => sum + (i.currentStockQty || 0), 0);
+        buffers[bIdx] = {
+          ...targetBuf,
+          items,
+          partCode: items[0]?.partCode,
+          partName: items.length === 1 ? items[0]?.partName : items.length > 1 ? `${items.length} loại linh kiện` : undefined,
+          unit: items[0]?.unit || 'PCS',
+          currentStockQty: remaining,
+          status: remaining <= 0 ? 'EMPTY' : 'CALL_PENDING',
+          lastUpdated: new Date().toISOString(),
+        };
         this.saveBufferLocations(buffers);
+        newReq.isStockDeducted = true;
       }
     }
+
+    reqs.unshift(newReq);
+    this.saveMaterialCallRequests(reqs);
 
     return newReq;
   },
@@ -2090,7 +2182,8 @@ export const storageService = {
     reqs[idx] = updated;
     this.saveMaterialCallRequests(reqs);
 
-    if (status === 'COMPLETED') {
+    // If completed and stock was not already deducted at creation time, deduct now
+    if (status === 'COMPLETED' && !current.isStockDeducted) {
       const isDirect =
         current.isDirectKitting ||
         current.bufferLocation === 'DCLR' ||
@@ -2111,7 +2204,6 @@ export const storageService = {
           }
         });
 
-        // Sort indices by createdAt ASC (FIFO deduction)
         pendingIndices.sort((a, b) => new Date(queue[a].createdAt).getTime() - new Date(queue[b].createdAt).getTime());
 
         let remainingToDeduct = current.requestedQty;
@@ -2121,7 +2213,6 @@ export const storageService = {
           if (remainingToDeduct <= 0) break;
           const pItem = queue[pIdx];
           if (pItem.rawQuantity <= remainingToDeduct) {
-            // Entire pending batch is consumed for direct DCLR delivery
             remainingToDeduct -= pItem.rawQuantity;
             queue[pIdx] = {
               ...pItem,
@@ -2133,13 +2224,11 @@ export const storageService = {
               durationMinutes: 5,
             };
           } else {
-            // Partially consumed this pending batch
             const consumedPortion = remainingToDeduct;
             queue[pIdx] = {
               ...pItem,
               rawQuantity: pItem.rawQuantity - consumedPortion,
             };
-            // Create a completed history record for the consumed portion
             queue.push({
               id: 'kit-dclr-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
               transactionId: pItem.transactionId,
@@ -2160,6 +2249,7 @@ export const storageService = {
           }
         }
         this.saveKittingQueue(queue);
+        updated.isStockDeducted = true;
       } else {
         // DEDUCT FROM OUTBUFFER SHELF STOCK
         const buffers = this.getBufferLocations();
@@ -2188,6 +2278,7 @@ export const storageService = {
             lastUpdated: new Date().toISOString(),
           };
           this.saveBufferLocations(buffers);
+          updated.isStockDeducted = true;
         }
 
         // Update kitting queue status to DELIVERED if matching item exists
@@ -2305,7 +2396,7 @@ export const storageService = {
     if (idx === -1) return;
 
     const req = reqs[idx];
-    if (req.status === 'COMPLETED' && restoreStockIfCompleted) {
+    if ((req.status === 'COMPLETED' || req.isStockDeducted) && restoreStockIfCompleted) {
       this.restoreStockFromMaterialCall(req);
     }
 
@@ -2780,6 +2871,35 @@ export const storageService = {
           extractedQty: parsedQty !== undefined ? parsedQty : item.tag.standardQty,
         };
       }
+    }
+
+    // 6. Check if it matches any part directly from Master Data (getParts)
+    const allParts = this.getParts();
+    const matchedPart = allParts.find(
+      (p) =>
+        p.code.trim().toLowerCase() === rawCleanLower ||
+        (parsedCode && p.code.trim().toLowerCase() === parsedCode.toLowerCase())
+    );
+    if (matchedPart) {
+      const syntheticTag: MasterKittingTag = {
+        id: `tag-${matchedPart.code}`,
+        stt: 'Số 1',
+        groupName: 'Nhóm linh kiện',
+        ccdcSpec: '',
+        groupConfig: getPartGroupConfig('Nhóm linh kiện'),
+        partCode: matchedPart.code,
+        partName: matchedPart.name,
+        unit: matchedPart.unit || 'PCS',
+        standardQty: parsedQty !== undefined && parsedQty > 0 ? parsedQty : 10,
+        qrPayload: `CONT_IN|${matchedPart.code}|${parsedQty || 10}|MASTER|tag-${matchedPart.code}`,
+      };
+      return {
+        isValid: true,
+        matchedTag: syntheticTag,
+        source: 'MASTER_DATA',
+        extractedPartCode: matchedPart.code,
+        extractedQty: parsedQty !== undefined ? parsedQty : syntheticTag.standardQty,
+      };
     }
 
     // NOT FOUND: STRICT REJECTION

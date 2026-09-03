@@ -457,9 +457,13 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         // Fallback
       }
 
+      const deductInfo = isDirectKitting
+        ? `Đã trừ ${requestedQty} ${unit} trong Danh Sách Chờ Bóc Tách (Giao trực tiếp qua DCLR)`
+        : `Đã trừ ${requestedQty} ${unit} trên kệ Outbuffer ${targetBufferLocation}`;
+
       setMessage({
         type: 'success',
-        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công tới bộ phận Logistics!`,
+        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công! ${deductInfo}.`,
       });
 
       onRefresh();
@@ -530,9 +534,13 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         // Fallback
       }
 
+      const deductDetail = !isKitted
+        ? `Đã trừ ${requestedQty} ${unit} trong Danh Sách Chờ Bóc Tách (Giao trực tiếp qua DCLR)`
+        : `Đã trừ ${requestedQty} ${unit} trên kệ Outbuffer ${chosenPickLocation}`;
+
       setMessage({
         type: 'success',
-        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${partCode}] thành công tới bộ phận Logistics! Vị trí giao: ${targetLine}`,
+        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${partCode}] thành công! ${deductDetail}. Vị trí giao: ${targetLine}`,
       });
 
       onRefresh();

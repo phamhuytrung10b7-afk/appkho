@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { WarehouseLocation, AppSettings } from './types';
 import {
   X,
@@ -14,8 +14,11 @@ import {
   Building2,
   MapPin,
   Tag,
+  Layers,
+  Filter,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import { SunhouseLogo } from './SunhouseLogo';
 import {
   getSavedPrintConfigs,
   savePrintConfigs,
@@ -24,6 +27,40 @@ import {
   AllPrintConfigs,
 } from './printConfig';
 import { printHtml } from './printHelper';
+
+export interface ShelfGroup {
+  key: string;
+  name: string;
+  locations: WarehouseLocation[];
+  selectedCount: number;
+  totalCount: number;
+  isAllSelected: boolean;
+  isPartiallySelected: boolean;
+}
+
+/**
+ * Parses a location name into its shelf group prefix
+ * E.g.: "A01" -> "A", "A30" -> "A", "Kệ B05" -> "B", "Khoang C" -> "C"
+ */
+export function getShelfGroupKey(name: string): string {
+  const trimmed = (name || '').trim();
+  // Match "Kệ A", "Dãy A", "Khoang A", "Khu A", "Tủ A"
+  const wordPrefix = trimmed.match(/^(?:kệ|dãy|khoang|khu|tủ)\s*([A-Za-z0-9]+)/i);
+  if (wordPrefix) {
+    return wordPrefix[1].toUpperCase();
+  }
+  // Match starting alphabetic letters: "A01", "A-01", "AB01"
+  const letterPrefix = trimmed.match(/^([A-Za-z]+)/);
+  if (letterPrefix) {
+    return letterPrefix[1].toUpperCase();
+  }
+  // Match starting numbers: "01-A"
+  const numPrefix = trimmed.match(/^(\d+)/);
+  if (numPrefix) {
+    return numPrefix[1];
+  }
+  return 'Khác';
+}
 
 interface LocationQrPrintModalProps {
   isOpen: boolean;
@@ -43,10 +80,16 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [tagCopies, setTagCopies] = useState<number>(1);
   const [showCompanyHeader, setShowCompanyHeader] = useState<boolean>(true);
+  const [showLogo, setShowLogo] = useState<boolean>(true);
+  const [companyLine1, setCompanyLine1] = useState<string>(
+    'CÔNG TY SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE'
+  );
+  const [companyLine2, setCompanyLine2] = useState<string>('CHI NHÁNH BÌNH DƯƠNG');
   const [labelLayout, setLabelLayout] = useState<PrintLayout>('150x100'); // '150x100' = 150x100mm, '100x75' = 100x75mm, 'a7' = 74x105mm, 'double' = 73x22mm, 'single' = 35x22mm
   const [printConfigs, setPrintConfigs] = useState<AllPrintConfigs>(getSavedPrintConfigs());
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState<string>('');
+  const [activeGroupFilter, setActiveGroupFilter] = useState<string>('all');
 
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -66,17 +109,51 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
     }
   }, [isOpen, initialSelectedId, locations]);
 
+  // Compute Shelf Groups (e.g. Kệ A, Kệ B, Kệ C...)
+  const shelfGroups: ShelfGroup[] = useMemo(() => {
+    const map = new Map<string, WarehouseLocation[]>();
+    locations.forEach((loc) => {
+      const key = getShelfGroupKey(loc.name);
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key)!.push(loc);
+    });
+
+    const groups: ShelfGroup[] = [];
+    map.forEach((locs, key) => {
+      const selectedCount = locs.filter((l) => selectedIds.includes(l.id)).length;
+      groups.push({
+        key,
+        name: key === 'Khác' ? 'Vị trí khác' : `Kệ ${key}`,
+        locations: locs,
+        selectedCount,
+        totalCount: locs.length,
+        isAllSelected: locs.length > 0 && selectedCount === locs.length,
+        isPartiallySelected: selectedCount > 0 && selectedCount < locs.length,
+      });
+    });
+
+    // Sort alphabetically by group key
+    groups.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+    return groups;
+  }, [locations, selectedIds]);
+
   if (!isOpen) return null;
 
   // Selected locations
   const selectedLocations = locations.filter((loc) => selectedIds.includes(loc.id));
 
-  // Filter locations by search term
-  const filteredLocations = locations.filter(
-    (loc) =>
+  // Filter locations by search term and active group tab
+  const displayedLocations = locations.filter((loc) => {
+    const matchesGroup =
+      activeGroupFilter === 'all' || getShelfGroupKey(loc.name) === activeGroupFilter;
+    const matchesSearch =
+      !searchTerm.trim() ||
       loc.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (loc.description && loc.description.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+      (loc.description && loc.description.toLowerCase().includes(searchTerm.toLowerCase()));
+    return matchesGroup && matchesSearch;
+  });
 
   const handleToggleSelectAll = () => {
     if (selectedIds.length === locations.length) {
@@ -91,6 +168,22 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
       setSelectedIds(selectedIds.filter((item) => item !== id));
     } else {
       setSelectedIds([...selectedIds, id]);
+    }
+  };
+
+  // Toggle full shelf group (e.g. Full Kệ A from 1 to 30)
+  const handleToggleGroup = (group: ShelfGroup) => {
+    const groupLocationIds = group.locations.map((l) => l.id);
+    if (group.isAllSelected) {
+      // Deselect all in this group
+      setSelectedIds((prev) => prev.filter((id) => !groupLocationIds.includes(id)));
+    } else {
+      // Select all in this group
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        groupLocationIds.forEach((id) => next.add(id));
+        return Array.from(next);
+      });
     }
   };
 
@@ -257,11 +350,11 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                 }`}
               >
                 <Settings2 className="w-4 h-4" />
-                <span>Cài đặt kích thước</span>
+                <span>Cài đặt thông tin tem</span>
               </button>
 
               <div className="flex items-center space-x-2 bg-white px-3 py-1.5 border border-slate-300 rounded-xl font-bold text-slate-700">
-                <span className="text-slate-500">Số tem mỗi kệ:</span>
+                <span className="text-slate-500">Số tem / kệ:</span>
                 <input
                   type="number"
                   min="1"
@@ -281,20 +374,32 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                 />
                 <span>In Tên Doanh Nghiệp</span>
               </label>
+
+              <label className="flex items-center space-x-1.5 cursor-pointer bg-white px-3 py-1.5 border border-slate-300 rounded-xl font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={showLogo}
+                  onChange={(e) => setShowLogo(e.target.checked)}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span>Logo Sunhouse</span>
+              </label>
             </div>
 
             <div className="text-slate-500 font-medium">
-              Đã chọn: <strong className="text-blue-600 font-black">{selectedLocations.length}</strong> / {locations.length} vị trí ({printItems.length} tem)
+              Đã chọn:{' '}
+              <strong className="text-blue-600 font-black">{selectedLocations.length}</strong> /{' '}
+              {locations.length} vị trí ({printItems.length} tem)
             </div>
           </div>
 
-          {/* Expandable Dimension Settings Panel */}
+          {/* Expandable Settings Panel */}
           {showSettings && (
-            <div className="p-3 bg-white border border-emerald-200 rounded-2xl shadow-xs animate-in slide-in-from-top-2 duration-150 space-y-2">
+            <div className="p-4 bg-white border border-emerald-200 rounded-2xl shadow-xs animate-in slide-in-from-top-2 duration-150 space-y-3">
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-extrabold text-slate-800 flex items-center space-x-1">
+                <span className="font-extrabold text-slate-800 flex items-center space-x-1.5">
                   <Sliders className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Tuỳ Chỉnh Kích Thước - {getLayoutLabel(labelLayout)}</span>
+                  <span>Tuỳ Chỉnh Kích Thước & Tên Doanh Nghiệp - {getLayoutLabel(labelLayout)}</span>
                 </span>
                 <button
                   type="button"
@@ -304,6 +409,34 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                   <RotateCcw className="w-3 h-3" />
                   <span>Khôi phục mặc định</span>
                 </button>
+              </div>
+
+              {/* Company Branding Lines Input */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    DÒNG 1 (TÊN CÔNG TY TRÊN TEM):
+                  </label>
+                  <input
+                    type="text"
+                    value={companyLine1}
+                    onChange={(e) => setCompanyLine1(e.target.value)}
+                    placeholder="CÔNG TY SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE"
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 outline-hidden focus:ring-2 focus:ring-blue-500 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    DÒNG 2 (CHI NHÁNH / ĐƠN VỊ):
+                  </label>
+                  <input
+                    type="text"
+                    value={companyLine2}
+                    onChange={(e) => setCompanyLine2(e.target.value)}
+                    placeholder="CHI NHÁNH BÌNH DƯƠNG"
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 outline-hidden focus:ring-2 focus:ring-blue-500 text-xs"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
@@ -369,27 +502,28 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
 
         {/* Main Workspace Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-          {/* Location Selection Bar */}
-          <div className="space-y-2">
+          {/* SECTION 1: QUICK SELECT BY SHELF GROUP (Full Kệ A, Full Kệ B...) */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 sm:p-4 space-y-3 shadow-2xs">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <label className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                <MapPin className="w-4 h-4 text-blue-600" />
-                <span>CHỌN VỊ TRÍ KỆ CẦN IN TEM:</span>
-              </label>
+              <div className="flex items-center space-x-2">
+                <div className="w-6 h-6 rounded-lg bg-blue-600 text-white flex items-center justify-center font-black">
+                  <Layers className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <label className="text-xs font-black text-slate-900 uppercase tracking-wider">
+                    CHỌN NHANH THEO DÃY KỆ (TICK CHỌN FULL KỆ TỪ 1 ĐẾN 30):
+                  </label>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    Bấm vào kệ để chọn hoặc bỏ chọn nhanh toàn bộ vị trí trong kệ đó:
+                  </p>
+                </div>
+              </div>
 
               <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Lọc tên kệ..."
-                  className="px-3 py-1 bg-slate-100 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-hidden w-36"
-                />
-
                 <button
                   type="button"
                   onClick={handleToggleSelectAll}
-                  className="px-3 py-1 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl font-bold text-slate-700 flex items-center space-x-1.5 shadow-2xs cursor-pointer text-xs"
+                  className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl font-bold text-slate-700 flex items-center space-x-1.5 shadow-2xs cursor-pointer text-xs"
                 >
                   {selectedIds.length === locations.length ? (
                     <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
@@ -397,35 +531,143 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                     <Square className="w-3.5 h-3.5 text-slate-400" />
                   )}
                   <span>
-                    {selectedIds.length === locations.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                    {selectedIds.length === locations.length
+                      ? 'Bỏ chọn tất cả'
+                      : `Chọn tất cả kho (${locations.length})`}
                   </span>
                 </button>
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-2 bg-slate-50 rounded-2xl border border-slate-200">
-              {filteredLocations.map((loc) => {
-                const isSelected = selectedIds.includes(loc.id);
-                return (
-                  <button
-                    key={loc.id}
-                    type="button"
-                    onClick={() => handleToggleId(loc.id)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer border ${
-                      isSelected
-                        ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                        : 'bg-white text-slate-600 border-slate-300 hover:border-slate-400'
+            {/* Shelf Group Buttons Grid */}
+            <div className="flex flex-wrap gap-2 pt-1">
+              {shelfGroups.map((grp) => (
+                <button
+                  key={grp.key}
+                  type="button"
+                  onClick={() => handleToggleGroup(grp)}
+                  title={`Click để ${grp.isAllSelected ? 'bỏ chọn' : 'chọn full'} toàn bộ ${grp.name} (${grp.totalCount} vị trí)`}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer border shadow-2xs ${
+                    grp.isAllSelected
+                      ? 'bg-blue-600 text-white border-blue-600 ring-2 ring-blue-300'
+                      : grp.isPartiallySelected
+                      ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                      : 'bg-white text-slate-700 border-slate-300 hover:border-blue-400 hover:bg-blue-50/50'
+                  }`}
+                >
+                  {grp.isAllSelected ? (
+                    <CheckSquare className="w-4 h-4 text-white" />
+                  ) : grp.isPartiallySelected ? (
+                    <div className="w-4 h-4 rounded-xs bg-amber-500 text-white flex items-center justify-center text-[10px] font-black leading-none">
+                      -
+                    </div>
+                  ) : (
+                    <Square className="w-4 h-4 text-slate-400" />
+                  )}
+                  <span className="tracking-tight">Full {grp.name}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black ${
+                      grp.isAllSelected
+                        ? 'bg-blue-700 text-white'
+                        : grp.isPartiallySelected
+                        ? 'bg-amber-200 text-amber-950'
+                        : 'bg-slate-100 text-slate-600'
                     }`}
                   >
-                    {isSelected ? (
-                      <CheckSquare className="w-3.5 h-3.5 text-white" />
-                    ) : (
-                      <Square className="w-3.5 h-3.5 text-slate-400" />
-                    )}
-                    <span>{loc.name}</span>
-                  </button>
-                );
-              })}
+                    {grp.selectedCount}/{grp.totalCount}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* SECTION 2: INDIVIDUAL LOCATION SELECTION & TABS */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <label className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+                <MapPin className="w-4 h-4 text-blue-600" />
+                <span>CHI TIẾT TỪNG VỊ TRÍ KỆ:</span>
+              </label>
+
+              <div className="flex items-center space-x-2">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Tìm vị trí (VD: A01, Khoang 1)..."
+                  className="px-3 py-1 bg-slate-100 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-hidden w-48"
+                />
+              </div>
+            </div>
+
+            {/* Filter Tabs by Shelf Group */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setActiveGroupFilter('all')}
+                className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer border ${
+                  activeGroupFilter === 'all'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                Tất cả ({locations.length})
+              </button>
+              {shelfGroups.map((grp) => (
+                <button
+                  key={`tab-${grp.key}`}
+                  type="button"
+                  onClick={() => setActiveGroupFilter(grp.key)}
+                  className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer border flex items-center space-x-1.5 ${
+                    activeGroupFilter === grp.key
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <span>{grp.name}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-md text-[10px] font-black ${
+                      activeGroupFilter === grp.key
+                        ? 'bg-blue-700 text-white'
+                        : 'bg-slate-100 text-slate-500'
+                    }`}
+                  >
+                    {grp.selectedCount}/{grp.totalCount}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Individual Shelf Items Pills */}
+            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto p-2.5 bg-slate-50 rounded-2xl border border-slate-200">
+              {displayedLocations.length === 0 ? (
+                <div className="w-full py-4 text-center text-xs text-slate-400">
+                  Không tìm thấy vị trí nào phù hợp bộ lọc.
+                </div>
+              ) : (
+                displayedLocations.map((loc) => {
+                  const isSelected = selectedIds.includes(loc.id);
+                  return (
+                    <button
+                      key={loc.id}
+                      type="button"
+                      onClick={() => handleToggleId(loc.id)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer border ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-white text-slate-600 border-slate-300 hover:border-slate-400'
+                      }`}
+                    >
+                      {isSelected ? (
+                        <CheckSquare className="w-3.5 h-3.5 text-white" />
+                      ) : (
+                        <Square className="w-3.5 h-3.5 text-slate-400" />
+                      )}
+                      <span>{loc.name}</span>
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -486,12 +728,22 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                           {labelLayout === '150x100' ? (
                             /* 150x100mm TEM NGANG LỚN */
                             <div className="w-full h-full flex flex-col justify-between p-3 box-border">
-                              {/* Header */}
+                              {/* Header: Logo + 2-line Company Name */}
                               {showCompanyHeader && (
-                                <div className="text-center border-b border-slate-800 pb-1 mb-1">
-                                  <p className="text-[11px] font-black text-slate-900 uppercase tracking-tight leading-tight">
-                                    {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
-                                  </p>
+                                <div className="flex items-center justify-center gap-2 border-b-2 border-slate-900 pb-1.5 mb-1 text-center">
+                                  {showLogo && (
+                                    <div className="shrink-0 flex items-center justify-center">
+                                      <SunhouseLogo className="w-7 h-7 text-red-600" />
+                                    </div>
+                                  )}
+                                  <div className="flex flex-col text-center">
+                                    <span className="text-[10px] font-black text-slate-950 uppercase tracking-tight leading-tight">
+                                      {companyLine1}
+                                    </span>
+                                    <span className="text-[9px] font-extrabold text-slate-800 uppercase tracking-wider leading-tight">
+                                      {companyLine2}
+                                    </span>
+                                  </div>
                                 </div>
                               )}
 
@@ -512,24 +764,34 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                                 </div>
 
                                 <div className="shrink-0 flex items-center justify-center">
-                                  <QRCodeSVG value={loc.name} size={120} level="Q" marginSize={0} />
+                                  <QRCodeSVG value={loc.name} size={115} level="Q" marginSize={0} />
                                 </div>
                               </div>
 
                               {/* Footer */}
-                              <div className="text-center border-t border-slate-800 pt-1 mt-1 text-[10px] font-mono font-bold text-slate-800 tracking-wider">
+                              <div className="text-center border-t-2 border-slate-900 pt-1 mt-1 text-[10px] font-mono font-bold text-slate-800 tracking-wider">
                                 MÃ SCAN TỰ ĐỘNG - KHO HÀNG
                               </div>
                             </div>
                           ) : labelLayout === '100x75' ? (
                             /* 100x75mm TEM NGANG VỪA */
                             <div className="w-full h-full flex flex-col justify-between p-2.5 box-border">
-                              {/* Header */}
+                              {/* Header: Logo + 2-line Company Name */}
                               {showCompanyHeader && (
-                                <div className="text-center border-b border-slate-400 pb-1 mb-1">
-                                  <p className="text-[9.5px] font-black text-slate-900 uppercase tracking-tight leading-tight">
-                                    {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
-                                  </p>
+                                <div className="flex items-center justify-center gap-1.5 border-b-2 border-slate-900 pb-1 mb-1 text-center">
+                                  {showLogo && (
+                                    <div className="shrink-0 flex items-center justify-center">
+                                      <SunhouseLogo className="w-5 h-5 text-red-600" />
+                                    </div>
+                                  )}
+                                  <div className="flex flex-col text-center">
+                                    <span className="text-[9px] font-black text-slate-950 uppercase tracking-tight leading-tight">
+                                      {companyLine1}
+                                    </span>
+                                    <span className="text-[8px] font-extrabold text-slate-800 uppercase tracking-wider leading-tight">
+                                      {companyLine2}
+                                    </span>
+                                  </div>
                                 </div>
                               )}
 
@@ -545,7 +807,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                                 </div>
 
                                 <div className="shrink-0 flex items-center justify-center mx-1">
-                                  <QRCodeSVG value={loc.name} size={80} level="Q" marginSize={0} />
+                                  <QRCodeSVG value={loc.name} size={75} level="Q" marginSize={0} />
                                 </div>
 
                                 <div className="flex-1 min-w-0 pl-1">
@@ -564,12 +826,24 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                             </div>
                           ) : labelLayout === 'a7' ? (
                             /* A7 (74x105mm) */
-                            <div className="w-full h-full flex flex-col items-center justify-between p-5 text-center">
+                            <div className="w-full h-full flex flex-col items-center justify-between p-4 text-center">
                               <div className="w-full text-center">
                                 {showCompanyHeader && (
-                                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 border-b border-slate-200 pb-1">
-                                    {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
-                                  </p>
+                                  <div className="flex items-center justify-center gap-1.5 border-b border-slate-200 pb-1 mb-2">
+                                    {showLogo && (
+                                      <div className="shrink-0 flex items-center justify-center">
+                                        <SunhouseLogo className="w-5 h-5 text-red-600" />
+                                      </div>
+                                    )}
+                                    <div className="flex flex-col text-center">
+                                      <span className="text-[10px] font-black text-slate-900 uppercase tracking-tight leading-tight">
+                                        {companyLine1}
+                                      </span>
+                                      <span className="text-[8.5px] font-bold text-slate-600 uppercase tracking-wider leading-tight">
+                                        {companyLine2}
+                                      </span>
+                                    </div>
+                                  </div>
                                 )}
                                 <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
                                   VỊ TRÍ / KỆ
@@ -585,7 +859,7 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                               </div>
 
                               <div className="my-3 flex items-center justify-center">
-                                <QRCodeSVG value={loc.name} size={150} level="Q" marginSize={1} />
+                                <QRCodeSVG value={loc.name} size={140} level="Q" marginSize={1} />
                               </div>
 
                               <div className="w-full text-center border-t border-slate-200 pt-2 text-[10px] text-slate-400 font-mono">
@@ -603,9 +877,12 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                               {/* Right: Info */}
                               <div className="flex-1 min-w-0 h-full flex flex-col justify-between py-0.5">
                                 {showCompanyHeader && (
-                                  <p className="text-[8px] font-extrabold text-slate-400 uppercase truncate">
-                                    {settings.warehouseName || 'KHO HÀNG'}
-                                  </p>
+                                  <div className="flex items-center gap-1">
+                                    {showLogo && <SunhouseLogo className="w-3 h-3 text-red-600 shrink-0" />}
+                                    <p className="text-[7.5px] font-black text-slate-700 uppercase truncate">
+                                      {companyLine1}
+                                    </p>
+                                  </div>
                                 )}
                                 <div>
                                   <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter leading-none">
@@ -751,22 +1028,46 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                           {showCompanyHeader && (
                             <div
                               style={{
-                                textAlign: 'center',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '3mm',
                                 width: '100%',
-                                borderBottom: '1.5px solid #000000',
-                                paddingBottom: '1.5mm',
+                                borderBottom: '2px solid #000000',
+                                paddingBottom: '2mm',
+                                textAlign: 'center',
                               }}
                             >
-                              <div
-                                style={{
-                                  fontSize: `${conf.metaFontSize}px`,
-                                  fontWeight: 'bold',
-                                  color: '#000000',
-                                  textTransform: 'uppercase',
-                                  lineHeight: '1.2',
-                                }}
-                              >
-                                {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                              {showLogo && (
+                                <div style={{ width: '10mm', height: '10mm', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <SunhouseLogo style={{ width: '100%', height: '100%', color: '#dc2626' }} />
+                                </div>
+                              )}
+                              <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'center' }}>
+                                <div
+                                  style={{
+                                    fontSize: `${conf.metaFontSize}px`,
+                                    fontWeight: '900',
+                                    color: '#000000',
+                                    textTransform: 'uppercase',
+                                    lineHeight: '1.2',
+                                    letterSpacing: '0.2px',
+                                  }}
+                                >
+                                  {companyLine1}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: `${Math.max(8, conf.metaFontSize - 2)}px`,
+                                    fontWeight: '800',
+                                    color: '#000000',
+                                    textTransform: 'uppercase',
+                                    lineHeight: '1.2',
+                                    letterSpacing: '0.4px',
+                                  }}
+                                >
+                                  {companyLine2}
+                                </div>
                               </div>
                             </div>
                           )}
@@ -880,22 +1181,45 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                           {showCompanyHeader && (
                             <div
                               style={{
-                                textAlign: 'center',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '2mm',
                                 width: '100%',
-                                borderBottom: '1.5px solid #94a3b8',
-                                paddingBottom: '1.2mm',
+                                borderBottom: '1.5px solid #000000',
+                                paddingBottom: '1.5mm',
+                                textAlign: 'center',
                               }}
                             >
-                              <div
-                                style={{
-                                  fontSize: `${conf.metaFontSize}px`,
-                                  fontWeight: 'bold',
-                                  color: '#000000',
-                                  textTransform: 'uppercase',
-                                  lineHeight: '1.2',
-                                }}
-                              >
-                                {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                              {showLogo && (
+                                <div style={{ width: '7mm', height: '7mm', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <SunhouseLogo style={{ width: '100%', height: '100%', color: '#dc2626' }} />
+                                </div>
+                              )}
+                              <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'center' }}>
+                                <div
+                                  style={{
+                                    fontSize: `${conf.metaFontSize}px`,
+                                    fontWeight: '900',
+                                    color: '#000000',
+                                    textTransform: 'uppercase',
+                                    lineHeight: '1.2',
+                                    letterSpacing: '0.2px',
+                                  }}
+                                >
+                                  {companyLine1}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: `${Math.max(7, conf.metaFontSize - 2)}px`,
+                                    fontWeight: '800',
+                                    color: '#000000',
+                                    textTransform: 'uppercase',
+                                    lineHeight: '1.2',
+                                  }}
+                                >
+                                  {companyLine2}
+                                </div>
                               </div>
                             </div>
                           )}
@@ -1011,16 +1335,45 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                             {showCompanyHeader && (
                               <div
                                 style={{
-                                  fontSize: `${conf.metaFontSize}px`,
-                                  fontWeight: 'bold',
-                                  color: '#475569',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '2mm',
+                                  width: '100%',
                                   marginBottom: '2mm',
-                                  textTransform: 'uppercase',
                                   borderBottom: '1px solid #cbd5e1',
                                   paddingBottom: '1.5mm',
                                 }}
                               >
-                                {settings.warehouseName || 'CÔNG TY TNHH SẢN XUẤT ĐỒ GIA DỤNG SUNHOUSE - CHI NHÁNH BÌNH DƯƠNG'}
+                                {showLogo && (
+                                  <div style={{ width: '6mm', height: '6mm', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <SunhouseLogo style={{ width: '100%', height: '100%', color: '#dc2626' }} />
+                                  </div>
+                                )}
+                                <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'center' }}>
+                                  <div
+                                    style={{
+                                      fontSize: `${conf.metaFontSize}px`,
+                                      fontWeight: '900',
+                                      color: '#0f172a',
+                                      textTransform: 'uppercase',
+                                      lineHeight: '1.2',
+                                    }}
+                                  >
+                                    {companyLine1}
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontSize: `${Math.max(7, conf.metaFontSize - 2)}px`,
+                                      fontWeight: '700',
+                                      color: '#475569',
+                                      textTransform: 'uppercase',
+                                      lineHeight: '1.2',
+                                    }}
+                                  >
+                                    {companyLine2}
+                                  </div>
+                                </div>
                               </div>
                             )}
 
@@ -1135,16 +1488,31 @@ export const LocationQrPrintModal: React.FC<LocationQrPrintModalProps> = ({
                             {showCompanyHeader && (
                               <div
                                 style={{
-                                  fontSize: `${Math.max(6, conf.metaFontSize - 1)}px`,
-                                  fontWeight: 'bold',
-                                  color: '#64748b',
-                                  textTransform: 'uppercase',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '1mm',
                                   whiteSpace: 'nowrap',
                                   overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
                                 }}
                               >
-                                {settings.warehouseName || 'KHO HÀNG'}
+                                {showLogo && (
+                                  <div style={{ width: '3mm', height: '3mm', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <SunhouseLogo style={{ width: '100%', height: '100%', color: '#dc2626' }} />
+                                  </div>
+                                )}
+                                <div
+                                  style={{
+                                    fontSize: `${Math.max(5.5, conf.metaFontSize - 1.5)}px`,
+                                    fontWeight: '800',
+                                    color: '#334155',
+                                    textTransform: 'uppercase',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                >
+                                  {companyLine1}
+                                </div>
                               </div>
                             )}
 
