@@ -75,6 +75,11 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
   const [purpose, setPurpose] = useState<string>(defaultPurpose || settings.stockOutPurposes?.[0] || 'Sản xuất theo đơn hàng');
   const [notes, setNotes] = useState<string>('Xuất kho bằng quét mã tự động');
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [errorPopup, setErrorPopup] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+  } | null>(null);
 
   const qtyInputRef = useRef<HTMLInputElement>(null);
   const locationInputRef = useRef<HTMLInputElement>(null);
@@ -183,12 +188,6 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
       validationMessage = `❌ SAI VỊ TRÍ KỆ! Vị trí "${scannedLocation}" không thuộc kệ lưu trữ linh kiện này hoặc không đúng với kệ FIFO "${expectedFifoLocationName}".`;
     }
   }
-
-  const [errorPopup, setErrorPopup] = useState<{
-    isOpen: boolean;
-    title: string;
-    message: string;
-  } | null>(null);
 
   const triggerAutoConfirmIfValid = (targetLocationStr: string) => {
     const cleanStr = targetLocationStr.trim();
