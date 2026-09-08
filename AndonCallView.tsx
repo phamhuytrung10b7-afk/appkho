@@ -981,38 +981,57 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         <span className="text-amber-900 font-bold text-xs block">
                           📍 Nơi Nhận: <strong className="text-slate-900 text-sm font-extrabold">{req.assemblyLine}</strong>
                         </span>
-                        <div>
-                          <h4 className="text-base font-black text-slate-900 leading-snug">
-                            {req.partName}
-                          </h4>
-                          <div className="mt-1 flex items-center space-x-2">
-                            <span className="text-[11px] font-bold text-slate-500">Mã LK:</span>
-                            <span className="font-mono font-black text-purple-800 text-xs bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-lg inline-block">
-                              {req.partCode}
+
+                        {/* PART NAME & PROMINENT LARGE QUANTITY BOX */}
+                        <div className="flex items-start justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                          <div className="flex-1 min-w-0">
+                            <h4 className="text-base sm:text-lg font-black text-slate-900 leading-snug">
+                              {req.partName}
+                            </h4>
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-bold text-slate-500">Mã LK:</span>
+                              <span className="font-mono font-black text-purple-800 text-xs bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-lg inline-block">
+                                {req.partCode}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Số lượng hiển thị to ngang bằng cỡ chữ tên linh kiện */}
+                          <div className="shrink-0 bg-emerald-600 text-white rounded-xl px-3.5 py-2 shadow-xs flex flex-col items-center sm:items-end justify-center min-w-[110px]">
+                            <span className="text-[9px] font-black uppercase tracking-wider text-emerald-100">
+                              SỐ LƯỢNG:
                             </span>
+                            <div className="flex items-baseline space-x-1 mt-0.5">
+                              <span className="text-xl sm:text-2xl font-black font-mono leading-none tracking-tight">
+                                {req.requestedQty.toLocaleString('vi-VN')}
+                              </span>
+                              <span className="text-xs sm:text-sm font-black text-emerald-100 uppercase">
+                                {req.unit}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
 
                       {req.isDirectKitting || req.bufferLocation.includes('KITTING') ? (
-                        <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs space-y-1">
+                        <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs space-y-1.5">
                           <span className="font-extrabold text-amber-900 flex items-center space-x-1 uppercase text-[10px]">
                             <Zap className="w-3.5 h-3.5 text-amber-600" />
                             <span>LỘ TRÌNH KITTING CROSS-DOCKING:</span>
                           </span>
-                          <p className="font-bold text-slate-800 text-[11px]">
-                            1. Đến Khu Bóc Tách Kitting lấy <strong className="text-emerald-700 font-extrabold">[{req.requestedQty} {req.unit}]</strong> <br />
-                            2. Giao trực tiếp tới <strong className="text-slate-900 font-extrabold">[{req.assemblyLine}]</strong>
+                          <p className="font-bold text-slate-800 text-xs leading-relaxed">
+                            1. Đến Khu Bóc Tách Kitting lấy <strong className="text-base font-black text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-300 font-mono inline-block">[{req.requestedQty} {req.unit}]</strong> <br />
+                            2. Giao trực tiếp tới <strong className="text-slate-900 font-extrabold text-sm">[{req.assemblyLine}]</strong>
                           </p>
                         </div>
                       ) : (
                         (() => {
                           const shelfBuf = buffers.find((b) => b.locationId === req.bufferLocation);
                           return (
-                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs space-y-1">
+                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs space-y-1.5">
                               <span className="font-extrabold text-blue-900 block uppercase text-[10px]">LỘ TRÌNH LẤY HÀNG OUTBUFFER:</span>
-                              <p className="font-bold text-slate-800 text-[11px]">
-                                1. Đến Kệ <strong className="text-blue-700 font-mono font-black">[{req.bufferLocation}]</strong>
+                              <p className="font-bold text-slate-800 text-xs leading-relaxed">
+                                1. Đến Kệ <strong className="text-blue-700 font-mono font-black text-sm">[{req.bufferLocation}]</strong>
                                 {shelfBuf?.modelName && (
                                   <span className="ml-1 text-blue-900 font-extrabold">
                                     [Model: {shelfBuf.modelName}]
@@ -1022,8 +1041,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                                   <span className="ml-1 text-slate-600 font-medium">
                                     ({shelfBuf.description})
                                   </span>
-                                )} lấy <strong className="text-emerald-700 font-extrabold">[{req.requestedQty} {req.unit}]</strong> <br />
-                                2. Giao tới <strong className="text-slate-900 font-bold">[{req.assemblyLine}]</strong>
+                                )} lấy <strong className="text-base font-black text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-300 font-mono inline-block">[{req.requestedQty} {req.unit}]</strong> <br />
+                                2. Giao tới <strong className="text-slate-900 font-black text-sm">[{req.assemblyLine}]</strong>
                               </p>
                             </div>
                           );
@@ -1100,19 +1119,37 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       </span>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <h4 className="text-base font-black text-slate-900 leading-snug">
-                        {req.partName}
-                      </h4>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-[11px] font-bold text-slate-500">Mã LK:</span>
-                        <span className="font-mono font-black text-purple-800 text-xs bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-lg inline-block">
-                          {req.partCode}
-                        </span>
+                    {/* PART NAME & PROMINENT LARGE QUANTITY BOX */}
+                    <div className="flex items-start justify-between gap-3 p-3 bg-slate-50 border border-slate-200 rounded-2xl">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="text-base sm:text-lg font-black text-slate-900 leading-snug">
+                          {req.partName}
+                        </h4>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-slate-500">Mã LK:</span>
+                          <span className="font-mono font-black text-purple-800 text-xs bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-lg inline-block">
+                            {req.partCode}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 mt-1">
+                          Kệ lấy: <strong className="text-blue-700 font-mono font-extrabold">{req.bufferLocation}</strong>
+                        </p>
                       </div>
-                      <p className="text-xs text-slate-600 pt-1">
-                        Số lượng giao: <strong className="text-emerald-700 font-black text-sm">{req.requestedQty} {req.unit}</strong> | Kệ lấy: <strong className="text-blue-700 font-mono font-extrabold">{req.bufferLocation}</strong>
-                      </p>
+
+                      {/* Số lượng giao to ngang bằng cỡ chữ tên linh kiện */}
+                      <div className="shrink-0 bg-blue-600 text-white rounded-xl px-3.5 py-2 shadow-xs flex flex-col items-center sm:items-end justify-center min-w-[110px]">
+                        <span className="text-[9px] font-black uppercase tracking-wider text-blue-100">
+                          SỐ LƯỢNG GIAO:
+                        </span>
+                        <div className="flex items-baseline space-x-1 mt-0.5">
+                          <span className="text-xl sm:text-2xl font-black font-mono leading-none tracking-tight">
+                            {req.requestedQty.toLocaleString('vi-VN')}
+                          </span>
+                          <span className="text-xs sm:text-sm font-black text-blue-100 uppercase">
+                            {req.unit}
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="p-3 bg-blue-50/80 border border-blue-100 rounded-xl text-xs space-y-1">
