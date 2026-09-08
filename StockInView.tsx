@@ -1,7 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part, AppSettings, WarehouseLocation } from './types';
 import { storageService } from './storage';
-import { ArrowDownLeft, CheckCircle2, AlertCircle, Package, Clock, User, FileText, QrCode, FileSpreadsheet, Zap, X, MapPin, Camera } from 'lucide-react';
+import {
+  ArrowDownLeft,
+  CheckCircle2,
+  AlertCircle,
+  Package,
+  Clock,
+  User,
+  FileText,
+  QrCode,
+  FileSpreadsheet,
+  Zap,
+  X,
+  MapPin,
+  Camera,
+  Volume2,
+  Sparkles,
+  ShieldAlert,
+  BellRing,
+} from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { SearchableLocationSelect } from './SearchableLocationSelect';
 import { QrScannerModal } from './QrScannerModal';
@@ -9,6 +27,21 @@ import { ContainerImportPrintModal } from './ContainerImportPrintModal';
 import { InlineQrScanner } from './InlineQrScanner';
 import { Html5Qrcode } from 'html5-qrcode';
 import { normalizeLocationStr } from './StockOutScanModal';
+import { soundEffects } from './soundEffects';
+
+interface StockInMessage {
+  type: 'success' | 'error';
+  text: string;
+  details?: {
+    partCode?: string;
+    partName?: string;
+    qty?: number;
+    unit?: string;
+    location?: string;
+    stockAfter?: number;
+    contNumber?: string;
+  };
+}
 
 interface StockInViewProps {
   parts: Part[];
@@ -113,7 +146,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
   const [notes, setNotes] = useState('');
   const [scannedTagId, setScannedTagId] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [message, setMessage] = useState<StockInMessage | null>(null);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [isContModalOpen, setIsContModalOpen] = useState(false);
 
@@ -222,10 +255,22 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     // Close partial import modal immediately
     setPartialImportModal(null);
 
-    // Show compact small success notification toast
+    // Play Ting Ting audio & trigger haptic
+    soundEffects.playSuccessTingTing();
+
+    // Show high-impact, attention-grabbing success notification
     setMessage({
       type: 'success',
-      text: `✅ NHẬP KHO THÀNH CÔNG: +${actualQty} ${part.unit} [${part.code}] vào Kệ [${targetLoc.trim()}]. Tồn kho: ${tx.stockAfter.toLocaleString('vi-VN')} ${part.unit}.`,
+      text: `Nhập kho thành công +${actualQty} ${part.unit} [${part.code}] vào Kệ [${targetLoc.trim()}]. Tồn kho: ${tx.stockAfter.toLocaleString('vi-VN')} ${part.unit}.`,
+      details: {
+        partCode: part.code,
+        partName: part.name,
+        qty: actualQty,
+        unit: part.unit,
+        location: targetLoc.trim(),
+        stockAfter: tx.stockAfter,
+        contNumber,
+      },
     });
   };
 
@@ -235,6 +280,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     const foundInSettings = findLocationMatch(scannedText, settings.locations || []);
 
     if (!foundInSettings) {
+      soundEffects.playErrorBuzzer();
       setLocScanGunInput('');
       setErrorModal({
         isOpen: true,
@@ -255,6 +301,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       const remaining = partialImportModal.originalQty - partialImportModal.alreadyImported;
 
       if (!actualQty || actualQty <= 0) {
+        soundEffects.playErrorBuzzer();
         setErrorModal({
           isOpen: true,
           title: '⚠️ THIẾU SỐ LƯỢNG NHẬP KHO',
@@ -264,6 +311,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       }
 
       if (actualQty > remaining) {
+        soundEffects.playErrorBuzzer();
         setErrorModal({
           isOpen: true,
           title: '❌ SỐ LƯỢNG VƯỢT QUÁ CÒN LẠI',
@@ -319,6 +367,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
     const actualQty = typeof importQtyInput === 'number' ? importQtyInput : Number(importQtyInput);
     if (!actualQty || actualQty <= 0) {
+      soundEffects.playErrorBuzzer();
       setErrorModal({
         isOpen: true,
         title: '⚠️ THIẾU SỐ LƯỢNG NHẬP KHO',
@@ -329,6 +378,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
     const remaining = partialImportModal.originalQty - partialImportModal.alreadyImported;
     if (actualQty > remaining) {
+      soundEffects.playErrorBuzzer();
       setErrorModal({
         isOpen: true,
         title: '❌ SỐ LƯỢNG VƯỢT QUÁ CÒN LẠI',
@@ -339,6 +389,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
     const targetLocation = (selectedLocation === '__custom__' ? customLocation : selectedLocation) || customLocation;
     if (!targetLocation.trim()) {
+      soundEffects.playErrorBuzzer();
       setErrorModal({
         isOpen: true,
         title: '❌ THIẾU VỊ TRÍ KỆ',
@@ -349,6 +400,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
     const foundLoc = findLocationMatch(targetLocation, settings.locations || []);
     if (!foundLoc) {
+      soundEffects.playErrorBuzzer();
       setErrorModal({
         isOpen: true,
         title: '❌ MÃ KỆ KHÔNG TỒN TẠI TRONG HỆ THỐNG',
@@ -375,6 +427,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   }) => {
     // If not a Cont QR code with explicit quantity & contNumber, switch to manual tab
     if (!qty || qty <= 0 || !contNumber) {
+      soundEffects.playScanBeep();
       setSelectedPartId(part.id);
       setMainTab('manual');
       setMessage({
@@ -393,6 +446,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     });
 
     if (!validCheck.isValid) {
+      soundEffects.playErrorBuzzer();
       setMessage({
         type: 'error',
         text: `⛔ KHÔNG THỂ NHẬP KHO! ${validCheck.reason || 'Mã QR này không thuộc bất kỳ Danh mục Container nào đã khởi tạo trên hệ thống.'}`,
@@ -406,12 +460,15 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     const remainingQty = totalQtyInCont - alreadyImported;
 
     if (remainingQty <= 0) {
+      soundEffects.playErrorBuzzer();
       setMessage({
         type: 'error',
         text: `⛔ Mã QR Tem Cont ${contNumber} linh kiện [${part.code}] đã được nhập ĐỦ số lượng (${alreadyImported.toLocaleString('vi-VN')}/${totalQtyInCont.toLocaleString('vi-VN')} ${part.unit})!`,
       });
       return;
     }
+
+    soundEffects.playScanBeep();
 
     // Open Popup Modal asking user for import quantity and location!
     setSelectedLocation('');
@@ -438,21 +495,25 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPartId) {
+      soundEffects.playErrorBuzzer();
       setMessage({ type: 'error', text: 'Vui lòng chọn linh kiện cần nhập kho!' });
       return;
     }
     if (quantity <= 0) {
+      soundEffects.playErrorBuzzer();
       setMessage({ type: 'error', text: 'Số lượng nhập phải lớn hơn 0!' });
       return;
     }
 
     const targetLoc = (selectedLocation === '__custom__' ? customLocation : selectedLocation).trim();
     if (!targetLoc) {
+      soundEffects.playErrorBuzzer();
       setMessage({ type: 'error', text: 'Vui lòng chọn hoặc quét vị trí / kệ nhập kho!' });
       return;
     }
 
     if (!person.trim()) {
+      soundEffects.playErrorBuzzer();
       setMessage({ type: 'error', text: 'Vui lòng chọn hoặc nhập tên người nhập kho!' });
       return;
     }
@@ -479,9 +540,18 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         setScannedTagId(null);
       }
 
+      soundEffects.playSuccessTingTing();
       setMessage({
         type: 'success',
         text: `Đã nhập kho thành công +${quantity} ${tx.unit} cho [${tx.partCode}] ${tx.partName}. Tồn kho mới: ${tx.stockAfter} ${tx.unit}.`,
+        details: {
+          partCode: tx.partCode,
+          partName: tx.partName,
+          qty: quantity,
+          unit: tx.unit,
+          location: targetLoc,
+          stockAfter: tx.stockAfter,
+        },
       });
 
       // Reset form
@@ -490,6 +560,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       setDateTime(getNowLocalDateTime());
       onSuccess();
     } catch (err: any) {
+      soundEffects.playErrorBuzzer();
       setMessage({ type: 'error', text: err.message || 'Lỗi khi lưu phiếu nhập kho' });
     }
   };
@@ -547,20 +618,129 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         </button>
       </div>
 
+      {/* PROMINENT, ATTENTION-GRABBING NOTIFICATION BANNER (WITH SOUND INDICATOR) */}
       {message && (
         <div
-          className={`p-4 rounded-2xl text-xs sm:text-sm font-bold flex items-center shadow-xs animate-in zoom-in-95 ${
+          className={`relative overflow-hidden rounded-2xl shadow-xl transition-all animate-in zoom-in-95 slide-in-from-top-3 duration-300 ${
             message.type === 'success'
-              ? 'bg-emerald-50 border-2 border-emerald-300 text-emerald-900'
-              : 'bg-red-50 border-2 border-red-300 text-red-900'
+              ? 'bg-gradient-to-br from-emerald-700 via-emerald-800 to-teal-900 border-2 border-emerald-400 ring-4 ring-emerald-500/20 text-white'
+              : 'bg-gradient-to-br from-rose-700 via-red-800 to-rose-900 border-2 border-rose-400 ring-4 ring-rose-500/20 text-white'
           }`}
         >
-          {message.type === 'success' ? (
-            <CheckCircle2 className="w-5 h-5 mr-2 shrink-0 text-emerald-600" />
-          ) : (
-            <AlertCircle className="w-5 h-5 mr-2 shrink-0 text-red-600" />
-          )}
-          <span>{message.text}</span>
+          {/* Subtle decorative glow overlay */}
+          <div className="absolute top-0 right-0 -mt-8 -mr-8 w-36 h-36 bg-white/10 rounded-full blur-xl pointer-events-none" />
+          <div className="absolute bottom-0 left-0 -mb-8 -ml-8 w-24 h-24 bg-emerald-400/20 rounded-full blur-lg pointer-events-none" />
+
+          <div className="p-4 sm:p-5 relative z-10 space-y-3">
+            {/* Header row */}
+            <div className="flex items-center justify-between gap-2 border-b border-white/15 pb-2.5">
+              <div className="flex items-center space-x-2.5 min-w-0">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 shadow-md ${
+                    message.type === 'success'
+                      ? 'bg-emerald-500/40 text-emerald-200 border border-emerald-300/50'
+                      : 'bg-rose-500/40 text-rose-200 border border-rose-300/50'
+                  }`}
+                >
+                  {message.type === 'success' ? (
+                    <Sparkles className="w-5 h-5 text-amber-300 animate-spin" style={{ animationDuration: '8s' }} />
+                  ) : (
+                    <ShieldAlert className="w-5 h-5 text-rose-200 animate-pulse" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center flex-wrap gap-2">
+                    <span className="text-sm sm:text-base font-black tracking-wide uppercase text-white drop-shadow-xs">
+                      {message.type === 'success' ? '🎉 NHẬP KHO THÀNH CÔNG!' : '⛔ CẢNH BÁO / LỖI THAO TÁC!'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => (message.type === 'success' ? soundEffects.playSuccessTingTing() : soundEffects.playErrorBuzzer())}
+                      title="Bấm để nghe lại chuông thông báo"
+                      className="px-2.5 py-0.5 bg-white/20 hover:bg-white/30 active:scale-95 rounded-full text-[10px] font-extrabold flex items-center space-x-1 cursor-pointer transition-all border border-white/20"
+                    >
+                      <Volume2 className="w-3 h-3 text-amber-300" />
+                      <span className="text-white">{message.type === 'success' ? 'Ting Ting 🔔' : 'È è è 🔊'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-emerald-100/90 truncate font-medium mt-0.5">
+                    {message.type === 'success'
+                      ? 'Tồn kho và thẻ kho đã cập nhật tức thì vào hệ thống'
+                      : 'Vui lòng kiểm tra lại thông tin thao tác'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setMessage(null)}
+                className="p-1.5 text-white/80 hover:text-white hover:bg-white/20 rounded-xl transition-colors cursor-pointer shrink-0"
+                title="Đóng thông báo"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Details Content */}
+            {message.details ? (
+              <div className="bg-black/25 backdrop-blur-xs rounded-xl p-3 sm:p-4 border border-white/15 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="space-y-1.5 min-w-0 flex-1">
+                  {message.details.partName && (
+                    <h4 className="text-sm sm:text-base font-black text-white leading-tight">
+                      {message.details.partName}
+                    </h4>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    {message.details.partCode && (
+                      <span className="font-mono text-xs font-black bg-white/20 text-amber-200 px-2.5 py-0.5 rounded-lg border border-amber-300/30">
+                        [{message.details.partCode}]
+                      </span>
+                    )}
+                    {message.details.location && (
+                      <span className="text-xs font-black bg-blue-500/50 text-blue-100 px-2.5 py-0.5 rounded-lg border border-blue-300/40 flex items-center space-x-1">
+                        <MapPin className="w-3.5 h-3.5 text-blue-200" />
+                        <span>Vào Kệ: <strong className="text-white underline">{message.details.location}</strong></span>
+                      </span>
+                    )}
+                    {message.details.contNumber && (
+                      <span className="text-[11px] font-bold bg-amber-500/40 text-amber-100 px-2 py-0.5 rounded-md border border-amber-300/30">
+                        Cont: {message.details.contNumber}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Big Bold Quantity Highlight Badge */}
+                <div className="bg-white text-slate-900 rounded-xl px-4 py-2.5 shadow-lg flex sm:flex-col items-center justify-between sm:justify-center shrink-0 min-w-[145px] border-2 border-emerald-300">
+                  <div className="text-left sm:text-center">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-800 block">
+                      ĐÃ NHẬP VÀO KHO
+                    </span>
+                    <div className="flex items-baseline space-x-1 justify-start sm:justify-center">
+                      <span className="text-2xl sm:text-3xl font-black font-mono text-emerald-700 leading-none">
+                        +{message.details.qty?.toLocaleString('vi-VN')}
+                      </span>
+                      <span className="text-xs font-black text-emerald-800 uppercase">
+                        {message.details.unit}
+                      </span>
+                    </div>
+                  </div>
+                  {message.details.stockAfter !== undefined && (
+                    <div className="text-right sm:text-center sm:mt-1 pt-0 sm:pt-1 sm:border-t sm:border-slate-200">
+                      <span className="text-[10px] text-slate-500 font-bold block">Tồn kho mới:</span>
+                      <strong className="text-xs font-black font-mono text-slate-900">
+                        {message.details.stockAfter.toLocaleString('vi-VN')} {message.details.unit}
+                      </strong>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-black/25 backdrop-blur-xs rounded-xl p-3 border border-white/15 text-xs sm:text-sm font-bold leading-relaxed text-white">
+                {message.text}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

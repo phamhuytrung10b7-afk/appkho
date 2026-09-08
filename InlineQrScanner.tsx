@@ -4,6 +4,7 @@ import { storageService } from './storage';
 import { parseScannedQrPayload } from './QrScannerModal';
 import { QrCode, Zap, Camera, ShieldAlert, CheckCircle2, AlertCircle, X, RotateCcw, Package, Flashlight, SwitchCamera } from 'lucide-react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { soundEffects } from './soundEffects';
 
 interface InlineQrScannerProps {
   mode: 'in' | 'out';
@@ -109,12 +110,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
   const handleProcessScan = (rawText: string) => {
     if (!rawText.trim()) return;
 
-    playBeepSound();
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      try {
-        navigator.vibrate([100, 50, 100]);
-      } catch (e) {}
-    }
+    soundEffects.playScanBeep();
 
     setErrorMsg(null);
     setUsedInfo(null);
@@ -127,6 +123,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     );
 
     if (!foundPart) {
+      soundEffects.playErrorBuzzer();
       setErrorMsg(`Không tìm thấy linh kiện có mã: "${parsed.partCode}" trong kho!`);
       setLastScannedPart(null);
       setLastScannedDetails(null);
@@ -137,6 +134,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     if (mode === 'in') {
       const validCheck = storageService.validateContainerQrTag(rawText, parsed);
       if (!validCheck.isValid) {
+        soundEffects.playErrorBuzzer();
         setErrorMsg(`⛔ ${validCheck.reason}`);
         setLastScannedPart(null);
         setLastScannedDetails(null);
@@ -147,6 +145,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
       const tokenToCheck = parsed.tagId || rawText.trim();
       const usedCheck = storageService.isQrTokenUsed(tokenToCheck);
       if (usedCheck.isUsed) {
+        soundEffects.playErrorBuzzer();
         setUsedInfo(usedCheck);
         setLastScannedPart(foundPart);
         setLastScannedDetails(parsed);
