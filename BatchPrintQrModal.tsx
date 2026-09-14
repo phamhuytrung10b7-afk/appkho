@@ -101,7 +101,30 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
 
   const handlePrint = () => {
     if (printRef.current) {
+      const conf = printConfigs[labelLayout];
       const styles = `
+        @page {
+          size: ${conf.pageWidth}mm ${conf.pageHeight}mm;
+          margin: 0;
+        }
+        @media print {
+          *, *:before, *:after {
+            color: #000000 !important;
+            border-color: #000000 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
+          }
+          html, body {
+            margin: 0;
+            padding: 0;
+            width: ${conf.pageWidth}mm;
+            height: ${conf.pageHeight}mm;
+            background: #ffffff !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+          }
+        }
         .label-row {
           display: flex;
           flex-direction: row;
@@ -111,13 +134,17 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
           page-break-after: always;
           break-after: page;
           overflow: hidden;
-          background-color: white;
+          background-color: #ffffff;
+          width: ${conf.pageWidth}mm;
+          height: ${conf.pageHeight}mm;
         }
         .single-label {
           box-sizing: border-box;
           display: flex;
           overflow: hidden;
-          background-color: white;
+          background-color: #ffffff;
+          width: 100%;
+          height: 100%;
         }
       `;
       printHtml(printRef.current.innerHTML, styles);
@@ -505,73 +532,80 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
                       height: labelLayout === 'a7' ? '100%' : '20mm',
                       flexDirection: labelLayout === 'a7' ? 'column' : 'row',
                       alignItems: 'center',
-                      border: labelLayout === 'a7' ? '1px solid #ccc' : '0.5px solid #ccc',
-                      borderRadius: labelLayout === 'a7' ? '4mm' : '2mm',
-                      padding: labelLayout === 'a7' ? '4mm' : '1mm'
+                      border: labelLayout === 'a7' ? '1.5px solid #000000' : '1px solid #000000',
+                      borderRadius: labelLayout === 'a7' ? '3mm' : '1.5mm',
+                      padding: labelLayout === 'a7' ? '3.5mm' : '1mm',
+                      boxSizing: 'border-box',
+                      backgroundColor: '#ffffff',
+                      color: '#000000'
                   }}>
                     {labelLayout === 'a7' ? (
                         <>
                             <div style={{ textAlign: 'center', width: '100%' }}>
                                 {showWarehouseName && (
-                                    <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: 'bold', color: '#555', marginBottom: '4mm', textTransform: 'uppercase' }}>
+                                    <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', marginBottom: '3mm', textTransform: 'uppercase' }}>
                                         {settings.warehouseName || 'KHO LINH KIỆN'}
                                     </div>
                                 )}
-                                <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000', marginBottom: '6mm', lineHeight: '1.3', wordBreak: 'break-word', overflow: 'hidden' }}>
+                                <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000000', marginBottom: '3mm', lineHeight: '1.25', wordBreak: 'break-word', overflow: 'hidden', textTransform: 'uppercase' }}>
                                     {item.name}
                                 </div>
-                                <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: 'bold', fontFamily: 'monospace', color: '#1e40af', padding: '3mm', background: '#f1f5f9', borderRadius: '2mm', display: 'inline-block' }}>
+                                <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: '900', fontFamily: 'Arial, monospace', color: '#000000', padding: '1.5mm 3.5mm', background: '#ffffff', borderRadius: '1.5mm', border: '2px solid #000000', display: 'inline-block' }}>
                                     {item.code}
                                 </div>
                             </div>
-                            <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, margin: '4mm 0' }}>
+                            <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, margin: '3mm 0' }}>
                               <QRCodeSVG
                                 value={item.qrCode || item.code}
                                 size={300}
                                 level="Q"
                                 marginSize={1}
+                                fgColor="#000000"
+                                bgColor="#ffffff"
                                 style={{ width: '100%', height: '100%' }}
                               />
                             </div>
                             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '2mm', marginTop: 'auto' }}>
                                 {showLocation && (
-                                    <div style={{ fontSize: `${conf.metaFontSize + 2}px`, fontWeight: 'bold', display: 'flex', justifyContent: 'space-between', borderTop: '2px solid #ccc', paddingTop: '3mm' }}>
+                                    <div style={{ fontSize: `${conf.metaFontSize + 2}px`, fontWeight: '900', color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #000000', paddingTop: '2mm' }}>
                                         <span>VỊ TRÍ (KỆ):</span>
-                                        <span style={{ fontFamily: 'monospace', fontWeight: '900', background: '#0f172a', color: 'white', padding: '1.5mm 4mm', borderRadius: '2mm' }}>{item.location || 'N/A'}</span>
+                                        <span style={{ fontFamily: 'Arial, monospace', fontWeight: '900', background: '#000000', color: '#ffffff', padding: '1mm 3.5mm', borderRadius: '1.5mm' }}>{item.location || 'N/A'}</span>
                                     </div>
                                 )}
-                                <div style={{ fontSize: '12px', fontWeight: 'normal', color: '#64748b', textAlign: 'right' }}>
+                                <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#000000', textAlign: 'right' }}>
                                     Ngày in: {new Date().toLocaleDateString('vi-VN')}
                                 </div>
                             </div>
                         </>
                     ) : (
                         <>
-                            <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, flexShrink: 0, marginRight: '1mm' }}>
+                            <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, flexShrink: 0, marginRight: '1.5mm' }}>
                               <QRCodeSVG
                                 value={item.qrCode || item.code}
-                                size={128}
+                                size={140}
                                 level="M"
                                 marginSize={0}
+                                fgColor="#000000"
+                                bgColor="#ffffff"
                                 style={{ width: '100%', height: '100%' }}
                               />
                             </div>
                             <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', fontFamily: 'sans-serif', lineHeight: '1.1' }}>
                               {showWarehouseName && (
-                                <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: 'bold', color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                   {settings.warehouseName || 'KHO LINH KIỆN'}
                                 </div>
                               )}
                               <div>
-                                <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000', maxHeight: '11mm', overflow: 'hidden', wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' }}>
+                                <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000000', maxHeight: '11mm', overflow: 'hidden', wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' }}>
                                   {item.name}
                                 </div>
-                                <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: 'bold', fontFamily: 'monospace', color: '#1e40af', marginTop: '0.5mm' }}>
+                                <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: '900', fontFamily: 'monospace', color: '#000000', marginTop: '0.5mm' }}>
                                   {item.code}
                                 </div>
                               </div>
                               {showLocation && (
-                                <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: 'bold', borderTop: '0.5px solid #ccc', paddingTop: '0.5mm' }}>
+                                <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', borderTop: '1px solid #000000', paddingTop: '0.5mm' }}>
                                   Kệ: {item.location || 'N/A'}
                                 </div>
                               )}

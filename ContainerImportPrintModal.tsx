@@ -327,13 +327,23 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
           margin: 0;
         }
         @media print {
+          *, *:before, *:after {
+            color: #000000 !important;
+            border-color: #000000 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
+          }
           html, body {
             margin: 0;
             padding: 0;
             width: ${conf.pageWidth}mm;
             height: ${conf.pageHeight}mm;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
+            background: #ffffff !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
           }
         }
         .label-row {
@@ -345,7 +355,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
           page-break-after: always;
           break-after: page;
           overflow: hidden;
-          background-color: white;
+          background-color: #ffffff;
           width: ${conf.pageWidth}mm;
           height: ${conf.pageHeight}mm;
         }
@@ -353,7 +363,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
           box-sizing: border-box;
           display: flex;
           overflow: hidden;
-          background-color: white;
+          background-color: #ffffff;
           width: 100%;
           height: 100%;
         }
@@ -1060,12 +1070,12 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                           return (
                             <div
                               key={item.tagId || item.id || `col-${rowIndex}-${colIndex}`}
-                              className={`w-full h-full rounded-lg p-3 flex flex-col justify-between overflow-hidden shadow-xs relative border transition-all ${
+                              className={`w-full h-full rounded-xl p-3 flex flex-col justify-between overflow-hidden shadow-xs relative border-2 transition-all ${
                                 isScanned
-                                  ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-400 shadow-emerald-100'
+                                  ? 'bg-emerald-50 border-emerald-600 ring-2 ring-emerald-400'
                                   : isPartial
-                                  ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-400 shadow-amber-100'
-                                  : 'bg-white border-slate-300'
+                                  ? 'bg-amber-50 border-amber-600 ring-2 ring-amber-400'
+                                  : 'bg-white border-slate-900'
                               }`}
                             >
                               {/* Scanned Badge */}
@@ -1076,54 +1086,54 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                     <span>ĐÃ NHẬP ({imported}/{total})</span>
                                   </span>
                                 ) : isPartial ? (
-                                  <span className="px-1.5 py-0.5 bg-amber-500 text-white font-black text-[8px] rounded-xs shadow-xs flex items-center space-x-0.5 uppercase">
+                                  <span className="px-1.5 py-0.5 bg-amber-600 text-white font-black text-[8px] rounded-xs shadow-xs flex items-center space-x-0.5 uppercase">
                                     <span>ĐANG NHẬP ({imported}/{total})</span>
                                   </span>
                                 ) : (
-                                  <span className="text-[8px] font-mono font-bold text-slate-500 bg-slate-100 px-1 py-0.5 rounded-xs border border-slate-200">
+                                  <span className="text-[8px] font-mono font-extrabold text-slate-800 bg-slate-100 px-1 py-0.5 rounded-xs border border-slate-400">
                                     CHƯA NHẬP KHO
                                   </span>
                                 )}
                               </div>
 
                               {/* Header */}
-                              <div className="text-center pt-1">
-                                <div className="text-[10px] font-bold text-slate-500 uppercase flex items-center justify-between pb-1 border-b border-slate-200 pr-20">
+                              <div className="text-center pt-0.5">
+                                <div className="text-[11px] font-black text-slate-900 uppercase flex items-center justify-between pb-1 border-b-2 border-slate-900 pr-20">
                                   <span>CONT: {item.contNumber || contNumber}</span>
-                                  <span className="text-amber-700 font-extrabold">{item.contDate || contDate}</span>
+                                  <span className="text-black font-black">{item.contDate || contDate}</span>
                                 </div>
 
-                                <p className="text-xs font-black text-slate-900 mt-1.5 leading-tight line-clamp-2">
+                                <p className="text-[13px] font-black text-slate-950 mt-1 leading-snug line-clamp-2 uppercase">
                                   {item.name}
                                 </p>
-                                <div className="inline-block bg-slate-100 border border-slate-300 text-emerald-800 font-mono font-extrabold text-[11px] px-2 py-0.5 rounded-md mt-1">
+                                <div className="inline-block bg-white border-2 border-slate-900 text-slate-950 font-mono font-black text-[12px] px-2.5 py-0.5 rounded-md mt-1 shadow-2xs">
                                   {item.code}
                                 </div>
                               </div>
 
                               {/* Center QR Code */}
                               <div className="my-1 flex justify-center shrink-0">
-                                <div className="p-1.5 bg-white rounded-lg border border-slate-200 shadow-2xs">
-                                  <QRCodeSVG value={item.qrPayload} size={100} level="Q" marginSize={1} />
+                                <div className="p-1 bg-white rounded-lg border-2 border-slate-900 shadow-2xs">
+                                  <QRCodeSVG value={item.qrPayload} size={105} level="Q" marginSize={1} fgColor="#000000" bgColor="#ffffff" />
                                 </div>
                               </div>
 
                               {/* Supplier & Mfg Date */}
-                              <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200 text-[10px] leading-snug">
+                              <div className="bg-white p-1.5 rounded-lg border-2 border-slate-900 text-[10.5px] leading-tight space-y-0.5">
                                 {item.supplier && (
-                                  <p className="font-bold text-slate-800 truncate">
-                                    NCC: <strong className="text-slate-900">{item.supplier}</strong>
+                                  <p className="font-extrabold text-slate-950 truncate">
+                                    NCC: <strong className="font-black text-black">{item.supplier}</strong>
                                   </p>
                                 )}
                                 {item.mfgDate && (
-                                  <p className="font-extrabold text-amber-800">
+                                  <p className="font-black text-black">
                                     NSX: {item.mfgDate}
                                   </p>
                                 )}
                               </div>
 
                               {/* Footer */}
-                              <div className="pt-1 border-t border-slate-300 flex items-center justify-between text-[11px] font-bold text-slate-800">
+                              <div className="pt-1 border-t-2 border-slate-900 flex items-center justify-between text-[11px] font-black text-slate-950">
                                 <span>ĐVT: {item.unit}</span>
                               </div>
                             </div>
@@ -1133,12 +1143,12 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                         return (
                           <div
                             key={item.tagId || item.id || `col-${rowIndex}-${colIndex}`}
-                            className={`flex-1 h-full rounded-md p-2 flex items-center justify-between overflow-hidden shadow-2xs relative border transition-all ${
+                            className={`flex-1 h-full rounded-md p-2 flex items-center justify-between overflow-hidden shadow-2xs relative border-2 transition-all ${
                               isScanned
-                                ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-400/80 shadow-emerald-100'
+                                ? 'bg-emerald-50 border-emerald-600 ring-2 ring-emerald-400/80 shadow-emerald-100'
                                 : isPartial
-                                ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-400/80 shadow-amber-100'
-                                : 'bg-white border-slate-300'
+                                ? 'bg-amber-50 border-amber-600 ring-2 ring-amber-400/80 shadow-amber-100'
+                                : 'bg-white border-slate-900'
                             }`}
                           >
                             {/* Scanned Badge Indicator */}
@@ -1149,11 +1159,11 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                   <span>ĐÃ NHẬP ({imported}/{total})</span>
                                 </span>
                               ) : isPartial ? (
-                                <span className="px-1.5 py-0.5 bg-amber-500 text-white font-black text-[8px] rounded-xs shadow-xs flex items-center space-x-0.5 uppercase tracking-wider">
+                                <span className="px-1.5 py-0.5 bg-amber-600 text-white font-black text-[8px] rounded-xs shadow-xs flex items-center space-x-0.5 uppercase tracking-wider">
                                   <span>ĐANG NHẬP ({imported}/{total})</span>
                                 </span>
                               ) : (
-                                <span className="text-[8px] font-mono font-bold text-slate-400 bg-slate-100 px-1 rounded-xs border border-slate-200">
+                                <span className="text-[8px] font-mono font-black text-slate-700 bg-slate-100 px-1 rounded-xs border border-slate-400">
                                   CHƯA NHẬP KHO
                                 </span>
                               )}
@@ -1166,36 +1176,38 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                 size={60}
                                 level="M"
                                 marginSize={0}
+                                fgColor="#000000"
+                                bgColor="#ffffff"
                               />
                             </div>
 
                             {/* Right: Part Details */}
                             <div className="flex-1 min-w-0 h-full flex flex-col justify-between py-0.5">
-                              <div className="text-[8px] font-bold text-slate-500 truncate uppercase tracking-tighter flex items-center justify-between pr-12">
+                              <div className="text-[8.5px] font-black text-slate-950 truncate uppercase tracking-tighter flex items-center justify-between pr-12">
                                 <span>C: {item.contNumber || contNumber}</span>
-                                <span className="text-amber-700 font-bold">{item.contDate || contDate}</span>
+                                <span className="text-black font-black">{item.contDate || contDate}</span>
                               </div>
 
                               <div>
-                                <p className="text-[10px] font-black text-slate-900 leading-tight line-clamp-1">
+                                <p className="text-[10.5px] font-black text-black leading-tight line-clamp-1">
                                   {item.name}
                                 </p>
-                                <p className={`text-[9px] font-mono font-bold mt-0.5 ${isScanned ? 'text-emerald-900 font-black' : 'text-emerald-800'}`}>
+                                <p className="text-[9.5px] font-mono font-black mt-0.5 text-black">
                                   {item.code}
                                 </p>
                               </div>
 
                               {(item.supplier || item.mfgDate) && (
-                                <div className="text-[8px] font-medium text-slate-600 truncate leading-tight">
-                                  {item.supplier && <span className="block truncate">NCC: <strong className="text-slate-800">{item.supplier}</strong></span>}
-                                  {item.mfgDate && <span className="text-amber-800 font-bold">NSX: {item.mfgDate}</span>}
+                                <div className="text-[8.5px] font-extrabold text-black truncate leading-tight">
+                                  {item.supplier && <span className="block truncate">NCC: {item.supplier}</span>}
+                                  {item.mfgDate && <span>NSX: {item.mfgDate}</span>}
                                 </div>
                               )}
 
-                              <div className="flex items-center justify-between text-[9px] font-extrabold border-t border-slate-200 pt-0.5">
-                                <span className="text-slate-500">ĐVT: {item.unit}</span>
+                              <div className="flex items-center justify-between text-[9.5px] font-black border-t border-slate-900 pt-0.5">
+                                <span className="text-black">ĐVT: {item.unit}</span>
                                 {imported > 0 && (
-                                  <span className={`px-1 rounded-xs font-mono text-[8px] ${isScanned ? 'bg-emerald-600 text-white font-black' : 'bg-amber-500 text-white font-bold'}`}>
+                                  <span className={`px-1 rounded-xs font-mono text-[8px] ${isScanned ? 'bg-emerald-600 text-white font-black' : 'bg-amber-600 text-white font-black'}`}>
                                     {imported}/{total}
                                   </span>
                                 )}
@@ -1272,37 +1284,41 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                         flexDirection: labelLayout === 'a7' ? 'column' : 'row',
                         justifyContent: labelLayout === 'a7' ? 'space-between' : 'flex-start',
                         alignItems: labelLayout === 'a7' ? 'stretch' : 'center',
-                        border: labelLayout === 'a7' ? '1px solid #94a3b8' : '0.5px solid #ccc',
-                        borderRadius: labelLayout === 'a7' ? '3mm' : '2mm',
+                        border: labelLayout === 'a7' ? '1.5px solid #000000' : '1px solid #000000',
+                        borderRadius: labelLayout === 'a7' ? '3mm' : '1.5mm',
                         padding: labelLayout === 'a7' ? '3.5mm' : '1mm',
-                        boxSizing: 'border-box'
+                        boxSizing: 'border-box',
+                        backgroundColor: '#ffffff',
+                        color: '#000000'
                       }}
                     >
                       {labelLayout === 'a7' ? (
                         <>
                           {/* Top Section */}
                           <div style={{ textAlign: 'center', width: '100%' }}>
-                            <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: 'bold', color: '#475569', marginBottom: '2mm', textTransform: 'uppercase', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #cbd5e1', paddingBottom: '1.5mm' }}>
+                            <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', marginBottom: '2mm', textTransform: 'uppercase', display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #000000', paddingBottom: '1.5mm' }}>
                               <span>CONT: {item.contNumber || contNumber}</span>
-                              <span style={{ color: '#b45309' }}>{item.contDate || contDate}</span>
+                              <span style={{ color: '#000000', fontWeight: '900' }}>{item.contDate || contDate}</span>
                             </div>
 
-                            <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#0f172a', marginTop: '2mm', marginBottom: '2mm', lineHeight: '1.25', wordBreak: 'break-word', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                            <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000000', marginTop: '2mm', marginBottom: '2mm', lineHeight: '1.25', wordBreak: 'break-word', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', textTransform: 'uppercase' }}>
                               {item.name}
                             </div>
 
-                            <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: 'bold', fontFamily: 'monospace', color: '#047857', padding: '1.5mm 3mm', background: '#f1f5f9', borderRadius: '2mm', border: '1px solid #cbd5e1', display: 'inline-block' }}>
+                            <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: '900', fontFamily: 'Arial, monospace', color: '#000000', padding: '1.5mm 3.5mm', background: '#ffffff', borderRadius: '1.5mm', border: '2px solid #000000', display: 'inline-block' }}>
                               {item.code}
                             </div>
                           </div>
 
                           {/* Center QR Code */}
-                          <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, margin: '2mm auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, margin: '2.5mm auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             <QRCodeSVG
                               value={item.qrPayload}
-                              size={220}
+                              size={260}
                               level="Q"
                               marginSize={1}
+                              fgColor="#000000"
+                              bgColor="#ffffff"
                               style={{ width: '100%', height: '100%' }}
                             />
                           </div>
@@ -1310,61 +1326,63 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                           {/* Supplier, Mfg Date & Footer */}
                           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '1.5mm', marginTop: 'auto' }}>
                             {(item.supplier || item.mfgDate) && (
-                              <div style={{ background: '#f8fafc', padding: '2mm', borderRadius: '1.5mm', border: '1px solid #e2e8f0' }}>
+                              <div style={{ background: '#ffffff', padding: '2mm', borderRadius: '1.5mm', border: '1.5px solid #000000' }}>
                                 {item.supplier && (
-                                  <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: 'bold', color: '#1e293b', wordBreak: 'break-word' }}>
+                                  <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', wordBreak: 'break-word' }}>
                                     NCC: {item.supplier}
                                   </div>
                                 )}
                                 {item.mfgDate && (
-                                  <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '800', color: '#b45309', marginTop: item.supplier ? '1mm' : '0' }}>
+                                  <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', marginTop: item.supplier ? '1mm' : '0' }}>
                                     NSX: {item.mfgDate}
                                   </div>
                                 )}
                               </div>
                             )}
 
-                            <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: 'bold', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1.5px solid #cbd5e1', paddingTop: '1.5mm', marginTop: '1mm' }}>
+                            <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #000000', paddingTop: '1.5mm', marginTop: '1mm' }}>
                               <span>ĐVT: {item.unit}</span>
                             </div>
 
-                            <div style={{ fontSize: '10px', fontWeight: 'normal', color: '#64748b', textAlign: 'right' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#000000', textAlign: 'right' }}>
                               Ngày in: {new Date().toLocaleDateString('vi-VN')}
                             </div>
                           </div>
                         </>
                       ) : (
                         <>
-                          <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, flexShrink: 0, marginRight: '1mm' }}>
+                          <div style={{ width: `${conf.qrSize}mm`, height: `${conf.qrSize}mm`, flexShrink: 0, marginRight: '1.5mm' }}>
                             <QRCodeSVG
                               value={item.qrPayload}
-                              size={128}
+                              size={140}
                               level="M"
                               marginSize={0}
+                              fgColor="#000000"
+                              bgColor="#ffffff"
                               style={{ width: '100%', height: '100%' }}
                             />
                           </div>
                           <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', fontFamily: 'sans-serif', lineHeight: '1.1' }}>
-                            <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: 'bold', color: '#555', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', justifyContent: 'space-between' }}>
+                            <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', justifyContent: 'space-between' }}>
                               <span>C: {item.contNumber || contNumber}</span>
                               <span>{item.contDate || contDate}</span>
                             </div>
                             <div>
-                              <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000', maxHeight: '8mm', overflow: 'hidden', wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                              <div style={{ fontSize: `${conf.nameFontSize}px`, fontWeight: '900', color: '#000000', maxHeight: '8mm', overflow: 'hidden', wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
                                 {item.name}
                               </div>
-                              <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: 'bold', fontFamily: 'monospace', color: '#065f46', marginTop: '0.2mm' }}>
+                              <div style={{ fontSize: `${conf.codeFontSize}px`, fontWeight: '900', fontFamily: 'monospace', color: '#000000', marginTop: '0.2mm' }}>
                                 {item.code}
                               </div>
                             </div>
                             {item.supplier && (
-                              <div style={{ fontSize: `${Math.max(conf.metaFontSize - 1, 7)}px`, fontWeight: 'bold', color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              <div style={{ fontSize: `${Math.max(conf.metaFontSize - 1, 7)}px`, fontWeight: '900', color: '#000000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                 NCC: {item.supplier}
                               </div>
                             )}
-                            <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: 'bold', borderTop: '0.5px solid #ccc', paddingTop: '0.5mm', display: 'flex', justifyContent: 'space-between' }}>
+                            <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', borderTop: '1px solid #000000', paddingTop: '0.5mm', display: 'flex', justifyContent: 'space-between' }}>
                               <span>ĐVT: {item.unit}</span>
-                              {item.mfgDate && <span style={{ color: '#b45309' }}>NSX: {item.mfgDate}</span>}
+                              {item.mfgDate && <span>NSX: {item.mfgDate}</span>}
                             </div>
                           </div>
                         </>
