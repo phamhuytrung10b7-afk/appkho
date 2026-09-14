@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Part, Transaction, AppSettings, ViewTab, KittingQueueItem, BufferLocationMap, MaterialCallRequest, UserAccount } from './types';
 import { storageService } from './storage';
-import { getActiveSupabaseClient } from './supabase';
-import { STORAGE_KEYS, supabaseKeyStore, mapSupabaseRowToPart, mapSupabaseRowToTransaction } from './supabaseStorage';
 import { Menu, Boxes, LogOut, AlertTriangle, RefreshCw } from 'lucide-react';
 
 import { Sidebar } from './Sidebar';
@@ -69,8 +67,8 @@ export default function App() {
   const [partToDelete, setPartToDelete] = useState<Part | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
-  // Refresh data from storage
-  const refreshData = useCallback(() => {
+  // Apply state from local storage cache
+  const applyLocalState = useCallback(() => {
     setParts(storageService.getParts());
     setTransactions(storageService.getTransactions());
     setKittingQueue(storageService.getKittingQueue());
@@ -79,41 +77,50 @@ export default function App() {
     setSettings(storageService.getSettings());
   }, []);
 
-  // On App Mount: Mandatory sync from Supabase Cloud as Single Source of Truth & Realtime 100% Channel
-  useEffect(() => {
-    let isMounted = true;
-
-    async function syncCloudAndState() {
+  // Fetch fresh data from Supabase Cloud via pure REST API (Zero Realtime WebSocket Egress)
+  const syncCloudAndState = useCallback(
+    async (isInitial = false) => {
       try {
         const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud();
-        if (isMounted) {
-          setParts(cloudParts);
-          setTransactions(cloudTxs);
-          setKittingQueue(storageService.getKittingQueue());
-          setBufferLocations(storageService.getBufferLocations());
-          setMaterialCalls(storageService.getMaterialCallRequests());
-          setSettings(storageService.getSettings());
-          setCloudConnectionError(null);
-          const activeUser = storageService.getCurrentUser();
-          if (activeUser) {
-            setCurrentUser(activeUser);
-          }
+        setParts(cloudParts);
+        setTransactions(cloudTxs);
+        setKittingQueue(storageService.getKittingQueue());
+        setBufferLocations(storageService.getBufferLocations());
+        setMaterialCalls(storageService.getMaterialCallRequests());
+        setSettings(storageService.getSettings());
+        setCloudConnectionError(null);
+        const activeUser = storageService.getCurrentUser();
+        if (activeUser) {
+          setCurrentUser(activeUser);
         }
       } catch (err: any) {
-        console.warn('Lỗi khi tải/đồng bộ dữ liệu từ Supabase:', err);
-        if (isMounted) {
+        console.warn('Lỗi khi tải/đồng bộ dữ liệu từ Supabase REST:', err);
+        if (isInitial) {
           setCloudConnectionError(
             '⚠️ MẤT KẾT NỐI SUPABASE CLOUD: Không thể kết nối máy chủ Supabase. Dữ liệu chưa thể đồng bộ Cloud. Vui lòng kiểm tra lại mạng hoặc cấu hình kết nối trong Cài Đặt!'
           );
-          refreshData();
         }
+        applyLocalState();
       }
-    }
+    },
+    [applyLocalState]
+  );
+
+  // Refresh data: Instantly update React state on user actions + trigger background REST sync
+  const refreshData = useCallback(() => {
+    applyLocalState();
+    // Tự động gọi lại hàm fetch dữ liệu ngầm ngay lập tức sau khi người dùng thực hiện thao tác
+    syncCloudAndState(false);
+  }, [applyLocalState, syncCloudAndState]);
+
+  // Initial load on App Mount
+  useEffect(() => {
+    let isMounted = true;
 
     async function initCloudData() {
       try {
         setIsLoadingCloud(true);
-        await syncCloudAndState();
+        await syncCloudAndState(true);
       } catch (err) {
         console.warn('Lỗi khởi tạo dữ liệu Supabase:', err);
       } finally {
@@ -125,122 +132,22 @@ export default function App() {
 
     initCloudData();
 
-    // ⚡ 100% Realtime Setup: Listening to postgres changes on schema 'public' with Zero-Egress Row-Level updates
-    const { client, isConfigured } = getActiveSupabaseClient();
-    let channel: any = null;
-
-    if (isConfigured && client) {
-      try {
-        channel = client
-          .channel('public-db-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public' },
-            (payload: any) => {
-              if (!isMounted) return;
-              const { table, eventType, new: newRow, old: oldRow } = payload;
-
-              // 1. Handle Key-Value Table (`thekho_app_data`)
-              if (table === 'thekho_app_data') {
-                if ((eventType === 'INSERT' || eventType === 'UPDATE') && newRow?.key) {
-                  const key = newRow.key;
-                  const data = newRow.data;
-                  const updatedAt = newRow.updated_at || new Date().toISOString();
-
-                  supabaseKeyStore.handleRealtimePayload(key, data, updatedAt);
-
-                  if (key === STORAGE_KEYS.PARTS && Array.isArray(data)) {
-                    setParts(data);
-                  } else if (key === STORAGE_KEYS.TRANSACTIONS && Array.isArray(data)) {
-                    setTransactions(data);
-                  } else if (key === STORAGE_KEYS.KITTING_QUEUE && Array.isArray(data)) {
-                    setKittingQueue(data);
-                  } else if (key === STORAGE_KEYS.BUFFER_MAP && Array.isArray(data)) {
-                    setBufferLocations(data);
-                  } else if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
-                    setMaterialCalls(data);
-                  } else if (key === STORAGE_KEYS.CONTAINER_BATCHES && Array.isArray(data)) {
-                    localStorage.setItem('thekho_container_batches_v1', JSON.stringify(data));
-                  } else if (key === STORAGE_KEYS.USED_QR_TOKENS && typeof data === 'object') {
-                    localStorage.setItem('thekho_used_qr_tokens_v1', JSON.stringify(data));
-                  } else if (key === STORAGE_KEYS.SETTINGS && data) {
-                    setSettings(data);
-                  } else if (key === STORAGE_KEYS.USERS) {
-                    const u = storageService.getCurrentUser();
-                    if (u) setCurrentUser(u);
-                  }
-                }
-                return;
-              }
-
-              // 2. Handle Relational `parts` Table
-              if (table === 'parts') {
-                if (eventType === 'INSERT' && newRow) {
-                  const mapped = mapSupabaseRowToPart(newRow);
-                  setParts((prev) => {
-                    const filtered = prev.filter((p) => p.id !== mapped.id && p.code !== mapped.code);
-                    const updated = [mapped, ...filtered];
-                    localStorage.setItem(STORAGE_KEYS.PARTS, JSON.stringify(updated));
-                    return updated;
-                  });
-                } else if (eventType === 'UPDATE' && newRow) {
-                  const mapped = mapSupabaseRowToPart(newRow);
-                  setParts((prev) => {
-                    const updated = prev.map((p) => (p.id === mapped.id ? mapped : p));
-                    localStorage.setItem(STORAGE_KEYS.PARTS, JSON.stringify(updated));
-                    return updated;
-                  });
-                } else if (eventType === 'DELETE' && oldRow) {
-                  setParts((prev) => {
-                    const updated = prev.filter((p) => p.id !== oldRow.id);
-                    localStorage.setItem(STORAGE_KEYS.PARTS, JSON.stringify(updated));
-                    return updated;
-                  });
-                }
-                return;
-              }
-
-              // 3. Handle Relational `transactions` Table
-              if (table === 'transactions') {
-                if (eventType === 'INSERT' && newRow) {
-                  const mappedTx = mapSupabaseRowToTransaction(newRow);
-                  setTransactions((prev) => {
-                    const filtered = prev.filter((t) => t.id !== mappedTx.id);
-                    const updated = [mappedTx, ...filtered];
-                    localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(updated));
-                    return updated;
-                  });
-                }
-                return;
-              }
-
-              // 4. Handle Relational `settings` Table
-              if (table === 'settings') {
-                if (newRow?.data) {
-                  setSettings(newRow.data);
-                  localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(newRow.data));
-                }
-                return;
-              }
-            }
-          )
-          .subscribe((status) => {
-            console.log('Supabase Realtime subscription status:', status);
-          });
-      } catch (err) {
-        console.warn('Không thể khởi tạo kết nối Supabase Realtime:', err);
-      }
-    }
-
     return () => {
       isMounted = false;
-      if (client && channel) {
-        try {
-          client.removeChannel(channel);
-        } catch (_) {}
-      }
     };
-  }, [refreshData]);
+  }, [syncCloudAndState]);
+
+  // ⏱️ Pure REST Polling: Định kỳ 15 giây (15000ms) lấy dữ liệu mới ngầm từ Supabase REST API
+  // Phục vụ màn hình Dashboard, Andon, Kitting, Buffer Map, Tồn kho mà không cần F5 và Realtime Egress = 0 MB!
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      syncCloudAndState(false);
+    }, 15000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [syncCloudAndState]);
 
   // Open Electronic Bin Card for a part
   const handleOpenBinCard = (part: Part) => {
