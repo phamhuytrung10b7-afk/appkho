@@ -565,14 +565,18 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
                                 style={{ width: '100%', height: '100%' }}
                               />
                             </div>
-                            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '2mm', marginTop: 'auto' }}>
+                            <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '1.5mm', marginTop: 'auto' }}>
                                 {showLocation && (
-                                    <div style={{ fontSize: `${conf.metaFontSize + 2}px`, fontWeight: '900', color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #000000', paddingTop: '2mm' }}>
-                                        <span>VỊ TRÍ (KỆ):</span>
-                                        <span style={{ fontFamily: 'Arial, monospace', fontWeight: '900', background: '#000000', color: '#ffffff', padding: '1mm 3.5mm', borderRadius: '1.5mm' }}>{item.location || 'N/A'}</span>
+                                    <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #000000', paddingTop: '1.5mm' }}>
+                                        <span>VỊ TRÍ: {item.location || 'N/A'}</span>
+                                        {item.unit && (
+                                          <span style={{ fontFamily: 'Arial, monospace', fontWeight: '900', background: '#000000', color: '#ffffff', padding: '0.6mm 2.5mm', borderRadius: '1mm' }}>
+                                            ĐVT: {item.unit}
+                                          </span>
+                                        )}
                                     </div>
                                 )}
-                                <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#000000', textAlign: 'right' }}>
+                                <div style={{ fontSize: '9px', fontWeight: 'bold', color: '#000000', textAlign: 'right' }}>
                                     Ngày in: {new Date().toLocaleDateString('vi-VN')}
                                 </div>
                             </div>

@@ -1118,27 +1118,23 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                 </div>
                               </div>
 
-                              {/* Supplier & Mfg Date */}
-                              <div className="bg-white p-1.5 rounded-lg border-2 border-slate-900 text-[10.5px] leading-tight space-y-0.5">
-                                {item.supplier && (
-                                  <p className="font-extrabold text-slate-950 truncate">
-                                    NCC: <strong className="font-black text-black">{item.supplier}</strong>
-                                  </p>
-                                )}
-                                {item.mfgDate && (
-                                  <p className="font-black text-black">
-                                    NSX: {item.mfgDate}
-                                  </p>
-                                )}
+                                {/* Supplier & Mfg Date & ĐVT */}
+                                <div className="bg-white p-2 rounded-lg border-2 border-slate-900 text-[11px] leading-tight space-y-1 mt-auto shrink-0">
+                                  {item.supplier && (
+                                    <p className="font-extrabold text-slate-950 truncate">
+                                      NCC: <strong className="font-black text-black">{item.supplier}</strong>
+                                    </p>
+                                  )}
+                                  <div className={`flex items-center justify-between font-black text-slate-950 ${item.supplier ? 'pt-1 border-t border-slate-900' : ''}`}>
+                                    <span>{item.mfgDate ? `NSX: ${item.mfgDate}` : ''}</span>
+                                    <span className="bg-slate-900 text-white px-2 py-0.5 rounded-sm text-[11px] font-black">
+                                      ĐVT: {item.unit || 'Cái'}
+                                    </span>
+                                  </div>
+                                </div>
                               </div>
-
-                              {/* Footer */}
-                              <div className="pt-1 border-t-2 border-slate-900 flex items-center justify-between text-[11px] font-black text-slate-950">
-                                <span>ĐVT: {item.unit}</span>
-                              </div>
-                            </div>
-                          );
-                        }
+                            );
+                          }
 
                         return (
                           <div
@@ -1323,28 +1319,25 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                             />
                           </div>
 
-                          {/* Supplier, Mfg Date & Footer */}
-                          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '1.5mm', marginTop: 'auto' }}>
-                            {(item.supplier || item.mfgDate) && (
-                              <div style={{ background: '#ffffff', padding: '2mm', borderRadius: '1.5mm', border: '1.5px solid #000000' }}>
-                                {item.supplier && (
-                                  <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', wordBreak: 'break-word' }}>
-                                    NCC: {item.supplier}
-                                  </div>
-                                )}
-                                {item.mfgDate && (
-                                  <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', marginTop: item.supplier ? '1mm' : '0' }}>
-                                    NSX: {item.mfgDate}
-                                  </div>
-                                )}
+                          {/* Supplier, Mfg Date, ĐVT & Footer */}
+                          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '1mm', marginTop: 'auto' }}>
+                            <div style={{ background: '#ffffff', padding: '1.5mm 2mm', borderRadius: '1.5mm', border: '1.5px solid #000000', display: 'flex', flexDirection: 'column', gap: '1mm' }}>
+                              {item.supplier && (
+                                <div style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000', wordBreak: 'break-word', lineHeight: '1.2' }}>
+                                  NCC: {item.supplier}
+                                </div>
+                              )}
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: item.supplier ? '1px solid #000000' : 'none', paddingTop: item.supplier ? '1mm' : '0' }}>
+                                <span style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000' }}>
+                                  {item.mfgDate ? `NSX: ${item.mfgDate}` : ''}
+                                </span>
+                                <span style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', background: '#000000', color: '#ffffff', padding: '0.6mm 2.5mm', borderRadius: '1mm' }}>
+                                  ĐVT: {item.unit || 'Cái'}
+                                </span>
                               </div>
-                            )}
-
-                            <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #000000', paddingTop: '1.5mm', marginTop: '1mm' }}>
-                              <span>ĐVT: {item.unit}</span>
                             </div>
 
-                            <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#000000', textAlign: 'right' }}>
+                            <div style={{ fontSize: '9px', fontWeight: 'bold', color: '#000000', textAlign: 'right', lineHeight: '1' }}>
                               Ngày in: {new Date().toLocaleDateString('vi-VN')}
                             </div>
                           </div>

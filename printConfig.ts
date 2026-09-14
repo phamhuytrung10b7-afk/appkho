@@ -13,7 +13,7 @@ export interface PrintConfig {
 export type AllPrintConfigs = Record<PrintLayout, PrintConfig>;
 
 export const defaultPrintConfigs: AllPrintConfigs = {
-  a7: { pageWidth: 74, pageHeight: 105, qrSize: 44, nameFontSize: 16, codeFontSize: 14, metaFontSize: 12, padding: 3 },
+  a7: { pageWidth: 74, pageHeight: 105, qrSize: 36, nameFontSize: 15, codeFontSize: 13, metaFontSize: 11, padding: 3 },
   single: { pageWidth: 35, pageHeight: 22, qrSize: 15, nameFontSize: 9, codeFontSize: 8, metaFontSize: 7, padding: 1 },
   double: { pageWidth: 73, pageHeight: 22, qrSize: 15, nameFontSize: 9, codeFontSize: 8, metaFontSize: 7, padding: 1 },
   '150x100': { pageWidth: 150, pageHeight: 100, qrSize: 52, nameFontSize: 46, codeFontSize: 16, metaFontSize: 14, padding: 4 },
@@ -25,12 +25,18 @@ export function getSavedPrintConfigs(): AllPrintConfigs {
     const saved = localStorage.getItem('printConfigs');
     if (saved) {
       const parsed = JSON.parse(saved);
-      return {
+      const res: AllPrintConfigs = {
         ...defaultPrintConfigs,
         ...parsed,
+        a7: { 
+          ...defaultPrintConfigs.a7, 
+          ...(parsed.a7 || {}),
+          qrSize: (parsed.a7?.qrSize && parsed.a7.qrSize > 38) ? 36 : (parsed.a7?.qrSize || 36)
+        },
         '150x100': { ...defaultPrintConfigs['150x100'], ...(parsed['150x100'] || {}) },
         '100x75': { ...defaultPrintConfigs['100x75'], ...(parsed['100x75'] || {}) },
       };
+      return res;
     }
   } catch (e) {
     console.error(e);
