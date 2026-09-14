@@ -570,7 +570,7 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
                                     <div style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '2px solid #000000', paddingTop: '1.5mm' }}>
                                         <span>VỊ TRÍ: {item.location || 'N/A'}</span>
                                         {item.unit && (
-                                          <span style={{ fontFamily: 'Arial, monospace', fontWeight: '900', background: '#000000', color: '#ffffff', padding: '0.6mm 2.5mm', borderRadius: '1mm' }}>
+                                          <span style={{ fontFamily: 'Arial, monospace', fontWeight: '900', background: '#ffffff', color: '#000000', border: '1.5px solid #000000', padding: '0.4mm 2.5mm', borderRadius: '1mm' }}>
                                             ĐVT: {item.unit}
                                           </span>
                                         )}

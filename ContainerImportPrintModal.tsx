@@ -1125,9 +1125,9 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                       NCC: <strong className="font-black text-black">{item.supplier}</strong>
                                     </p>
                                   )}
-                                  <div className={`flex items-center justify-between font-black text-slate-950 ${item.supplier ? 'pt-1 border-t border-slate-900' : ''}`}>
+                                  <div className={`flex items-center justify-between font-black text-slate-950 ${item.supplier ? 'pt-1 border-t-2 border-slate-900' : ''}`}>
                                     <span>{item.mfgDate ? `NSX: ${item.mfgDate}` : ''}</span>
-                                    <span className="bg-slate-900 text-white px-2 py-0.5 rounded-sm text-[11px] font-black">
+                                    <span className="border-2 border-slate-900 text-slate-950 bg-white px-2 py-0.5 rounded text-[11px] font-black">
                                       ĐVT: {item.unit || 'Cái'}
                                     </span>
                                   </div>
@@ -1331,7 +1331,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                 <span style={{ fontSize: `${conf.metaFontSize}px`, fontWeight: '900', color: '#000000' }}>
                                   {item.mfgDate ? `NSX: ${item.mfgDate}` : ''}
                                 </span>
-                                <span style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', background: '#000000', color: '#ffffff', padding: '0.6mm 2.5mm', borderRadius: '1mm' }}>
+                                <span style={{ fontSize: `${conf.metaFontSize + 1}px`, fontWeight: '900', background: '#ffffff', color: '#000000', border: '1.5px solid #000000', padding: '0.4mm 2.5mm', borderRadius: '1mm' }}>
                                   ĐVT: {item.unit || 'Cái'}
                                 </span>
                               </div>
