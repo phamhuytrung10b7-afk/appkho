@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { UserAccount, ViewTab } from './types';
 import { storageService } from './storage';
+import { getSupabaseCredentials, saveSupabaseCredentials, getActiveSupabaseClient } from './supabase';
+import { egressStats } from './supabaseStorage';
 import {
   Users,
   UserPlus,
@@ -31,10 +33,25 @@ import {
   BarChart3,
   Settings,
   AlertTriangle,
+  CloudUpload,
+  Server,
+  Key,
+  Globe,
+  Code,
+  Zap,
+  Activity,
+  HardDrive,
+  RefreshCw,
+  Copy,
+  RotateCcw,
+  Save,
+  Database,
+  Shield,
 } from 'lucide-react';
 
 interface UserManagementViewProps {
   currentUser: UserAccount;
+  onRefreshAll?: () => void;
 }
 
 export const ALL_TAB_DEFINITIONS: { id: ViewTab; label: string; icon: React.ElementType; category: string }[] = [
@@ -57,10 +74,120 @@ export const ALL_TAB_DEFINITIONS: { id: ViewTab; label: string; icon: React.Elem
   { id: 'users', label: 'Quản lý tài khoản', icon: Users, category: 'Báo Cáo & Hệ Thống' },
 ];
 
-export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentUser }) => {
+export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentUser, onRefreshAll }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'users' | 'supabase'>('users');
+  const isAdmin = storageService.isAdminUser(currentUser);
+
   const [users, setUsers] = useState<UserAccount[]>(() => storageService.getUsers());
   const [searchTerm, setSearchTerm] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Supabase state
+  const initialCreds = getSupabaseCredentials();
+  const [supabaseUrl, setSupabaseUrl] = useState(initialCreds.url);
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialCreds.anonKey);
+  const [supabaseSyncing, setSupabaseSyncing] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
+  const handleSaveSupabaseConfig = () => {
+    saveSupabaseCredentials(supabaseUrl.trim(), supabaseAnonKey.trim());
+    setMessage({ type: 'success', text: 'Đã lưu cấu hình kết nối Supabase thành công!' });
+  };
+
+  const handleSyncFromSupabase = async () => {
+    setSupabaseSyncing(true);
+    setMessage(null);
+    const result = await storageService.syncWithSupabase();
+    setSupabaseSyncing(false);
+    if (result.success) {
+      setMessage({ type: 'success', text: result.message });
+      if (onRefreshAll) onRefreshAll();
+    } else {
+      setMessage({ type: 'error', text: result.message });
+    }
+  };
+
+  const handlePushToSupabase = async () => {
+    setSupabaseSyncing(true);
+    setMessage(null);
+    const result = await storageService.pushAllToSupabase();
+    setSupabaseSyncing(false);
+    if (result.success) {
+      setMessage({ type: 'success', text: result.message });
+    } else {
+      setMessage({ type: 'error', text: result.message });
+    }
+  };
+
+  const sqlSchemaText = `-- SUPABASE SQL SCHEMA DÀNH CHO THE KHO SMART WMS
+CREATE TABLE IF NOT EXISTS public.thekho_app_data (
+    key VARCHAR(255) PRIMARY KEY,
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.thekho_app_data ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public read access on thekho_app_data" ON public.thekho_app_data FOR SELECT USING (true);
+CREATE POLICY "Allow public insert/update/delete access on thekho_app_data" ON public.thekho_app_data FOR ALL USING (true) WITH CHECK (true);
+
+CREATE TABLE IF NOT EXISTS public.parts (
+    id VARCHAR(255) PRIMARY KEY,
+    code VARCHAR(100) NOT NULL,
+    name TEXT NOT NULL,
+    group_name VARCHAR(100) DEFAULT 'Khác',
+    unit VARCHAR(50) DEFAULT 'Cái',
+    current_stock NUMERIC(15, 2) DEFAULT 0,
+    min_stock NUMERIC(15, 2) DEFAULT 0,
+    max_stock NUMERIC(15, 2) DEFAULT 0,
+    location TEXT DEFAULT 'Kho chính',
+    locations JSONB DEFAULT '[]'::jsonb,
+    unit_price NUMERIC(15, 2) DEFAULT 0,
+    supplier TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.parts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public access on parts" ON public.parts FOR ALL USING (true) WITH CHECK (true);
+
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id VARCHAR(255) PRIMARY KEY,
+    part_id VARCHAR(255) REFERENCES public.parts(id) ON DELETE CASCADE,
+    part_code VARCHAR(100) NOT NULL,
+    part_name TEXT NOT NULL,
+    unit VARCHAR(50) DEFAULT 'Cái',
+    type VARCHAR(10) NOT NULL CHECK (type IN ('IN', 'OUT')),
+    quantity NUMERIC(15, 2) NOT NULL,
+    date TIMESTAMPTZ DEFAULT NOW(),
+    person VARCHAR(255) NOT NULL,
+    production_order VARCHAR(255) DEFAULT '',
+    reason_or_purpose TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    location_id VARCHAR(255) DEFAULT '',
+    stock_before NUMERIC(15, 2) DEFAULT 0,
+    stock_after NUMERIC(15, 2) DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public access on transactions" ON public.transactions FOR ALL USING (true) WITH CHECK (true);
+
+CREATE TABLE IF NOT EXISTS public.settings (
+    id VARCHAR(100) PRIMARY KEY DEFAULT 'app_settings',
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
+`;
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(sqlSchemaText);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2500);
+  };
 
   // Modal States
   const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
@@ -183,8 +310,6 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
       setMessage({ type: 'error', text: err.message || 'Lỗi khi cập nhật trạng thái tài khoản' });
     }
   };
-
-  const isAdmin = storageService.isAdminUser(currentUser);
 
   const handleDeleteUser = (u: UserAccount) => {
     if (!isAdmin) {
@@ -315,13 +440,47 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
           </div>
         </div>
 
+        {activeSubTab === 'users' && (
+          <button
+            type="button"
+            onClick={handleOpenAdd}
+            className="px-5 py-3 bg-blue-500 hover:bg-blue-600 text-white font-extrabold rounded-2xl text-xs transition-all cursor-pointer shadow-md flex items-center space-x-2 shrink-0"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>THÊM TÀI KHOẢN MỚI</span>
+          </button>
+        )}
+      </div>
+
+      {/* Sub Navigation Tabs */}
+      <div className="flex items-center space-x-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
         <button
           type="button"
-          onClick={handleOpenAdd}
-          className="px-5 py-3 bg-blue-500 hover:bg-blue-600 text-white font-extrabold rounded-2xl text-xs transition-all cursor-pointer shadow-md flex items-center space-x-2 shrink-0"
+          onClick={() => setActiveSubTab('users')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer ${
+            activeSubTab === 'users'
+              ? 'bg-white text-slate-900 shadow-sm'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
         >
-          <UserPlus className="w-4 h-4" />
-          <span>THÊM TÀI KHOẢN MỚI</span>
+          <Users className="w-4 h-4 text-blue-600" />
+          <span>Danh Sách Tài Khoản & Phân Quyền</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('supabase')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer ${
+            activeSubTab === 'supabase'
+              ? 'bg-white text-slate-900 shadow-sm'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
+        >
+          <CloudUpload className="w-4 h-4 text-sky-600" />
+          <span>Cơ Sở Dữ Liệu Supabase</span>
+          <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-800 rounded-md border border-amber-300">
+            Chỉ Admin
+          </span>
         </button>
       </div>
 
@@ -339,6 +498,10 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
           </button>
         </div>
       )}
+
+      {/* TAB 1: USERS LIST & PERMISSIONS */}
+      {activeSubTab === 'users' && (
+        <>
 
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -575,6 +738,240 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
           })}
         </div>
       </div>
+        </>
+      )}
+
+      {/* TAB 2: SUPABASE CLOUD DATABASE CONFIGURATION & MANAGEMENT (ADMIN ONLY) */}
+      {activeSubTab === 'supabase' && (
+        <div className="space-y-6">
+          {!isAdmin ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-3xl p-8 text-center space-y-3">
+              <ShieldAlert className="w-12 h-12 text-amber-600 mx-auto" />
+              <h3 className="font-black text-amber-900 text-base">KHU VỰC GIỚI HẠN DÀNH CHO ADMIN</h3>
+              <p className="text-xs text-amber-800 max-w-lg mx-auto">
+                Cấu hình kết nối Cơ Sở Dữ Liệu Supabase chứa thông tin bảo mật và ảnh hưởng trực tiếp đến toàn bộ dữ liệu đám mây của kho. Chỉ tài khoản Quản Trị Viên (Admin) mới có quyền truy cập và thao tác tại đây.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Connection Card */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
+                <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-3 bg-sky-50 text-sky-600 rounded-xl">
+                      <Server className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-sm">CẤU HÌNH KẾT NỐI SUPABASE CLOUD (CHỈ ADMIN)</h3>
+                      <p className="text-xs text-slate-500">
+                        Lưu trữ dữ liệu tập trung, đồng bộ cơ sở dữ liệu kho giữa các máy trạm và thủ kho.
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    {getActiveSupabaseClient().isConfigured ? (
+                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        <span className="w-2 h-2 mr-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                        Đã Kết Nối Supabase
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                        <span className="w-2 h-2 mr-2 bg-amber-500 rounded-full"></span>
+                        Chưa Cấu Hình (Đang Dùng LocalStorage)
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center">
+                      <Globe className="w-3.5 h-3.5 mr-1 text-sky-600" />
+                      SUPABASE URL (Ví dụ: https://xyzcompany.supabase.co)
+                    </label>
+                    <input
+                      type="text"
+                      value={supabaseUrl}
+                      onChange={(e) => setSupabaseUrl(e.target.value)}
+                      placeholder="https://your-project.supabase.co"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center">
+                      <Key className="w-3.5 h-3.5 mr-1 text-amber-600" />
+                      SUPABASE ANON KEY (Mã khóa Public / Anonymous Key)
+                    </label>
+                    <input
+                      type="password"
+                      value={supabaseAnonKey}
+                      onChange={(e) => setSupabaseAnonKey(e.target.value)}
+                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveSupabaseConfig}
+                    className="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-all flex items-center space-x-2 shadow-sm cursor-pointer"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>Lưu Cấu Hình Kết Nối</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSyncFromSupabase}
+                    disabled={supabaseSyncing}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center space-x-2 shadow-sm disabled:opacity-50 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${supabaseSyncing ? 'animate-spin' : ''}`} />
+                    <span>Tải & Đồng Bộ Từ Supabase Về Máy</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handlePushToSupabase}
+                    disabled={supabaseSyncing}
+                    className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all flex items-center space-x-2 shadow-sm disabled:opacity-50 cursor-pointer"
+                  >
+                    <CloudUpload className="w-4 h-4" />
+                    <span>Đẩy Toàn Bộ Dữ Liệu App Lên Supabase</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Smart Local Cache & Egress Saver Live Monitor Card */}
+              <div className="bg-gradient-to-br from-slate-900 via-slate-950 to-blue-950 text-white p-6 rounded-2xl border border-blue-500/30 shadow-xl space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2.5 bg-blue-500/20 text-blue-400 rounded-xl border border-blue-500/30">
+                      <Zap className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-sm text-white tracking-wide flex items-center space-x-2">
+                        <span>HỆ THỐNG SMART CACHE & GIẢM THIỂU BĂNG THÔNG EGRESS</span>
+                        <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-mono font-bold rounded-full border border-emerald-500/30">
+                          GÓI FREE TỐI ƯU
+                        </span>
+                      </h4>
+                      <p className="text-xs text-slate-400">
+                        Cơ chế kiểm tra nhẹ <code className="text-blue-300 font-mono">updated_at (~50 Bytes)</code> giúp tiết kiệm hơn 99% dung lượng Egress tải về máy trạm.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        Object.keys(localStorage).forEach((k) => {
+                          if (k.startsWith('_thekho_cache_ts_')) {
+                            localStorage.removeItem(k);
+                          }
+                        });
+                        setMessage({ type: 'success', text: 'Đã xóa toàn bộ Timestamp Cache! Lần tải tới sẽ tải fresh data từ Supabase.' });
+                      }}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer"
+                      title="Xóa cache metadata để test lại quá trình tải lại"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Xóa Timestamp Cache</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                    <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Số Lần Trúng Cache:</span>
+                    </div>
+                    <div className="text-xl font-black text-emerald-400 font-mono">
+                      {egressStats.cacheHits} <span className="text-xs font-normal text-slate-400">lần</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">Dùng cache máy, không tốn Egress</div>
+                  </div>
+
+                  <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                    <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                      <Activity className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Số Lần Tải Mới:</span>
+                    </div>
+                    <div className="text-xl font-black text-blue-400 font-mono">
+                      {egressStats.cacheMisses} <span className="text-xs font-normal text-slate-400">lần</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">Chỉ tải khi có thay đổi thực sự</div>
+                  </div>
+
+                  <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                    <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                      <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Ước Tính Tiết Kiệm:</span>
+                    </div>
+                    <div className="text-xl font-black text-emerald-400 font-mono">
+                      {(egressStats.estimatedBytesSaved / 1024).toFixed(1)} <span className="text-xs font-normal text-slate-400">KB</span>
+                    </div>
+                    <div className="text-[10px] text-emerald-400/80 mt-1">Băng thông Egress đã tiết kiệm</div>
+                  </div>
+
+                  <div className="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80">
+                    <div className="text-[11px] text-slate-400 font-bold mb-1 flex items-center space-x-1">
+                      <Zap className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Tỷ Lệ Tiết Kiệm:</span>
+                    </div>
+                    <div className="text-xl font-black text-sky-400 font-mono">
+                      {egressStats.cacheHits + egressStats.cacheMisses > 0
+                        ? `${((egressStats.cacheHits / (egressStats.cacheHits + egressStats.cacheMisses)) * 100).toFixed(0)}%`
+                        : '100%'}
+                    </div>
+                    <div className="text-[10px] text-sky-400/80 mt-1">Tỷ lệ tránh tải thừa payload</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* SQL Editor Code Block Card */}
+              <div className="bg-slate-900 text-slate-100 p-6 rounded-2xl shadow-md space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <div className="flex items-center space-x-2">
+                    <Code className="w-5 h-5 text-amber-400" />
+                    <h3 className="font-bold text-sm text-white">CÂU LỆNH SQL TẠO BẢNG (SUPABASE SQL EDITOR SCHEMA)</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopySql}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    {copiedSql ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">Đã Sao Chép!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Sao Chép Mã SQL</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Hãy sao chép đoạn mã SQL dưới đây và dán vào mục <strong className="text-amber-300">SQL Editor</strong> trong trang quản trị Supabase của bạn, sau đó nhấn <strong className="text-emerald-400 font-mono">Run</strong> để khởi tạo tự động toàn bộ cấu trúc bảng dữ liệu:
+                </p>
+
+                <pre className="p-4 bg-slate-950 rounded-xl text-[11px] font-mono text-emerald-400 overflow-x-auto max-h-80 border border-slate-800 leading-relaxed">
+                  {sqlSchemaText}
+                </pre>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Modal: Add or Edit User & Role Permissions */}
       {isAddEditModalOpen && (

@@ -390,7 +390,7 @@ export default function App() {
           )}
 
           {currentTab === 'users' && (
-            <UserManagementView currentUser={currentUser} />
+            <UserManagementView currentUser={currentUser} onRefreshAll={refreshData} />
           )}
         </main>
       </div>
