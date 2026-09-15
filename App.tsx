@@ -79,9 +79,18 @@ export default function App() {
 
   // Fetch fresh data from Supabase Cloud via pure REST API (Zero Realtime WebSocket Egress)
   const syncCloudAndState = useCallback(
-    async (isInitial = false) => {
+    async (forceFetch: boolean = false, isInitial: boolean = false) => {
       try {
-        const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud();
+        // Trước khi gọi tải toàn bộ data từ Supabase Cloud, kiểm tra xem Cloud có dữ liệu mới không
+        if (!forceFetch && !isInitial) {
+          const hasUpdates = await storageService.checkCloudHasUpdates();
+          if (!hasUpdates) {
+            // Dữ liệu Cloud không thay đổi và forceFetch = false, tiếp tục dùng dữ liệu Local State/LocalStorage mà không tải mới
+            return;
+          }
+        }
+
+        const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud(forceFetch);
         setParts(cloudParts);
         setTransactions(cloudTxs);
         setKittingQueue(storageService.getKittingQueue());
@@ -110,7 +119,7 @@ export default function App() {
   const refreshData = useCallback(() => {
     applyLocalState();
     // Tự động gọi lại hàm fetch dữ liệu ngầm ngay lập tức sau khi người dùng thực hiện thao tác
-    syncCloudAndState(false);
+    syncCloudAndState(false, false);
   }, [applyLocalState, syncCloudAndState]);
 
   // Initial load on App Mount
@@ -120,7 +129,7 @@ export default function App() {
     async function initCloudData() {
       try {
         setIsLoadingCloud(true);
-        await syncCloudAndState(true);
+        await syncCloudAndState(true, true);
       } catch (err) {
         console.warn('Lỗi khởi tạo dữ liệu Supabase:', err);
       } finally {
@@ -138,13 +147,25 @@ export default function App() {
   }, [syncCloudAndState]);
 
   // ⏱️ Pure REST Polling: Định kỳ 15 giây (15000ms) lấy dữ liệu mới ngầm từ Supabase REST API
-  // Phục vụ màn hình Dashboard, Andon, Kitting, Buffer Map, Tồn kho mà không cần F5 và Realtime Egress = 0 MB!
+  // Tối ưu Egress: Chỉ check sync khi tab trình duyệt đang hiển thị (visible). Khi ẩn tab, dừng kiểm tra để tiết kiệm Egress.
+  // Bổ sung sự kiện visibilitychange: Ngay khi người dùng quay lại tab ứng dụng, kích hoạt 1 lượt check sync ngầm ngay lập tức.
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncCloudAndState(false, false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     const intervalId = setInterval(() => {
-      syncCloudAndState(false);
+      if (document.visibilityState === 'visible') {
+        syncCloudAndState(false, false);
+      }
     }, 15000);
 
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearInterval(intervalId);
     };
   }, [syncCloudAndState]);

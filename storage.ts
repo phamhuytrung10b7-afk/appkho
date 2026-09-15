@@ -3061,9 +3061,28 @@ export const storageService = {
   },
 
   // --- SUPABASE DUAL SYNC UTILITIES ---
-  async fetchInitialDataFromCloud(): Promise<{ parts: Part[]; transactions: Transaction[] }> {
+  async checkCloudHasUpdates(): Promise<boolean> {
+    const { isConfigured } = getActiveSupabaseClient();
+    if (!isConfigured) return false;
+    return supabaseKeyStore.checkCloudHasUpdates();
+  },
+
+  async fetchInitialDataFromCloud(forceFetch: boolean = false): Promise<{ parts: Part[]; transactions: Transaction[] }> {
     let parts: Part[] = [];
     let transactions: Transaction[] = [];
+
+    // Nếu không forceFetch và máy đã có dữ liệu local, kiểm tra xem Cloud có cập nhật mới không
+    if (!forceFetch) {
+      const localParts = this.getParts();
+      const localTxs = this.getTransactions();
+      if (localParts && localParts.length > 0) {
+        const hasUpdates = await this.checkCloudHasUpdates();
+        if (!hasUpdates) {
+          // Cloud không có thay đổi mới -> dùng local data để tiết kiệm tối đa Egress
+          return { parts: localParts, transactions: localTxs };
+        }
+      }
+    }
 
     try {
       // 1. Batch timestamp check for all Key-Value keys in 1 ultralight request (~200 Bytes)

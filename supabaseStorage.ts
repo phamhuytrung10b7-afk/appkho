@@ -256,6 +256,43 @@ export const supabaseKeyStore = {
   },
 
   /**
+   * Lightweight Check (~50 - 200 Bytes): Checks whether any key on Supabase Cloud has newer updated_at than local cache.
+   * If false, callers can completely skip downloading full data payloads.
+   */
+  async checkCloudHasUpdates(keys?: string[]): Promise<boolean> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) {
+        return false;
+      }
+      const targetKeys = keys && keys.length > 0 ? keys : Object.values(STORAGE_KEYS);
+      const { data: metaList, error } = await client
+        .from('thekho_app_data')
+        .select('key, updated_at')
+        .in('key', targetKeys);
+
+      if (error || !metaList || metaList.length === 0) {
+        return false;
+      }
+
+      for (const row of metaList) {
+        const key = row.key;
+        const serverTs = String(row.updated_at || '');
+        const local = getLocalCacheData(key);
+        // If local data doesn't exist or timestamp does not match server, Cloud has newer/different data
+        if (local.data === null || local.timestamp !== serverTs) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (err) {
+      logSupabaseError('checkCloudHasUpdates catch', err);
+      return false;
+    }
+  },
+
+  /**
    * Batch Smart Sync: Checks timestamps for multiple keys in a single lightweight query (~200 Bytes),
    * and only downloads the specific keys that have actually changed on Cloud!
    */
