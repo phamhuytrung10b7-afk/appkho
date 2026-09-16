@@ -8,9 +8,7 @@ import {
   QrCode,
   Package,
   Clock,
-  Zap,
   Sparkles,
-  AlertCircle,
   RefreshCw,
   CheckCircle2,
   Trash2,
@@ -21,12 +19,12 @@ import {
   Download,
   Plus,
   Info,
-  Send,
-  Check,
   Layers,
   Tag,
+  Shield,
+  Eye,
+  Box,
 } from 'lucide-react';
-import { InlineQrScanner } from './InlineQrScanner';
 
 interface BufferMapViewProps {
   buffers: BufferLocationMap[];
@@ -35,10 +33,14 @@ interface BufferMapViewProps {
 
 export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh }) => {
   const [selectedBuffer, setSelectedBuffer] = useState<BufferLocationMap | null>(null);
-  const [modalTab, setModalTab] = useState<'call' | 'manage'>('call');
-  const [isQrScannerOpen, setIsQrScannerOpen] = useState(false);
+  const [modalTab, setModalTab] = useState<'view' | 'manage'>('view');
   const [filterPart, setFilterPart] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Current user & configuration permission check
+  const currentUser = storageService.getCurrentUser();
+  const isAdmin = storageService.isAdminUser(currentUser);
+  const canConfigure = storageService.canConfigureOutbuffer(currentUser);
 
   // Print QR Location Modal state
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
@@ -51,26 +53,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
     description: b.description || (b.modelName ? `Model: ${b.modelName}` : 'Kệ Outbuffer'),
   }));
 
-  // Assembly lines list from Settings
   const settings = storageService.getSettings();
-  const assemblyLinesList = (settings.assemblyLines && settings.assemblyLines.length > 0)
-    ? settings.assemblyLines
-    : [
-        'Bàn Lắp Ráp Bo Mạch Line 1',
-        'Dây Chuyền SMT Tự Động 2',
-        'Bàn Lắp Khung Cơ Khí 3',
-        'Khu Kiểm Thử Quality Check 4',
-      ];
-
-  // Direct Call state in Modal
-  const [selectedAssemblyLine, setSelectedAssemblyLine] = useState(assemblyLinesList[0]);
-  const [callQtyMap, setCallQtyMap] = useState<{ [partCode: string]: number }>({});
-  const currentUser = storageService.getCurrentUser();
-  const defaultRequester = currentUser
-    ? `${currentUser.fullName}${currentUser.roleTitle ? ` (${currentUser.roleTitle})` : ''}`
-    : ((settings.staffList && settings.staffList[0]) || 'Nguyễn Văn A (Trưởng Dây Chuyền 1)');
-
-  const [callRequestedBy, setCallRequestedBy] = useState(defaultRequester);
 
   // Manage Part / Shelf state in Modal
   const [shelfModelName, setShelfModelName] = useState('');
@@ -97,71 +80,19 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
     fifoOldestShelfId = sortedByAge[0].locationId;
   }
 
-  const handleOpenEditModal = (b: BufferLocationMap) => {
+  const handleOpenDetailModal = (b: BufferLocationMap, initialTab: 'view' | 'manage' = 'view') => {
     setSelectedBuffer(b);
-    setModalTab('call');
+    setModalTab(canConfigure ? initialTab : 'view');
     setShelfModelName(b.modelName || '');
     setEditLocDesc(b.description || '');
     setNewPartCode('');
     setNewPartName('');
     setNewPartQty(10);
-
-    // Initialize call quantities for items on shelf
-    const initialQtyMap: { [partCode: string]: number } = {};
-    const items = b.items && b.items.length > 0 ? b.items : (b.partCode ? [{ partCode: b.partCode, currentStockQty: b.currentStockQty }] : []);
-    items.forEach((item) => {
-      initialQtyMap[item.partCode] = item.currentStockQty || 1;
-    });
-    setCallQtyMap(initialQtyMap);
-  };
-
-  const handleDirectCallItem = (item: BufferPartItem) => {
-    if (!selectedBuffer) return;
-    const requestedQty = callQtyMap[item.partCode] !== undefined ? callQtyMap[item.partCode] : item.currentStockQty;
-
-    if (requestedQty <= 0) {
-      setMessage({ type: 'error', text: 'Số lượng yêu cầu gọi hàng phải lớn hơn 0!' });
-      return;
-    }
-
-    if (requestedQty > item.currentStockQty) {
-      setMessage({
-        type: 'error',
-        text: `Số lượng gọi (${requestedQty}) vượt quá số lượng tồn kho khả dụng trên kệ (${item.currentStockQty} ${item.unit})!`,
-      });
-      return;
-    }
-
-    try {
-      storageService.createMaterialCallRequest({
-        assemblyLine: selectedAssemblyLine,
-        partCode: item.partCode,
-        partName: item.partName,
-        unit: item.unit,
-        requestedQty,
-        bufferLocation: selectedBuffer.locationId,
-        isDirectKitting: false,
-        requestedBy: callRequestedBy,
-      });
-
-      setMessage({
-        type: 'success',
-        text: `🚀 Đã phát lệnh Gọi Hàng [${item.partCode}] - SL: ${requestedQty} ${item.unit} từ kệ ${selectedBuffer.locationId} tới ${selectedAssemblyLine}!`,
-      });
-
-      // Refresh view and update selected modal buffer
-      onRefresh();
-      const freshBuffers = storageService.getBufferLocations();
-      const updatedSel = freshBuffers.find((b) => b.locationId === selectedBuffer.locationId) || null;
-      setSelectedBuffer(updatedSel);
-    } catch (err: any) {
-      setMessage({ type: 'error', text: err.message || 'Lỗi khi gọi hàng' });
-    }
   };
 
   const handleSaveShelfInfo = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedBuffer) return;
+    if (!selectedBuffer || !canConfigure) return;
 
     try {
       const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
@@ -179,7 +110,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
 
   const handleAddPartToShelf = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedBuffer) return;
+    if (!selectedBuffer || !canConfigure) return;
 
     if (!newPartCode.trim()) {
       setMessage({ type: 'error', text: 'Vui lòng nhập Mã Linh Kiện!' });
@@ -232,7 +163,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
   };
 
   const handleRemovePartFromShelf = (partCode: string) => {
-    if (!selectedBuffer) return;
+    if (!selectedBuffer || !canConfigure) return;
     if (window.confirm(`Bạn có chắc muốn xóa linh kiện [${partCode}] khỏi Kệ Buffer ${selectedBuffer.locationId}?`)) {
       const currentItems = (selectedBuffer.items || []).filter((i) => i.partCode !== partCode);
       const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
@@ -244,11 +175,9 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
     }
   };
 
-  const isAdmin = storageService.isAdminUser();
-
   const handleClearShelf = (locationId: string) => {
-    if (!isAdmin) {
-      alert('Chỉ tài khoản Quản trị viên (ADMIN) mới có quyền xóa/dọn kệ!');
+    if (!canConfigure) {
+      alert('Bạn không có quyền dọn trống kệ này!');
       return;
     }
     if (window.confirm(`Bạn có chắc muốn dọn trống tất cả linh kiện trên Kệ Buffer ${locationId}?`)) {
@@ -260,8 +189,8 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
   };
 
   const handleDeleteShelf = (locationId: string) => {
-    if (!isAdmin) {
-      alert('Chỉ tài khoản Quản trị viên (ADMIN) mới có quyền xóa kệ!');
+    if (!canConfigure) {
+      alert('Bạn không có quyền xóa kệ này!');
       return;
     }
     if (!window.confirm(`Bạn có chắc chắn muốn XÓA VĨNH VIỄN Kệ Buffer ${locationId}?`)) return;
@@ -279,6 +208,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
 
   const handleAddShelfSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canConfigure) return;
     try {
       storageService.addBufferLocation({
         locationId: newLocId,
@@ -300,6 +230,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
   };
 
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canConfigure) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -361,7 +292,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
               Sơ Đồ Trực Quan Kệ OUTBUFFER
             </h1>
             <p className="text-emerald-100 text-xs sm:text-sm max-w-2xl">
-              Ma trận giám sát thời gian thực các ô kệ lưu giữ linh kiện theo Model sản xuất. Bấm trực tiếp vào từng kệ để xem danh sách linh kiện & phát lệnh gọi hàng (Andon Call).
+              Ma trận giám sát thời gian thực các ô kệ lưu giữ linh kiện theo Model sản xuất. Bấm trực tiếp vào từng kệ để xem danh sách chi tiết các linh kiện đang lưu trữ trên kệ.
             </p>
           </div>
 
@@ -380,29 +311,39 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
               <span>In Tem QR Kệ Outbuffer</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setIsAddShelfOpen(true)}
-              className="px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-black rounded-2xl shadow-md transition-all cursor-pointer flex items-center space-x-2 text-xs"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Thêm Vị Trí Kệ</span>
-            </button>
+            {/* Shelf & Part Configuration Tools (Restricted to Admin & Authorized Accounts) */}
+            {canConfigure ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsAddShelfOpen(true)}
+                  className="px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-black rounded-2xl shadow-md transition-all cursor-pointer flex items-center space-x-2 text-xs"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Thêm Vị Trí Kệ</span>
+                </button>
 
-            <label className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold rounded-2xl border border-white/20 transition-all cursor-pointer flex items-center space-x-2 text-xs">
-              <Upload className="w-4 h-4 text-emerald-300" />
-              <span>Nhập Excel Kệ</span>
-              <input type="file" accept=".xlsx,.xls" onChange={handleExcelUpload} className="hidden" />
-            </label>
+                <label className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold rounded-2xl border border-white/20 transition-all cursor-pointer flex items-center space-x-2 text-xs">
+                  <Upload className="w-4 h-4 text-emerald-300" />
+                  <span>Nhập Excel Kệ</span>
+                  <input type="file" accept=".xlsx,.xls" onChange={handleExcelUpload} className="hidden" />
+                </label>
 
-            <button
-              type="button"
-              onClick={() => storageService.downloadBufferImportTemplate()}
-              className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-2xl border border-white/20 transition-all cursor-pointer"
-              title="Tải File Mẫu Excel Khai Báo Vị Trí Kệ"
-            >
-              <Download className="w-4 h-4 text-cyan-200" />
-            </button>
+                <button
+                  type="button"
+                  onClick={() => storageService.downloadBufferImportTemplate()}
+                  className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-2xl border border-white/20 transition-all cursor-pointer"
+                  title="Tải File Mẫu Excel Khai Báo Vị Trí Kệ"
+                >
+                  <Download className="w-4 h-4 text-cyan-200" />
+                </button>
+              </>
+            ) : (
+              <div className="px-3 py-1.5 bg-white/10 border border-white/20 rounded-2xl text-[11px] font-bold text-emerald-100 flex items-center space-x-1.5">
+                <Eye className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Chế độ Xem Chi Tiết Linh Kiện</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -469,7 +410,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
           return (
             <div
               key={buf.locationId}
-              onClick={() => handleOpenEditModal(buf)}
+              onClick={() => handleOpenDetailModal(buf, 'view')}
               className={`relative rounded-3xl p-5 border transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md flex flex-col justify-between min-h-[210px] ${
                 isCallPending
                   ? 'bg-amber-50/90 border-amber-300 ring-2 ring-amber-400/50'
@@ -523,17 +464,31 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                       <QrCode className="w-4 h-4" />
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenEditModal(buf);
-                      }}
-                      className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-white/60 rounded-lg cursor-pointer"
-                      title="Bấm để xem chi tiết & Gọi hàng"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
+                    {canConfigure ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenDetailModal(buf, 'manage');
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg cursor-pointer"
+                        title="Cấu hình kệ & Nhập linh kiện"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenDetailModal(buf, 'view');
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer"
+                        title="Xem chi tiết linh kiện trên kệ"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -550,7 +505,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                 {isEmpty ? (
                   <div className="py-4 text-center text-slate-400">
                     <span className="text-xs font-bold uppercase tracking-wider block">KỆ TRỐNG</span>
-                    <span className="text-[11px]">Sẵn sàng nhập thùng xanh</span>
+                    <span className="text-[11px]">Sẵn sàng nhận linh kiện sau bóc tách</span>
                   </div>
                 ) : (
                   <>
@@ -591,8 +546,9 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                   <Clock className="w-3 h-3 text-slate-400" />
                   <span>{new Date(buf.lastUpdated).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</span>
                 </span>
-                <span className="uppercase font-extrabold text-[10px]">
-                  {isCallPending ? '⚠️ ĐANG GỌI HÀNG' : isReady ? '⚡ BẤM GỌI HÀNG' : 'TRỐNG'}
+                <span className="uppercase font-extrabold text-[10px] flex items-center space-x-1 text-emerald-700">
+                  <Eye className="w-3 h-3" />
+                  <span>{isCallPending ? '⚠️ ĐANG GỌI HÀNG' : isReady ? 'XEM CHI TIẾT' : 'TRỐNG'}</span>
                 </span>
               </div>
             </div>
@@ -600,8 +556,8 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
         })}
       </div>
 
-      {/* Modal: Add New Shelf */}
-      {isAddShelfOpen && (
+      {/* Modal: Add New Shelf (Restricted) */}
+      {isAddShelfOpen && canConfigure && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
           <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden my-4">
             <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-white p-5 flex items-center justify-between">
@@ -692,7 +648,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
         </div>
       )}
 
-      {/* Modal: Detailed Shelf View & Direct Calling (Andon Call) */}
+      {/* Modal: Detailed Shelf View & Manage (No calling here - Call disabled per user request) */}
       {selectedBuffer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200 overflow-y-auto">
           <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden my-4 max-h-[90vh] flex flex-col">
@@ -704,7 +660,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-white flex items-center space-x-2">
-                    <span>Chi Tiết & Gọi Hàng Kệ OUTBUFFER</span>
+                    <span>Chi Tiết Kệ OUTBUFFER</span>
                     {selectedBuffer.modelName && (
                       <span className="px-2.5 py-0.5 bg-blue-500/40 text-blue-100 border border-blue-300/40 text-xs rounded-full font-extrabold">
                         Model: {selectedBuffer.modelName}
@@ -712,7 +668,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                     )}
                   </h3>
                   <p className="text-emerald-200 text-xs">
-                    {selectedBuffer.description || 'Vị trí kệ chứa linh kiện sau bóc tách'}
+                    {selectedBuffer.description || 'Vị trí kệ chứa linh kiện sau bóc tách Kitting'}
                   </p>
                 </div>
               </div>
@@ -740,168 +696,148 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
               </div>
             </div>
 
-            {/* Modal Sub-Header Tabs */}
-            <div className="flex border-b border-slate-200 bg-slate-100 p-1.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => setModalTab('call')}
-                className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center space-x-2 cursor-pointer ${
-                  modalTab === 'call'
-                    ? 'bg-amber-500 text-slate-950 shadow-sm font-black'
-                    : 'text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Send className="w-4 h-4 text-slate-900" />
-                <span>GỌI HÀNG TRỰC TIẾP TỪ KỆ (ANDON CALL)</span>
-              </button>
+            {/* Modal Sub-Header Tabs (Only visible if user has permission to configure) */}
+            {canConfigure && (
+              <div className="flex border-b border-slate-200 bg-slate-100 p-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setModalTab('view')}
+                  className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+                    modalTab === 'view'
+                      ? 'bg-emerald-700 text-white shadow-sm font-black'
+                      : 'text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <Package className="w-4 h-4" />
+                  <span>📋 DANH SÁCH LINH KIỆN TRÊN KỆ</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setModalTab('manage')}
-                className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center space-x-2 cursor-pointer ${
-                  modalTab === 'manage'
-                    ? 'bg-emerald-700 text-white shadow-sm font-black'
-                    : 'text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Edit3 className="w-4 h-4" />
-                <span>CẤU HÌNH KỆ & NHẬP LINH KIỆN</span>
-              </button>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setModalTab('manage')}
+                  className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+                    modalTab === 'manage'
+                      ? 'bg-indigo-700 text-white shadow-sm font-black'
+                      : 'text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <Edit3 className="w-4 h-4" />
+                  <span>⚙️ CẤU HÌNH KỆ & NHẬP LINH KIỆN</span>
+                </button>
+              </div>
+            )}
 
             {/* Modal Body */}
             <div className="p-5 overflow-y-auto space-y-5 text-xs text-slate-700 grow">
-              {/* TAB 1: CALL MATERIAL DIRECTLY FROM SHELF */}
-              {modalTab === 'call' && (
+              {/* TAB 1: VIEW DETAILED PARTS ON SHELF (Default & View-Only Mode) */}
+              {modalTab === 'view' && (
                 <div className="space-y-4">
-                  {/* Select Destination Assembly Line */}
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-2">
-                    <label className="block font-extrabold text-amber-900 text-xs">
-                      1. Chọn Dây Chuyền / Bàn Máy Yêu Cầu Cấp Hàng <span className="text-rose-600">*</span>
-                    </label>
-                    <select
-                      value={selectedAssemblyLine}
-                      onChange={(e) => setSelectedAssemblyLine(e.target.value)}
-                      className="w-full px-3.5 py-2.5 bg-white border border-amber-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-amber-500 shadow-xs"
-                    >
-                      {assemblyLinesList.map((line) => (
-                        <option key={line} value={line}>
-                          📍 {line}
-                        </option>
-                      ))}
-                    </select>
+                  {/* Shelf Info Summary Card */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Thông Tin Khoang Kệ
+                      </span>
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono font-black text-sm text-slate-900">{selectedBuffer.locationId}</span>
+                        {selectedBuffer.modelName && (
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-900 border border-blue-200 text-xs font-bold rounded-lg">
+                            Model: {selectedBuffer.modelName}
+                          </span>
+                        )}
+                      </div>
+                      {selectedBuffer.description && (
+                        <p className="text-xs text-slate-600 font-medium">📍 {selectedBuffer.description}</p>
+                      )}
+                    </div>
 
-                    <div className="pt-2 flex items-center justify-between text-[11px] text-amber-800">
-                      <span>Người Yêu Cầu Gọi:</span>
-                      <input
-                        type="text"
-                        value={callRequestedBy}
-                        onChange={(e) => setCallRequestedBy(e.target.value)}
-                        className="px-2.5 py-1 bg-white border border-amber-300 rounded-lg text-xs font-semibold text-slate-800"
-                      />
+                    <div className="text-right space-y-0.5">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase block">Tổng Tồn Khả Dụng</span>
+                      <span className="font-black text-lg text-emerald-800 block">
+                        {selectedBuffer.currentStockQty.toLocaleString('vi-VN')} {selectedBuffer.unit || 'PCS'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-medium block">
+                        Cập nhật: {new Date(selectedBuffer.lastUpdated).toLocaleTimeString('vi-VN')}
+                      </span>
                     </div>
                   </div>
 
-                  {/* List Parts on Shelf for Calling */}
+                  {/* List of Parts on Shelf */}
                   <div className="space-y-3">
-                    <h4 className="font-extrabold text-slate-800 text-xs flex items-center space-x-2">
-                      <Package className="w-4 h-4 text-emerald-700" />
-                      <span>Danh Sách Linh Kiện Đã Bóc Tách Trực Thuộc Kệ [{selectedBuffer.locationId}]:</span>
-                    </h4>
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-extrabold text-slate-800 text-xs flex items-center space-x-2">
+                        <Package className="w-4 h-4 text-emerald-700" />
+                        <span>Danh Sách Linh Kiện Đang Lưu Trên Kệ [{selectedBuffer.locationId}]:</span>
+                      </h4>
+                      <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 font-bold text-[11px] rounded-lg">
+                        {(selectedBuffer.items || []).length > 0
+                          ? `${(selectedBuffer.items || []).length} loại linh kiện`
+                          : selectedBuffer.partCode
+                          ? '1 loại linh kiện'
+                          : 'Kệ trống'}
+                      </span>
+                    </div>
 
                     {(!selectedBuffer.items || selectedBuffer.items.length === 0) && !selectedBuffer.partCode ? (
-                      <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 italic">
-                        Kệ hiện tại đang trống, chưa có linh kiện nào được nhập lên kệ.
+                      <div className="p-10 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-2">
+                        <Box className="w-8 h-8 mx-auto text-slate-300" />
+                        <p className="text-xs font-bold text-slate-600">Kệ hiện tại đang trống</p>
+                        <p className="text-[11px] text-slate-400">
+                          Chưa có linh kiện nào được nhập lên kệ này. Kệ sẵn sàng nhận thùng hàng sau bóc tách Kitting.
+                        </p>
                       </div>
                     ) : (
-                      ((selectedBuffer.items && selectedBuffer.items.length > 0)
-                        ? selectedBuffer.items
-                        : [{
-                            partCode: selectedBuffer.partCode || '',
-                            partName: selectedBuffer.partName || '',
-                            unit: selectedBuffer.unit || 'PCS',
-                            currentStockQty: selectedBuffer.currentStockQty,
-                          }]
-                      ).map((item, idx) => {
-                        const callVal = callQtyMap[item.partCode] !== undefined ? callQtyMap[item.partCode] : item.currentStockQty;
-                        const isExceeded = callVal > item.currentStockQty;
-
-                        return (
+                      <div className="space-y-2">
+                        {((selectedBuffer.items && selectedBuffer.items.length > 0)
+                          ? selectedBuffer.items
+                          : [{
+                              partCode: selectedBuffer.partCode || '',
+                              partName: selectedBuffer.partName || '',
+                              unit: selectedBuffer.unit || 'PCS',
+                              currentStockQty: selectedBuffer.currentStockQty,
+                              modelName: selectedBuffer.modelName,
+                              lastUpdated: selectedBuffer.lastUpdated,
+                            }]
+                        ).map((item, idx) => (
                           <div
                             key={idx}
-                            className="p-4 bg-white border-2 border-slate-200 rounded-2xl space-y-3 shadow-xs hover:border-amber-300 transition-all"
+                            className="p-4 bg-white border border-slate-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-2xs hover:border-emerald-300 transition-colors"
                           >
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div>
-                                <span className="font-mono font-black text-sm text-purple-900 block">
+                            <div className="space-y-1">
+                              <div className="flex items-center space-x-2">
+                                <span className="font-mono font-black text-sm text-purple-900">
                                   {item.partCode}
                                 </span>
-                                <span className="font-bold text-slate-800 text-xs">{item.partName}</span>
+                                {item.modelName && (
+                                  <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded-md">
+                                    {item.modelName}
+                                  </span>
+                                )}
                               </div>
-                              <div className="text-right">
-                                <span className="text-[10px] text-slate-500 font-bold block uppercase">Tồn Hiện Tại:</span>
-                                <span className="font-black text-sm text-emerald-800">
-                                  {item.currentStockQty.toLocaleString('vi-VN')} {item.unit || 'PCS'}
+                              <p className="font-bold text-slate-800 text-xs">{item.partName || item.partCode}</p>
+                              {item.lastUpdated && (
+                                <span className="text-[10px] text-slate-400 font-medium block">
+                                  Nhập khoang: {new Date(item.lastUpdated).toLocaleString('vi-VN')}
                                 </span>
-                              </div>
+                              )}
                             </div>
 
-                            {/* Call Action Bar */}
-                            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex items-center space-x-2">
-                                <span className="font-bold text-slate-700 text-xs shrink-0">Số lượng gọi:</span>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={item.currentStockQty}
-                                  value={callVal}
-                                  onChange={(e) =>
-                                    setCallQtyMap({
-                                      ...callQtyMap,
-                                      [item.partCode]: Number(e.target.value),
-                                    })
-                                  }
-                                  className={`w-24 px-3 py-1.5 border rounded-xl font-extrabold text-sm ${
-                                    isExceeded
-                                      ? 'bg-rose-50 border-rose-500 text-rose-700 ring-2 ring-rose-200'
-                                      : 'bg-white border-slate-300 text-slate-900'
-                                  }`}
-                                />
-                                <span className="font-bold text-slate-500 text-xs">{item.unit || 'PCS'}</span>
-                              </div>
-
-                              <button
-                                type="button"
-                                disabled={isExceeded || callVal <= 0}
-                                onClick={() => handleDirectCallItem(item)}
-                                className={`px-4 py-2 font-black text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center space-x-1.5 ${
-                                  isExceeded || callVal <= 0
-                                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
-                                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 active:scale-95'
-                                }`}
-                              >
-                                <Zap className="w-4 h-4 fill-amber-950" />
-                                <span>GỌI HÀNG NGAY</span>
-                              </button>
+                            <div className="text-right">
+                              <span className="text-[10px] text-slate-500 font-bold block uppercase">Số lượng trên kệ:</span>
+                              <span className="font-black text-base text-emerald-800">
+                                {item.currentStockQty.toLocaleString('vi-VN')} <span className="text-xs font-bold text-slate-600">{item.unit || 'PCS'}</span>
+                              </span>
                             </div>
-
-                            {/* Validation warning if exceeded stock */}
-                            {isExceeded && (
-                              <p className="text-[11px] font-bold text-rose-600 bg-rose-50 p-2 rounded-xl border border-rose-200 flex items-center space-x-1">
-                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                <span>⚠️ Không được gọi quá số lượng tồn kho trên kệ (Tối đa: {item.currentStockQty} {item.unit})!</span>
-                              </p>
-                            )}
                           </div>
-                        );
-                      })
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* TAB 2: MANAGE SHELF & ADD PARTS */}
-              {modalTab === 'manage' && (
+              {/* TAB 2: MANAGE SHELF & ADD PARTS (Restricted to Authorized Accounts) */}
+              {modalTab === 'manage' && canConfigure && (
                 <div className="space-y-5">
                   {/* Edit Shelf Header Info (Model, Desc) */}
                   <form onSubmit={handleSaveShelfInfo} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
@@ -1086,3 +1022,4 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
     </div>
   );
 };
+

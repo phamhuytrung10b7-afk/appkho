@@ -2507,6 +2507,7 @@ export const storageService = {
             'users',
           ],
           isActive: true,
+          canConfigureBuffer: true,
           createdAt: new Date().toISOString(),
         },
         {
@@ -2587,6 +2588,7 @@ export const storageService = {
       fullName: params.fullName.trim(),
       roleTitle: params.roleTitle.trim() || 'Nhân viên',
       allowedTabs: params.allowedTabs && params.allowedTabs.length > 0 ? params.allowedTabs : ['dashboard'],
+      canConfigureBuffer: Boolean(params.canConfigureBuffer),
       isActive: params.isActive !== undefined ? params.isActive : true,
       createdAt: new Date().toISOString(),
     };
@@ -2667,6 +2669,13 @@ export const storageService = {
       roleTitle.includes('giám đốc') ||
       roleTitle.includes('quản lý')
     );
+  },
+
+  canConfigureOutbuffer(user?: UserAccount | null): boolean {
+    const target = user !== undefined ? user : this.getCurrentUser();
+    if (!target) return false;
+    if (this.isAdminUser(target)) return true;
+    return Boolean(target.canConfigureBuffer);
   },
 
   login(username: string, password: string): { success: boolean; user?: UserAccount; error?: string } {

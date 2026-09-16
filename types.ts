@@ -100,6 +100,7 @@ export interface UserAccount {
   fullName: string; // Họ và tên
   roleTitle: string; // Chức danh / Vai trò (vd: Quản trị viên, Thủ kho...)
   allowedTabs: ViewTab[]; // Chức năng được phép truy cập
+  canConfigureBuffer?: boolean; // Quyền cấu hình kệ & nhập linh kiện trên sơ đồ OUTBUFFER
   isActive: boolean; // Trạng thái hoạt động
   createdAt: string;
   lastLoginAt?: string;

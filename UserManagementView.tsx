@@ -199,6 +199,7 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
   const [formFullName, setFormFullName] = useState('');
   const [formRoleTitle, setFormRoleTitle] = useState('');
   const [formAllowedTabs, setFormAllowedTabs] = useState<ViewTab[]>(['dashboard']);
+  const [formCanConfigureBuffer, setFormCanConfigureBuffer] = useState(false);
   const [formIsActive, setFormIsActive] = useState(true);
 
   // Password reset modal
@@ -217,6 +218,7 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
     setFormFullName('');
     setFormRoleTitle('Thủ Kho');
     setFormAllowedTabs(['dashboard', 'parts', 'stock_in', 'stock_out']);
+    setFormCanConfigureBuffer(false);
     setFormIsActive(true);
     setIsAddEditModalOpen(true);
   };
@@ -228,6 +230,7 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
     setFormFullName(u.fullName);
     setFormRoleTitle(u.roleTitle);
     setFormAllowedTabs(u.allowedTabs || []);
+    setFormCanConfigureBuffer(Boolean(u.canConfigureBuffer));
     setFormIsActive(u.isActive);
     setIsAddEditModalOpen(true);
   };
@@ -265,6 +268,7 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
           fullName: formFullName,
           roleTitle: formRoleTitle,
           allowedTabs: formAllowedTabs,
+          canConfigureBuffer: formCanConfigureBuffer,
           isActive: formIsActive,
         };
         if (formPassword.trim()) {
@@ -286,6 +290,7 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
           fullName: formFullName,
           roleTitle: formRoleTitle,
           allowedTabs: formAllowedTabs,
+          canConfigureBuffer: formCanConfigureBuffer,
           isActive: formIsActive,
         });
         setMessage({ type: 'success', text: `Đã tạo tài khoản [${formUsername}] thành công!` });
@@ -399,18 +404,37 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
     }
   };
 
+  const handleToggleCardBufferPermission = (targetUser: UserAccount) => {
+    const newPerm = !targetUser.canConfigureBuffer;
+    try {
+      storageService.updateUser(targetUser.id, { canConfigureBuffer: newPerm });
+      refreshUsers();
+      setMessage({
+        type: 'success',
+        text: `Đã ${newPerm ? 'CẤP QUYỀN' : 'HỦY QUYỀN'} Cấu hình Kệ & Nhập linh kiện Outbuffer cho [@${targetUser.username}]!`,
+      });
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || 'Lỗi khi cập nhật quyền kệ Outbuffer' });
+    }
+  };
+
   // Preset permissions helper
   const applyPresetPermissions = (preset: 'ALL' | 'THUKHO' | 'KITTING' | 'DAYCHUYEN' | 'NONE') => {
     if (preset === 'ALL') {
       setFormAllowedTabs(ALL_TAB_DEFINITIONS.map((t) => t.id));
+      setFormCanConfigureBuffer(true);
     } else if (preset === 'THUKHO') {
       setFormAllowedTabs(['dashboard', 'parts', 'stock_in', 'stock_out', 'warehouse_map', 'andon_calling', 'andon_delivering', 'andon_history', 'bin_card', 'reports']);
+      setFormCanConfigureBuffer(false);
     } else if (preset === 'KITTING') {
       setFormAllowedTabs(['kitting', 'buffer']);
+      setFormCanConfigureBuffer(false);
     } else if (preset === 'DAYCHUYEN') {
       setFormAllowedTabs(['andon_request', 'andon_calling', 'andon_delivering', 'andon_history', 'buffer']);
+      setFormCanConfigureBuffer(false);
     } else if (preset === 'NONE') {
       setFormAllowedTabs([]);
+      setFormCanConfigureBuffer(false);
     }
   };
 
@@ -677,6 +701,26 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                       );
                     })}
                   </div>
+                </div>
+
+                {/* Special Permission: OUTBUFFER Shelf Configuration */}
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center space-x-1.5 text-[11px] text-slate-700">
+                    <Shield className="w-3.5 h-3.5 text-indigo-600" />
+                    <span className="font-bold">Quyền Cấu Hình Kệ OUTBUFFER:</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleCardBufferPermission(u)}
+                    className={`px-2.5 py-1 rounded-lg font-black text-[10px] transition-all cursor-pointer flex items-center space-x-1 border ${
+                      u.canConfigureBuffer || storageService.isAdminUser(u)
+                        ? 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                        : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700'
+                    }`}
+                    title="Bấm để cấp hoặc hủy quyền cấu hình vị trí kệ và nhập linh kiện trên sơ đồ OUTBUFFER"
+                  >
+                    <span>{u.canConfigureBuffer || storageService.isAdminUser(u) ? '✓ ĐÃ CẤP QUYỀN' : '✕ CHƯA CẤP QUYỀN'}</span>
+                  </button>
                 </div>
 
                 {/* Card Action Buttons */}
@@ -1148,6 +1192,27 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Special Permission: Outbuffer Shelf Configuration */}
+                <div className="p-3.5 bg-indigo-50/80 rounded-2xl border border-indigo-200 space-y-1.5 mt-3">
+                  <label className="flex items-start space-x-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={formCanConfigureBuffer}
+                      onChange={(e) => setFormCanConfigureBuffer(e.target.checked)}
+                      className="w-4 h-4 text-indigo-600 rounded-md focus:ring-indigo-500 cursor-pointer shrink-0 mt-0.5"
+                    />
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-black text-indigo-950 block flex items-center space-x-1.5">
+                        <Shield className="w-3.5 h-3.5 text-indigo-600 inline" />
+                        <span>Cấp Quyền Cấu Hình Kệ & Nhập Linh Kiện OUTBUFFER</span>
+                      </span>
+                      <span className="text-[11px] text-indigo-800 font-medium block leading-relaxed">
+                        Cho phép tài khoản này tạo/sửa/xóa vị trí kệ và cấu hình nhập linh kiện lên kệ trên sơ đồ OUTBUFFER. (Mặc định các tài khoản khác chỉ được xem chi tiết linh kiện trên kệ, không được gọi hàng hay sửa cấu hình).
+                      </span>
+                    </div>
+                  </label>
                 </div>
               </div>
 
