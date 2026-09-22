@@ -210,7 +210,7 @@ export function parseContainerExcel(
     contDate = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`;
   }
 
-  // 2. Find header row with "Mã VT" / "Tên VT" / "ĐVT" / "XUẤT" / "Nhà cung cấp" / "Ngày SX"
+  // 2. Find header row with "Mã VT" / "Tên VT" / "ĐVT" / "XUẤT" / "Nhà cung cấp" / "Ngày SX" / "Số lượng tem"
   let headerRowIndex = -1;
   let codeCol = -1;
   let nameCol = -1;
@@ -218,6 +218,7 @@ export function parseContainerExcel(
   let qtyCol = -1;
   let supplierCol = -1;
   let mfgDateCol = -1;
+  let printCopiesCol = -1;
 
   for (let r = range.s.r; r <= Math.min(range.s.r + 25, range.e.r); r++) {
     if (isRowHidden(worksheet, r)) continue;
@@ -278,6 +279,21 @@ export function parseContainerExcel(
       ) {
         mfgDateCol = c;
       }
+      if (
+        printCopiesCol === -1 &&
+        (cellText.includes('số lượng tem') ||
+          cellText.includes('sl tem') ||
+          cellText.includes('số tem') ||
+          cellText.includes('tem in') ||
+          cellText.includes('bản in') ||
+          cellText.includes('số bản in') ||
+          cellText.includes('copies') ||
+          cellText.includes('print copies') ||
+          cellText.includes('qty label') ||
+          cellText === 'tem')
+      ) {
+        printCopiesCol = c;
+      }
     }
 
     if (codeCol !== -1 && nameCol !== -1) {
@@ -332,6 +348,17 @@ export function parseContainerExcel(
     if (mfgDateCol === -1 && range.e.c >= 5) mfgDateCol = 5; // Default Col F
   }
 
+  // Fallback for printCopiesCol (Col G / 6 in user's sheet)
+  if (printCopiesCol === -1) {
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cellText = getCellData(worksheet, headerRowIndex, c).formatted.toLowerCase();
+      if (cellText.includes('tem') || cellText.includes('copies') || cellText.includes('bản in')) {
+        printCopiesCol = c;
+        break;
+      }
+    }
+  }
+
   const items: ContainerImportItem[] = [];
   let totalQuantity = 0;
   let newPartsCount = 0;
@@ -356,12 +383,22 @@ export function parseContainerExcel(
     const qtyCell = getCellData(worksheet, r, qtyCol);
     const supplierCell = supplierCol !== -1 ? getCellData(worksheet, r, supplierCol) : { val: '', formatted: '', formula: '' };
     const mfgDateCell = mfgDateCol !== -1 ? getCellData(worksheet, r, mfgDateCol) : { val: '', formatted: '', formula: '' };
+    const printCopiesCell = printCopiesCol !== -1 ? getCellData(worksheet, r, printCopiesCol) : { val: '', formatted: '', formula: '' };
 
     const rawCode = String(codeCell.formatted || codeCell.val || '').trim();
     const rawName = String(nameCell.formatted || nameCell.val || '').trim();
     const rawUnit = String(unitCell.formatted || unitCell.val || 'Cái').trim();
     const rawSupplier = String(supplierCell.formatted || supplierCell.val || '').trim();
     let rawMfgDate = String(mfgDateCell.formatted || mfgDateCell.val || '').trim();
+
+    // Parse print copies (number of labels to print for this item)
+    let printCopies = 1;
+    if (printCopiesCol !== -1) {
+      const parsedCopies = parseContainerQuantity(printCopiesCell);
+      if (parsedCopies > 0) {
+        printCopies = parsedCopies;
+      }
+    }
 
     // If mfgDate is numeric Excel date code, format it to DD/MM/YYYY
     if (!rawMfgDate && typeof mfgDateCell.val === 'number') {
@@ -422,7 +459,7 @@ export function parseContainerExcel(
       mfgDate: rawMfgDate,
       matchedPart,
       isNewPart,
-      printCopies: 1, // Default 1 label per line item
+      printCopies: printCopies, // Số lượng tem cần in (đọc từ cột 'Số lượng tem' trong file Excel, mặc định: 1)
       qrPayload,
     });
   }

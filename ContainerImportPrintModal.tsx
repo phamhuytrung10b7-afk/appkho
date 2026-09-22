@@ -376,7 +376,8 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
   const printLabelItems: ContainerImportItem[] = [];
   if (parseResult) {
     parseResult.items.forEach((item) => {
-      for (let i = 0; i < item.printCopies; i++) {
+      const copies = Math.max(1, item.printCopies || 1);
+      for (let i = 0; i < copies; i++) {
         printLabelItems.push(item);
       }
     });
@@ -398,15 +399,29 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
       )
     : [];
 
-  // Group labels into rows based on selected layout (tem đôi = 2 tem/hàng)
-  const labelRows: ContainerImportItem[][] = [];
+  // Group 1 item per distinct part for UI Preview & Progress Tracking (1 tem / 1 linh kiện để theo dõi không bị loạn)
+  const previewLabelRows: ContainerImportItem[][] = [];
+  if (parseResult) {
+    if (labelLayout === 'double') {
+      for (let i = 0; i < parseResult.items.length; i += 2) {
+        previewLabelRows.push(parseResult.items.slice(i, i + 2));
+      }
+    } else {
+      for (let i = 0; i < parseResult.items.length; i++) {
+        previewLabelRows.push([parseResult.items[i]]);
+      }
+    }
+  }
+
+  // Group all copies for physical printing (hidden print container)
+  const printLabelRows: ContainerImportItem[][] = [];
   if (labelLayout === 'double') {
     for (let i = 0; i < printLabelItems.length; i += 2) {
-      labelRows.push(printLabelItems.slice(i, i + 2));
+      printLabelRows.push(printLabelItems.slice(i, i + 2));
     }
   } else {
     for (let i = 0; i < printLabelItems.length; i++) {
-      labelRows.push([printLabelItems[i]]);
+      printLabelRows.push([printLabelItems[i]]);
     }
   }
 
@@ -1042,13 +1057,13 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                 </div>
               </div>
 
-              {labelRows.length === 0 ? (
+              {previewLabelRows.length === 0 ? (
                 <div className="p-12 text-center text-slate-500 bg-white rounded-2xl border border-slate-300">
                   Chưa có tem nào được chọn in.
                 </div>
               ) : (
                 <div className="flex flex-wrap justify-center gap-4 pb-8">
-                  {labelRows.map((row, rowIndex) => (
+                  {previewLabelRows.map((row, rowIndex) => (
                     <div
                       key={`label-row-${rowIndex}-${row[0]?.id || row[0]?.tagId || ''}`}
                       className={`bg-white border-2 border-dashed border-slate-400 p-2 rounded-xl shadow-md flex items-center gap-2 bg-amber-50/20 ${
@@ -1078,8 +1093,8 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                   : 'bg-white border-slate-900'
                               }`}
                             >
-                              {/* Scanned Badge */}
-                              <div className="absolute top-1.5 right-1.5 z-10">
+                              {/* Scanned Badge & Print Copies Indicator */}
+                              <div className="absolute top-1.5 right-1.5 z-10 flex items-center space-x-1">
                                 {isScanned ? (
                                   <span className="px-1.5 py-0.5 bg-emerald-600 text-white font-black text-[8px] rounded-xs shadow-xs flex items-center space-x-0.5 uppercase">
                                     <Check className="w-2.5 h-2.5 stroke-[3]" />
@@ -1094,6 +1109,11 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                     CHƯA NHẬP KHO
                                   </span>
                                 )}
+                                {item.printCopies && item.printCopies > 1 ? (
+                                  <span className="px-1.5 py-0.5 bg-slate-900 text-amber-300 font-black text-[8px] rounded-xs shadow-xs">
+                                    x{item.printCopies} tem
+                                  </span>
+                                ) : null}
                               </div>
 
                               {/* Header */}
@@ -1163,6 +1183,11 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
                                   CHƯA NHẬP KHO
                                 </span>
                               )}
+                              {item.printCopies && item.printCopies > 1 ? (
+                                <span className="px-1 py-0.5 bg-slate-900 text-amber-300 font-black text-[7.5px] rounded-xs shadow-xs">
+                                  x{item.printCopies}
+                                </span>
+                              ) : null}
                             </div>
 
                             {/* Left: QR Code */}
@@ -1256,7 +1281,7 @@ export const ContainerImportPrintModal: React.FC<ContainerImportPrintModalProps>
       <div style={{ position: 'absolute', left: '-9999px', top: '-9999px', width: '0', height: '0', overflow: 'hidden' }}>
         <div ref={printRef}>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {labelRows.map((row, rowIndex) => {
+            {printLabelRows.map((row, rowIndex) => {
               const conf = printConfigs[labelLayout];
               return (
                 <div
