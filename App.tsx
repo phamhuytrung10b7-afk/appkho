@@ -20,6 +20,7 @@ import { WarehouseMapView } from './WarehouseMapView';
 import { SettingsView } from './SettingsView';
 import { UserManagementView } from './UserManagementView';
 import { LoginView } from './LoginView';
+import { NgWarehouseView } from './NgWarehouseView';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => storageService.getCurrentUser());
@@ -170,6 +171,11 @@ export default function App() {
     };
   }, [syncCloudAndState]);
 
+  // 🔄 Auto-fetch fresh data from Supabase Cloud whenever user switches tab/menu (No Realtime required)
+  useEffect(() => {
+    syncCloudAndState(false, false);
+  }, [currentTab, syncCloudAndState]);
+
   // Open Electronic Bin Card for a part
   const handleOpenBinCard = (part: Part) => {
     // Refresh part object from storage and reconcile with transaction ledger
@@ -208,6 +214,10 @@ export default function App() {
   const pendingKittingCount = kittingQueue.filter((k) => k.status === 'PENDING_KITTING').length;
   const callingAndonCount = materialCalls.filter((m) => m.status === 'CALLING').length;
   const deliveringAndonCount = materialCalls.filter((m) => m.status === 'DELIVERING').length;
+  const ngCount = parts.filter((p) => {
+    const qty = typeof p.qtyNg === 'number' ? p.qtyNg : Number((p as any).qty_ng || p.qtyNg) || 0;
+    return qty > 0;
+  }).length;
 
   if (isLoadingCloud) {
     return (
@@ -241,6 +251,7 @@ export default function App() {
         pendingKittingCount={pendingKittingCount}
         callingAndonCount={callingAndonCount}
         deliveringAndonCount={deliveringAndonCount}
+        ngCount={ngCount}
         isOpenMobile={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
         currentUser={currentUser}
@@ -349,6 +360,16 @@ export default function App() {
 
           {currentTab === 'stock_out' && (
             <StockOutView parts={parts} settings={settings} onSuccess={refreshData} />
+          )}
+
+          {currentTab === 'ng_warehouse' && (
+            <NgWarehouseView
+              parts={parts}
+              transactions={transactions}
+              settings={settings}
+              onRefresh={refreshData}
+              onOpenBinCard={handleOpenBinCard}
+            />
           )}
 
           {currentTab === 'kitting' && (

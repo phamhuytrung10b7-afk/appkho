@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS public.parts (
     group_name VARCHAR(100) DEFAULT 'Khác',
     unit VARCHAR(50) DEFAULT 'Cái',
     current_stock NUMERIC(15, 2) DEFAULT 0,
+    qty_ng NUMERIC(15, 2) DEFAULT 0,
     min_stock NUMERIC(15, 2) DEFAULT 0,
     max_stock NUMERIC(15, 2) DEFAULT 0,
     location TEXT DEFAULT 'Kho chính',
@@ -45,6 +46,9 @@ CREATE TABLE IF NOT EXISTS public.parts (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Tự động thêm cột qty_ng nếu bảng đã tồn tại từ trước:
+ALTER TABLE public.parts ADD COLUMN IF NOT EXISTS qty_ng NUMERIC(15, 2) DEFAULT 0;
 
 ALTER TABLE public.parts ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow public access on parts" ON public.parts FOR ALL USING (true) WITH CHECK (true);
@@ -59,7 +63,7 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     part_code VARCHAR(100) NOT NULL,
     part_name TEXT NOT NULL,
     unit VARCHAR(50) DEFAULT 'Cái',
-    type VARCHAR(10) NOT NULL CHECK (type IN ('IN', 'OUT')),
+    type VARCHAR(30) NOT NULL,
     quantity NUMERIC(15, 2) NOT NULL,
     date TIMESTAMPTZ DEFAULT NOW(),
     person VARCHAR(255) NOT NULL,
@@ -71,6 +75,11 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     stock_after NUMERIC(15, 2) DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Nới lỏng hoặc cập nhật ràng buộc type nếu có
+ALTER TABLE public.transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+ALTER TABLE public.transactions ADD CONSTRAINT transactions_type_check 
+  CHECK (type IN ('IN', 'OUT', 'AUDIT_ADJUSTMENT', 'TRANSFER_TO_NG', 'IMPORT_NG', 'EXPORT_NG_RTV', 'EXPORT_NG_SCRAP'));
 
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow public access on transactions" ON public.transactions FOR ALL USING (true) WITH CHECK (true);

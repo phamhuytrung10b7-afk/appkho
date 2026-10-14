@@ -31,34 +31,35 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
   onClose,
   settings,
 }) => {
-  if (!isOpen || !part) return null;
-
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [filterText, setFilterText] = useState('');
 
   // Fetch chronological bin card transaction history
   const allHistory = useMemo(() => {
+    if (!part) return [];
     return storageService.getBinCardHistory(part.id);
-  }, [part.id]);
+  }, [part?.id]);
 
   // Actual current ending balance from transaction ledger:
   const actualCurrentStock = useMemo(() => {
+    if (!part) return 0;
     if (allHistory.length > 0) {
       return allHistory[allHistory.length - 1].stockAfter;
     }
     return part.currentStock;
-  }, [allHistory, part.currentStock]);
+  }, [allHistory, part?.currentStock]);
 
   // If part.currentStock diverged from ledger, auto reconcile in background and persist
   useEffect(() => {
+    if (!part) return;
     if (allHistory.length > 0) {
       const latestStock = allHistory[allHistory.length - 1].stockAfter;
       if (part.currentStock !== latestStock) {
         storageService.reconcilePartStock(part.id);
       }
     }
-  }, [part.id, part.currentStock, allHistory]);
+  }, [part?.id, part?.currentStock, allHistory]);
 
   // Filter history
   const filteredHistory = useMemo(() => {
@@ -71,7 +72,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
       if (filterText) {
         const query = filterText.toLowerCase();
         const matchNote = t.notes?.toLowerCase().includes(query);
-        const matchPerson = t.person.toLowerCase().includes(query);
+        const matchPerson = t.person?.toLowerCase().includes(query);
         const matchPo = t.productionOrder?.toLowerCase().includes(query);
         const matchReason = t.reasonOrPurpose?.toLowerCase().includes(query);
         if (!matchNote && !matchPerson && !matchPo && !matchReason) return false;
@@ -82,12 +83,14 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
 
   // Calculate part multi-location breakdown (if actual stock is 0, zero out location quantities)
   const partLocations = useMemo(() => {
+    if (!part) return [];
     const rawLocs = storageService.getPartLocations(part);
     if (actualCurrentStock === 0) {
       return rawLocs.map((l) => ({ ...l, quantity: 0 }));
     }
     return rawLocs;
   }, [part, actualCurrentStock]);
+
   const totalIn = useMemo(() => {
     return filteredHistory
       .filter((t) => t.type === 'IN')
@@ -105,8 +108,12 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
   };
 
   const handleExportExcel = () => {
-    storageService.exportBinCardToExcel(part, filteredHistory);
+    if (part) {
+      storageService.exportBinCardToExcel(part, filteredHistory);
+    }
   };
+
+  if (!isOpen || !part) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">

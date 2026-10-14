@@ -16,8 +16,6 @@ export const PartModal: React.FC<PartModalProps> = ({
   onSave,
   partToEdit,
 }) => {
-  if (!isOpen) return null;
-
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -95,6 +93,8 @@ export const PartModal: React.FC<PartModalProps> = ({
     );
     onClose();
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">

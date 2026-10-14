@@ -2,7 +2,7 @@ import { Part, PartLocationStock, Transaction, StockCheckRecord, AppSettings, Co
 import { initialParts, initialTransactions, initialSettings } from './sampleData';
 import { MasterKittingTag, SAMPLE_MASTER_TAGS } from './masterExcelParser';
 import { getPartGroupConfig } from './partGroupColors';
-import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS } from './supabaseStorage';
+import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS, batchExecuteNgTransaction } from './supabaseStorage';
 import { getActiveSupabaseClient } from './supabase';
 import * as XLSX from 'xlsx';
 
@@ -394,6 +394,27 @@ export const storageService = {
     localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(txs));
     supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, txs);
     supabaseRelationalStore.upsertTransactions(txs);
+  },
+
+  // --- KHO NG (HÀNG LỖI) HELPERS & BATCH PROCESSOR ---
+  getNgParts(): Part[] {
+    const parts = this.getParts();
+    return parts.filter((p) => typeof p.qtyNg === 'number' && p.qtyNg > 0);
+  },
+
+  getNgTransactions(): Transaction[] {
+    const txs = this.getTransactions();
+    const ngTypes = ['TRANSFER_TO_NG', 'IMPORT_NG', 'EXPORT_NG_RTV', 'EXPORT_NG_SCRAP'];
+    return txs
+      .filter((t) => ngTypes.includes(t.type))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  },
+
+  async batchExecuteNgTransaction(params: {
+    partsToUpdate: Part[];
+    transactionsToInsert: Transaction[];
+  }): Promise<{ success: boolean; message?: string }> {
+    return batchExecuteNgTransaction(params);
   },
 
 
@@ -2536,99 +2557,6 @@ export const storageService = {
       isStockDeducted: false,
     };
 
-    // IMMEDIATELY CONSUME / DEDUCT STOCK AT MOMENT OF CALL (User requirement)
-    if (isDirect) {
-      // Consume from Pending Kitting Queue (Danh Sách Chờ Bóc Tách)
-      const queue = this.getKittingQueue();
-      const pendingIndices: number[] = [];
-      queue.forEach((item, index) => {
-        if (
-          item.status === 'PENDING_KITTING' &&
-          item.partCode.trim().toLowerCase() === params.partCode.trim().toLowerCase()
-        ) {
-          pendingIndices.push(index);
-        }
-      });
-
-      // Sort by FIFO (createdAt ASC)
-      pendingIndices.sort((a, b) => new Date(queue[a].createdAt).getTime() - new Date(queue[b].createdAt).getTime());
-
-      let remainingToDeduct = params.requestedQty;
-      const nowIso = new Date().toISOString();
-
-      for (const pIdx of pendingIndices) {
-        if (remainingToDeduct <= 0) break;
-        const pItem = queue[pIdx];
-        if (pItem.rawQuantity <= remainingToDeduct) {
-          remainingToDeduct -= pItem.rawQuantity;
-          queue[pIdx] = {
-            ...pItem,
-            kittedQuantity: pItem.rawQuantity,
-            status: 'DELIVERED',
-            bufferLocation: 'Giao trực tiếp DCLR',
-            operatorName: params.requestedBy || 'Logistics (Giao Trực Tiếp DCLR)',
-            endTime: nowIso,
-            durationMinutes: 5,
-          };
-        } else {
-          const consumedPortion = remainingToDeduct;
-          queue[pIdx] = {
-            ...pItem,
-            rawQuantity: pItem.rawQuantity - consumedPortion,
-          };
-          queue.push({
-            id: 'kit-dclr-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
-            transactionId: pItem.transactionId,
-            partCode: pItem.partCode,
-            partName: pItem.partName,
-            unit: pItem.unit,
-            rawQuantity: consumedPortion,
-            kittedQuantity: consumedPortion,
-            scrapQuantity: 0,
-            bufferLocation: 'Giao trực tiếp DCLR',
-            status: 'DELIVERED',
-            operatorName: params.requestedBy || 'Logistics (Giao Trực Tiếp DCLR)',
-            createdAt: pItem.createdAt,
-            endTime: nowIso,
-            durationMinutes: 5,
-          });
-          remainingToDeduct = 0;
-        }
-      }
-      this.saveKittingQueue(queue);
-      newReq.isStockDeducted = true;
-    } else if (params.bufferLocation) {
-      // Deduct from Outbuffer Shelf Stock
-      const buffers = this.getBufferLocations();
-      const bIdx = buffers.findIndex((b) => b.locationId === params.bufferLocation);
-      if (bIdx >= 0) {
-        const targetBuf = buffers[bIdx];
-        let items: BufferPartItem[] = targetBuf.items ? [...targetBuf.items] : [];
-
-        const itemIdx = items.findIndex((i) => i.partCode?.trim().toLowerCase() === params.partCode?.trim().toLowerCase());
-        if (itemIdx >= 0) {
-          items[itemIdx].currentStockQty = Math.max(0, items[itemIdx].currentStockQty - params.requestedQty);
-          if (items[itemIdx].currentStockQty <= 0) {
-            items.splice(itemIdx, 1);
-          }
-        }
-
-        const remaining = items.reduce((sum, i) => sum + (i.currentStockQty || 0), 0);
-        buffers[bIdx] = {
-          ...targetBuf,
-          items,
-          partCode: items[0]?.partCode,
-          partName: items.length === 1 ? items[0]?.partName : items.length > 1 ? `${items.length} loại linh kiện` : undefined,
-          unit: items[0]?.unit || 'PCS',
-          currentStockQty: remaining,
-          status: remaining <= 0 ? 'EMPTY' : 'CALL_PENDING',
-          lastUpdated: new Date().toISOString(),
-        };
-        this.saveBufferLocations(buffers);
-        newReq.isStockDeducted = true;
-      }
-    }
-
     reqs.unshift(newReq);
     this.saveMaterialCallRequests(reqs);
 
@@ -2963,6 +2891,7 @@ export const storageService = {
             'parts',
             'stock_in',
             'stock_out',
+            'ng_warehouse',
             'warehouse_map',
             'kitting',
             'buffer',
@@ -2989,6 +2918,7 @@ export const storageService = {
             'parts',
             'stock_in',
             'stock_out',
+            'ng_warehouse',
             'warehouse_map',
             'bin_card',
             'reports',
@@ -3022,16 +2952,21 @@ export const storageService = {
     }
     try {
       const parsed: UserAccount[] = JSON.parse(data);
-      // Migrate legacy 'andon' tab to new granular tabs if needed
+      // Migrate legacy tabs & add ng_warehouse if applicable
       return parsed.map((u) => {
-        if (u.allowedTabs && u.allowedTabs.includes('andon' as any)) {
-          const newTabs = u.allowedTabs.filter((t) => (t as any) !== 'andon');
-          if (!newTabs.includes('andon_request')) newTabs.push('andon_request');
-          if (!newTabs.includes('andon_calling')) newTabs.push('andon_calling');
-          if (!newTabs.includes('andon_delivering')) newTabs.push('andon_delivering');
-          return { ...u, allowedTabs: newTabs };
+        let tabs = [...(u.allowedTabs || [])];
+        if (tabs.includes('andon' as any)) {
+          tabs = tabs.filter((t) => (t as any) !== 'andon');
+          if (!tabs.includes('andon_request')) tabs.push('andon_request');
+          if (!tabs.includes('andon_calling')) tabs.push('andon_calling');
+          if (!tabs.includes('andon_delivering')) tabs.push('andon_delivering');
         }
-        return u;
+        if (u.username === 'admin' || tabs.includes('stock_in') || tabs.includes('stock_out')) {
+          if (!tabs.includes('ng_warehouse')) {
+            tabs.push('ng_warehouse');
+          }
+        }
+        return { ...u, allowedTabs: tabs };
       });
     } catch {
       return [];

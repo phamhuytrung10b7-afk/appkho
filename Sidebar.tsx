@@ -31,6 +31,7 @@ interface SidebarProps {
   pendingKittingCount?: number;
   callingAndonCount?: number;
   deliveringAndonCount?: number;
+  ngCount?: number;
   isOpenMobile?: boolean;
   onCloseMobile?: () => void;
   currentUser?: UserAccount | null;
@@ -45,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   pendingKittingCount = 0,
   callingAndonCount = 0,
   deliveringAndonCount = 0,
+  ngCount = 0,
   isOpenMobile = false,
   onCloseMobile,
   currentUser,
@@ -61,6 +63,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     { id: 'stock_in', label: 'Nhập kho', icon: ArrowDownLeft },
     { id: 'stock_out', label: 'Xuất kho', icon: ArrowUpRight },
+    {
+      id: 'ng_warehouse',
+      label: 'Kho NG (Hàng Lỗi)',
+      icon: ShieldAlert,
+      badge: ngCount > 0 ? ngCount : undefined,
+      badgeColor: 'bg-rose-600',
+      section: 'Kho Hàng Lỗi',
+    },
     { id: 'warehouse_map', label: 'Sơ đồ kho (Vị trí)', icon: MapPin },
     {
       id: 'kitting',

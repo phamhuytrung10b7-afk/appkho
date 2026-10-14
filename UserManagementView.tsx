@@ -59,6 +59,7 @@ export const ALL_TAB_DEFINITIONS: { id: ViewTab; label: string; icon: React.Elem
   { id: 'parts', label: 'Danh sách linh kiện', icon: Package, category: 'Kho Cốt Lõi' },
   { id: 'stock_in', label: 'Nhập kho', icon: ArrowDownLeft, category: 'Kho Cốt Lõi' },
   { id: 'stock_out', label: 'Xuất kho', icon: ArrowUpRight, category: 'Kho Cốt Lõi' },
+  { id: 'ng_warehouse', label: 'Kho NG (Hàng Lỗi)', icon: ShieldAlert, category: 'Kho Lỗi & Phế Phẩm' },
   { id: 'warehouse_map', label: 'Sơ đồ kho (Vị trí)', icon: MapPin, category: 'Kho Cốt Lõi' },
   
   { id: 'kitting', label: 'Khu Bóc Tách (Kitting)', icon: Scissors, category: 'Kitting & Logistics' },

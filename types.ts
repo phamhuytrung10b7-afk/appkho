@@ -1,4 +1,11 @@
-export type TransactionType = 'IN' | 'OUT' | 'AUDIT_ADJUSTMENT';
+export type TransactionType =
+  | 'IN'
+  | 'OUT'
+  | 'AUDIT_ADJUSTMENT'
+  | 'TRANSFER_TO_NG'
+  | 'IMPORT_NG'
+  | 'EXPORT_NG_RTV'
+  | 'EXPORT_NG_SCRAP';
 
 export interface PartLocationStock {
   locationName: string; // e.g. "Kệ A1"
@@ -14,7 +21,8 @@ export interface Part {
   location: string; // Vị trí lưu tổng hợp (e.g. Kệ A1 (2000), Kệ A2 (1647))
   locations?: PartLocationStock[]; // Chi tiết phân bổ tồn kho theo từng kệ
   unit: string; // Đơn vị (e.g. Cái, Bộ, Cuộn, Con, Kg...)
-  currentStock: number; // Tổng tồn hiện tại
+  currentStock: number; // Tổng tồn hiện tại (Kho chính)
+  qtyNg?: number; // Số lượng tồn kho NG (Hàng lỗi)
   minStock: number; // Tồn tối thiểu
   barcode: string; // Mã vạch
   qrCode: string; // Mã QR
@@ -35,10 +43,14 @@ export interface Transaction {
   person: string; // Người thực hiện (Người nhập hoặc Người lấy)
   locationId?: string; // Nơi lưu trữ thực tế
   productionOrder?: string; // Lệnh sản xuất (e.g. LSX-2026-088)
-  reasonOrPurpose?: string; // Lý do nhập / Mục đích xuất
+  reasonOrPurpose?: string; // Lý do nhập / Mục đích xuất / Lý do lỗi
+  ngReason?: string; // Do Nhà Cung Cấp / Do Thao Tác Nội Bộ / etc.
+  ngType?: 'VENDOR' | 'INTERNAL' | 'OTHER';
   notes?: string; // Ghi chú
-  stockBefore: number; // Tồn trước giao dịch
-  stockAfter: number; // Tồn cuối sau giao dịch
+  stockBefore: number; // Tồn kho chính trước giao dịch
+  stockAfter: number; // Tồn kho chính sau giao dịch
+  ngStockBefore?: number; // Tồn kho NG trước giao dịch
+  ngStockAfter?: number; // Tồn kho NG sau giao dịch
 }
 
 export interface WarehouseLocation {
@@ -87,6 +99,7 @@ export type ViewTab =
   | 'andon_calling'
   | 'andon_delivering'
   | 'andon_history'
+  | 'ng_warehouse'
   | 'bin_card'
   | 'warehouse_map'
   | 'reports'
