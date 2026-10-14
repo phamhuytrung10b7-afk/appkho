@@ -109,14 +109,23 @@ export interface UserAccount {
 export interface KittingQueueItem {
   id: string;
   transactionId: string; // liên kết phiếu Xuất Kho thô gốc
+  voucherCode?: string; // Mã phiếu xuất kho (e.g. "PXK-EXCEL-001" hoặc người dùng tự đặt)
+  voucherTitle?: string; // Tên / Mô tả phiếu xuất kho
+  sourceBin?: string; // BIN / Vị trí kho đã xuất trước đó để rollback chính xác
+  fifoAllocations?: Array<{
+    locationName: string;
+    quantity: number;
+    lotId?: string;
+    contNumber?: string;
+  }>; // Chi tiết phân bổ FIFO theo BIN
   partCode: string;
   partName: string;
   unit: string;
-  rawQuantity: number; // SL xuất thô carton
+  rawQuantity: number; // SL xuất thô carton / SL cần bóc tách
   kittedQuantity: number; // SL thực tế bóc đóng thùng xanh
   scrapQuantity: number; // SL phế phẩm/hỏng do móp vỡ thùng thô
   bufferLocation: string; // Mã kệ OUTBUFFER, ví dụ: BUFFER-A1-02
-  status: 'PENDING_KITTING' | 'IN_BUFFER' | 'DELIVERED';
+  status: 'PENDING_KITTING' | 'IN_BUFFER' | 'DELIVERED' | 'ROLLED_BACK';
   startTime?: string;
   endTime?: string;
   durationMinutes?: number; // Thời gian bóc tách
@@ -258,6 +267,9 @@ export interface BomExportVoucher {
   person?: string;
   totalPartsCount?: number;
   totalQtyOut?: number;
+  voucherType?: 'BOM' | 'EXCEL' | 'MANUAL';
+  status?: 'ACTIVE' | 'ROLLED_BACK';
+  notes?: string;
 }
 
 export interface ConversionFactor {

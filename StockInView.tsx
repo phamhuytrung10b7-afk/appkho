@@ -19,6 +19,9 @@ import {
   Sparkles,
   ShieldAlert,
   BellRing,
+  Download,
+  Upload,
+  Info,
 } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { SearchableLocationSelect } from './SearchableLocationSelect';
@@ -28,6 +31,8 @@ import { InlineQrScanner } from './InlineQrScanner';
 import { Html5Qrcode } from 'html5-qrcode';
 import { normalizeLocationStr } from './StockOutScanModal';
 import { soundEffects } from './soundEffects';
+import { ExcelStockInModal } from './ExcelStockInModal';
+import { downloadSampleStockInExcel } from './excelStockInOutParser';
 
 interface StockInMessage {
   type: 'success' | 'error';
@@ -150,7 +155,10 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [isContModalOpen, setIsContModalOpen] = useState(false);
 
-  const [mainTab, setMainTab] = useState<'scan' | 'manual'>('scan');
+  const [mainTab, setMainTab] = useState<'scan' | 'manual' | 'excel'>('scan');
+  const [isExcelInModalOpen, setIsExcelInModalOpen] = useState(false);
+  const [excelInFile, setExcelInFile] = useState<File | null>(null);
+  const excelInFileInputRef = useRef<HTMLInputElement>(null);
   const [autoScanHistory, setAutoScanHistory] = useState<
     { id: string; partCode: string; partName: string; qty: number; unit: string; time: string; contNumber?: string; stockAfter: number }[]
   >([]);
@@ -567,7 +575,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
-      {/* Title */}
+      {/* Title & Header Action Buttons */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center space-x-3">
           <div className="p-3 bg-emerald-100 text-emerald-700 rounded-xl">
@@ -579,14 +587,42 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsContModalOpen(true)}
-          className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer"
-        >
-          <FileSpreadsheet className="w-4 h-4 text-amber-300" />
-          <span>In Tem QR Danh Mục Cont (Excel)</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Hidden file input for fast Excel picking */}
+          <input
+            type="file"
+            ref={excelInFileInputRef}
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files[0]) {
+                setExcelInFile(e.target.files[0]);
+                setIsExcelInModalOpen(true);
+              }
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={() => {
+              setExcelInFile(null);
+              setIsExcelInModalOpen(true);
+            }}
+            className="flex items-center space-x-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-black shadow-md transition-all cursor-pointer active:scale-95"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-amber-300" />
+            <span>Nhập Kho Bằng File Excel</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsContModalOpen(true)}
+            className="flex items-center space-x-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+            <span>In Tem QR Cont (Excel)</span>
+          </button>
+        </div>
       </div>
 
       {/* Main Mode Selection Tabs */}
@@ -594,27 +630,44 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         <button
           type="button"
           onClick={() => setMainTab('scan')}
-          className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+          className={`flex-1 py-3 px-3 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center space-x-2 cursor-pointer ${
             mainTab === 'scan'
               ? 'bg-emerald-700 text-white shadow-md'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
           }`}
         >
           <Zap className="w-4 h-4 text-amber-300 animate-pulse" />
-          <span>1. QUÉT MÃ TỰ ĐỘNG (TỰ ĐỘNG CỘNG TỒN KHO)</span>
+          <span>1. QUÉT MÃ TỰ ĐỘNG</span>
         </button>
 
         <button
           type="button"
           onClick={() => setMainTab('manual')}
-          className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+          className={`flex-1 py-3 px-3 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center space-x-2 cursor-pointer ${
             mainTab === 'manual'
               ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
           }`}
         >
           <FileText className="w-4 h-4 text-slate-500" />
-          <span>2. NHẬP KHO THỦ CÔNG (DỰ PHÒNG)</span>
+          <span>2. NHẬP THỦ CÔNG</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setMainTab('excel');
+            setExcelInFile(null);
+            setIsExcelInModalOpen(true);
+          }}
+          className={`flex-1 py-3 px-3 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+            mainTab === 'excel'
+              ? 'bg-gradient-to-r from-emerald-700 to-teal-800 text-white shadow-md'
+              : 'text-slate-700 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4 text-amber-400" />
+          <span>3. NHẬP KHO FILE EXCEL</span>
         </button>
       </div>
 
@@ -1262,6 +1315,123 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         </div>
       </form>
       )}
+
+      {/* TAB 3: EXCEL IMPORT MODE */}
+      {mainTab === 'excel' && (
+        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-xs space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div className="flex items-center space-x-3">
+              <div className="p-3 bg-emerald-100 text-emerald-800 rounded-2xl">
+                <FileSpreadsheet className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900">
+                  NHẬP KHO HÀNG LOẠT BẰNG FILE EXCEL
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Tải lên file Excel theo cấu trúc Ảnh 3. Hệ thống sẽ mở bảng Popup xác nhận các linh kiện hợp lệ trước khi nhập kho.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={downloadSampleStockInExcel}
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all flex items-center space-x-1.5 cursor-pointer shadow-2xs"
+            >
+              <Download className="w-4 h-4 text-emerald-600" />
+              <span>Tải File Mẫu Excel (.xlsx)</span>
+            </button>
+          </div>
+
+          {/* Drag & drop upload card */}
+          <div
+            onClick={() => {
+              setExcelInFile(null);
+              setIsExcelInModalOpen(true);
+            }}
+            className="border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/70 p-8 rounded-3xl text-center cursor-pointer transition-all space-y-3 group"
+          >
+            <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto shadow-xs group-hover:scale-105 transition-transform">
+              <Upload className="w-7 h-7" />
+            </div>
+            <div>
+              <h4 className="text-base font-black text-slate-800">
+                Nhấn vào đây để tải file Excel hoặc mở bảng Popup kiểm tra
+              </h4>
+              <p className="text-xs text-slate-500 mt-1 max-w-lg mx-auto">
+                Hệ thống tự động đọc Cột 1 (STT), Cột 2 (Mã VT), Cột 3 (Tên VT), Cột 4 (ĐVT), Cột 5 (SL đề nghị), Cột 8 (Vị trí nhập kho). Bỏ qua cột 6, 7.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-md transition-all inline-flex items-center space-x-2"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-amber-300" />
+              <span>Chọn File Excel & Bắt Đầu Nhập Kho</span>
+            </button>
+          </div>
+
+          {/* Quick Specifications Guide */}
+          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs space-y-2">
+            <h5 className="font-extrabold text-slate-800 flex items-center space-x-1.5">
+              <Info className="w-4 h-4 text-blue-600" />
+              <span>Quy cách các cột file Excel (Chuẩn theo Ảnh 3):</span>
+            </h5>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] pt-1">
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột A (1):</span>
+                <strong className="text-slate-800 font-bold">STT</strong>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột B (2):</span>
+                <strong className="text-emerald-700 font-black">Mã VT (Mã LK)</strong>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột C (3):</span>
+                <strong className="text-slate-800 font-bold">Tên VT</strong>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột D (4):</span>
+                <strong className="text-slate-800 font-bold">ĐVT</strong>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột E (5):</span>
+                <strong className="text-blue-700 font-black">SL đề nghị (Nhập)</strong>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột F (6), G (7):</span>
+                <span className="text-slate-400 italic">Bỏ qua</span>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Cột H (8):</span>
+                <strong className="text-amber-700 font-black">Vị trí nhập kho</strong>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200">
+                <span className="text-slate-400 block font-mono">Số thập phân:</span>
+                <span className="text-emerald-700 font-bold">3,90 / 1.000,00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Excel Stock In Modal (Image 3) */}
+      <ExcelStockInModal
+        isOpen={isExcelInModalOpen}
+        onClose={() => {
+          setIsExcelInModalOpen(false);
+          setExcelInFile(null);
+        }}
+        parts={parts}
+        settings={settings}
+        initialFile={excelInFile}
+        onSuccess={() => {
+          onSuccess();
+          setIsExcelInModalOpen(false);
+          setExcelInFile(null);
+        }}
+      />
 
       {/* QR Scanner Modal */}
       <QrScannerModal

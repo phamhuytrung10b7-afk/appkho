@@ -172,8 +172,9 @@ export default function App() {
 
   // Open Electronic Bin Card for a part
   const handleOpenBinCard = (part: Part) => {
-    // Refresh part object from storage to get latest stock
-    const latestPart = storageService.getPartById(part.id) || part;
+    // Refresh part object from storage and reconcile with transaction ledger
+    const reconciled = storageService.reconcilePartStock(part.id);
+    const latestPart = reconciled || storageService.getPartById(part.id) || part;
     setSelectedBinCardPart(latestPart);
     setIsBinCardOpen(true);
   };

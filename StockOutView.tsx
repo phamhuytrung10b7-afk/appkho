@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part, AppSettings, BomExportVoucher } from './types';
 import { storageService } from './storage';
-import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X } from 'lucide-react';
+import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { QrScannerModal } from './QrScannerModal';
 import { InlineQrScanner } from './InlineQrScanner';
 import { StockOutScanModal } from './StockOutScanModal';
+import { ExcelStockOutFifoModal } from './ExcelStockOutFifoModal';
+import { downloadSampleStockOutExcel } from './excelStockInOutParser';
 import { printHtml } from './printHelper';
 
 interface StockOutViewProps {
@@ -53,6 +55,9 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
   const [notes, setNotes] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isExcelOutModalOpen, setIsExcelOutModalOpen] = useState(false);
+  const [excelOutFile, setExcelOutFile] = useState<File | null>(null);
+  const excelOutFileInputRef = useRef<HTMLInputElement>(null);
 
   // Tab #1 Priority: XUẤT THEO MODEL (BOM)
   const [mainTab, setMainTab] = useState<'model' | 'scan' | 'manual'>('model');
@@ -227,14 +232,28 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       {/* Title */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex items-center space-x-3">
-        <div className="p-3 bg-blue-100 text-blue-700 rounded-xl">
-          <ArrowUpRight className="w-6 h-6" />
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center space-x-3">
+          <div className="p-3 bg-blue-100 text-blue-700 rounded-xl">
+            <ArrowUpRight className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">PHIẾU XUẤT KHO LINH KIỆN</h2>
+            <p className="text-xs text-slate-500">Tự động trừ tồn kho, liên kết mã lệnh sản xuất, ghi thời gian chính xác và chống xuất âm kho.</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-lg font-bold text-slate-900">PHIẾU XUẤT KHO LINH KIỆN</h2>
-          <p className="text-xs text-slate-500">Tự động trừ tồn kho, liên kết mã lệnh sản xuất, ghi thời gian chính xác và chống xuất âm kho.</p>
-        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            setExcelOutFile(null);
+            setIsExcelOutModalOpen(true);
+          }}
+          className="flex items-center space-x-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 text-white rounded-xl text-xs font-black shadow-md transition-all cursor-pointer active:scale-95"
+        >
+          <FileSpreadsheet className="w-4 h-4 text-amber-300" />
+          <span>Xuất Kho Bằng File Excel (FIFO)</span>
+        </button>
       </div>
 
       {/* Main Mode Selection Tabs */}
@@ -501,6 +520,10 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     // Perform stock out with FIFO location logging & printable list creation
                     try {
                       let totalOut = 0;
+                      const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+                      const todayCount = storageService.getBomExportVouchers().filter((v) => v.createdAt && v.createdAt.startsWith(new Date().toISOString().slice(0, 10))).length + 1;
+                      const bomVoucherCode = `PXK-BOM-${todayStr}-${String(todayCount).padStart(3, '0')}`;
+
                       const printedItems: Array<{
                         partCode: string;
                         partName: string;
@@ -543,6 +566,9 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                             reasonOrPurpose: 'Sản xuất theo Model (BOM)',
                             notes: `SL SX: ${modelQty} bộ [FIFO: ${locationName}]`,
                             locationId: locationName,
+                            voucherCode: bomVoucherCode,
+                            voucherTitle: `Model BOM: ${selectedBom.name}`,
+                            sourceBin: locationName,
                           });
 
                           printedItems.push({
@@ -559,13 +585,25 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                       });
 
                       // Save voucher to persistent history
-                      const savedVoucher = storageService.addBomExportVoucher({
+                      const totalQtyOut = printedItems.reduce((sum, i) => sum + (i.totalQtyOut || 0), 0);
+                      const savedVoucher: BomExportVoucher = {
+                        id: 'vxk-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+                        voucherCode: bomVoucherCode,
                         modelName: selectedBom.name,
                         modelQty,
+                        createdAt: new Date().toISOString(),
                         dateTime: dateTime || new Date().toISOString(),
                         person: person.trim() || 'Lê Hoàng Nam',
                         items: printedItems,
-                      });
+                        totalPartsCount: printedItems.length,
+                        totalQtyOut,
+                        voucherType: 'BOM',
+                        status: 'ACTIVE',
+                      };
+
+                      const existingVouchers = storageService.getBomExportVouchers();
+                      existingVouchers.unshift(savedVoucher);
+                      storageService.saveBomExportVouchers(existingVouchers);
 
                       refreshSavedVouchers();
 
@@ -618,13 +656,13 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     </div>
                     <div>
                       <h3 className="text-base font-black text-slate-900 flex items-center space-x-2">
-                        <span>Lịch Sử Phiếu Xuất Kho BOM (Đã Lưu)</span>
+                        <span>Lịch Sử Phiếu Xuất Kho (BOM & File Excel)</span>
                         <span className="px-2.5 py-0.5 bg-pink-100 text-pink-800 text-xs font-black rounded-full">
                           {savedVouchers.length} Phiếu
                         </span>
                       </h3>
                       <p className="text-xs text-slate-500">
-                        Tất cả phiếu xuất kho soạn hàng theo BOM đều được tự động lưu lại. Bạn có thể tra cứu và in lại bất kỳ lúc nào nếu lỡ đóng phiếu.
+                        Tất cả phiếu xuất kho soạn hàng theo Model BOM và File Excel đều được tự động lưu lại. Bạn có thể tra cứu, in lại hoặc xóa phiếu bất kỳ lúc nào.
                       </p>
                     </div>
                   </div>
@@ -652,7 +690,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   <div className="space-y-3 animate-in fade-in duration-200 pt-2">
                     {filteredVouchers.length === 0 ? (
                       <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 italic text-xs">
-                        {searchVoucherTerm ? 'Không tìm thấy phiếu xuất kho nào phù hợp.' : 'Chưa có phiếu xuất kho BOM nào trong lịch sử lưu trữ.'}
+                        {searchVoucherTerm ? 'Không tìm thấy phiếu xuất kho nào phù hợp.' : 'Chưa có phiếu xuất kho nào trong lịch sử lưu trữ.'}
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -664,15 +702,27 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                             <div className="space-y-2">
                               <div className="flex items-start justify-between gap-2">
                                 <div>
-                                  <span className="font-mono font-black text-pink-700 text-xs px-2 py-0.5 bg-pink-100 rounded-md inline-block">
-                                    {v.voucherCode}
-                                  </span>
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-mono font-black text-pink-700 text-xs px-2 py-0.5 bg-pink-100 rounded-md inline-block">
+                                      {v.voucherCode}
+                                    </span>
+                                    {v.voucherType === 'EXCEL' ? (
+                                      <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-blue-100 text-blue-900 border border-blue-200 rounded-md">
+                                        📊 File Excel
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-pink-100 text-pink-900 border border-pink-200 rounded-md">
+                                        🎯 Model BOM
+                                      </span>
+                                    )}
+                                  </div>
                                   <h4 className="font-extrabold text-slate-900 text-sm mt-1">
-                                    Model: <span className="text-blue-700 font-bold">{v.modelName}</span>
+                                    {v.voucherType === 'EXCEL' ? 'Phiếu xuất:' : 'Model:'}{' '}
+                                    <span className="text-blue-700 font-bold">{v.modelName}</span>
                                   </h4>
                                 </div>
-                                <span className="px-2.5 py-1 bg-pink-600 text-white text-xs font-black rounded-lg shrink-0">
-                                  {v.modelQty} Bộ
+                                <span className={`px-2.5 py-1 text-white text-xs font-black rounded-lg shrink-0 ${v.voucherType === 'EXCEL' ? 'bg-blue-600' : 'bg-pink-600'}`}>
+                                  {v.voucherType === 'EXCEL' ? `${v.totalPartsCount || v.items.length} Mã VT` : `${v.modelQty} Bộ`}
                                 </span>
                               </div>
 
@@ -745,6 +795,72 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
       {/* TAB 1: AUTO SCAN & QUICK STOCK OUT MODE */}
       {mainTab === 'scan' && (
         <div className="space-y-6">
+          {/* EXCEL STOCK OUT (FIFO) SECTION */}
+          <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-indigo-950 p-5 rounded-3xl text-white shadow-lg border border-blue-500/30 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center space-x-3.5">
+              <div className="p-3 bg-blue-500/20 text-amber-300 rounded-2xl border border-blue-400/30">
+                <FileSpreadsheet className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm sm:text-base font-black tracking-tight text-white">
+                    XUẤT KHO THEO FILE EXCEL (ƯU TIÊN FIFO)
+                  </h3>
+                  <span className="px-2 py-0.5 bg-amber-400 text-slate-950 font-black text-[10px] rounded-md uppercase">
+                    FIFO #1
+                  </span>
+                </div>
+                <p className="text-xs text-blue-200/90 mt-0.5 max-w-xl">
+                  Đọc file Excel (Ảnh 3: Cột 1 STT, Cột 2 Mã VT, Cột 3 Tên VT, Cột 4 ĐVT, Cột 5 SL thực xuất). Tự động tính toán phân bổ Kệ & Lô hàng cũ nhất theo nguyên tắc FIFO.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="file"
+                ref={excelOutFileInputRef}
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    setExcelOutFile(e.target.files[0]);
+                    setIsExcelOutModalOpen(true);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => excelOutFileInputRef.current?.click()}
+                className="px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-xs rounded-xl shadow-md transition-all flex items-center space-x-2 cursor-pointer active:scale-95"
+              >
+                <Upload className="w-4 h-4 text-amber-300" />
+                <span>Tải File Excel Xuất Kho</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setExcelOutFile(null);
+                  setIsExcelOutModalOpen(true);
+                }}
+                className="px-3.5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition-all flex items-center space-x-1.5 cursor-pointer"
+              >
+                <Zap className="w-4 h-4 text-amber-400" />
+                <span>Mở Bảng Xuất FIFO</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={downloadSampleStockOutExcel}
+                className="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-blue-200 hover:text-white font-semibold text-xs rounded-xl transition-all cursor-pointer"
+                title="Tải file mẫu Excel xuất kho (.xlsx)"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
           <InlineQrScanner
             mode="out"
             parts={parts}
@@ -1380,6 +1496,23 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
           </div>
         </div>
       )}
+
+      {/* Excel Stock Out FIFO Modal */}
+      <ExcelStockOutFifoModal
+        isOpen={isExcelOutModalOpen}
+        onClose={() => {
+          setIsExcelOutModalOpen(false);
+          setExcelOutFile(null);
+        }}
+        parts={parts}
+        settings={settings}
+        initialFile={excelOutFile}
+        onSuccess={() => {
+          onSuccess();
+          setIsExcelOutModalOpen(false);
+          setExcelOutFile(null);
+        }}
+      />
     </div>
   );
 };

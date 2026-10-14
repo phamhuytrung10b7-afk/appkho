@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Transaction, AppSettings } from './types';
 import { storageService } from './storage';
 import { QRCodeSVG } from 'qrcode.react';
@@ -42,6 +42,24 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
     return storageService.getBinCardHistory(part.id);
   }, [part.id]);
 
+  // Actual current ending balance from transaction ledger:
+  const actualCurrentStock = useMemo(() => {
+    if (allHistory.length > 0) {
+      return allHistory[allHistory.length - 1].stockAfter;
+    }
+    return part.currentStock;
+  }, [allHistory, part.currentStock]);
+
+  // If part.currentStock diverged from ledger, auto reconcile in background and persist
+  useEffect(() => {
+    if (allHistory.length > 0) {
+      const latestStock = allHistory[allHistory.length - 1].stockAfter;
+      if (part.currentStock !== latestStock) {
+        storageService.reconcilePartStock(part.id);
+      }
+    }
+  }, [part.id, part.currentStock, allHistory]);
+
   // Filter history
   const filteredHistory = useMemo(() => {
     return allHistory.filter((t) => {
@@ -62,10 +80,14 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
     });
   }, [allHistory, dateFrom, dateTo, filterText]);
 
-  // Calculate part multi-location breakdown
+  // Calculate part multi-location breakdown (if actual stock is 0, zero out location quantities)
   const partLocations = useMemo(() => {
-    return storageService.getPartLocations(part);
-  }, [part]);
+    const rawLocs = storageService.getPartLocations(part);
+    if (actualCurrentStock === 0) {
+      return rawLocs.map((l) => ({ ...l, quantity: 0 }));
+    }
+    return rawLocs;
+  }, [part, actualCurrentStock]);
   const totalIn = useMemo(() => {
     return filteredHistory
       .filter((t) => t.type === 'IN')
@@ -249,14 +271,14 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                 <p className="text-xs text-slate-500 font-medium">Tồn thực tế hiện tại:</p>
                 <p
                   className={`text-base font-black mt-0.5 ${
-                    part.currentStock === 0
+                    actualCurrentStock === 0
                       ? 'text-red-600'
-                      : part.currentStock <= part.minStock
+                      : actualCurrentStock <= part.minStock
                       ? 'text-amber-600'
                       : 'text-emerald-700'
                   }`}
                 >
-                  {part.currentStock.toLocaleString('vi-VN')} {part.unit}
+                  {actualCurrentStock.toLocaleString('vi-VN')} {part.unit}
                 </p>
               </div>
 
@@ -359,7 +381,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                         -{totalOut.toLocaleString('vi-VN')}
                       </td>
                       <td className="p-2.5 border-r border-slate-300 text-right text-slate-900 font-black">
-                        {part.currentStock.toLocaleString('vi-VN')}
+                        {actualCurrentStock.toLocaleString('vi-VN')}
                       </td>
                       <td colSpan={4} className="p-2.5 text-slate-500 font-normal italic">
                         Đã đối soát chính xác theo nhật ký thẻ kho

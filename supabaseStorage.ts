@@ -183,6 +183,16 @@ function removeLocalCacheData(key: string): void {
   } catch (_) {}
 }
 
+// Helper to compare server and local timestamps accurately
+export function isServerTimestampNewer(serverTs: string, localTs: string | null): boolean {
+  if (!localTs) return true;
+  const sTime = new Date(serverTs).getTime();
+  const lTime = new Date(localTs).getTime();
+  if (isNaN(sTime) || isNaN(lTime)) return serverTs !== localTs;
+  // Server must be strictly newer by more than 1 second to avoid clock skew or formatting diffs
+  return sTime > lTime + 1000;
+}
+
 /**
  * Smart Local Caching Key-Value Store for Supabase `thekho_app_data` table.
  * Dramatically reduces Egress by checking ~50 byte `updated_at` before downloading large JSONB payloads.
@@ -212,12 +222,11 @@ export const supabaseKeyStore = {
 
         if (!metaErr && metaData?.updated_at) {
           const serverUpdatedAt = String(metaData.updated_at);
-          if (serverUpdatedAt === localCache.timestamp) {
-            // CACHE HIT! The payload on cloud has NOT changed.
+          if (!isServerTimestampNewer(serverUpdatedAt, localCache.timestamp)) {
+            // CACHE HIT! The payload on cloud has NOT changed (or local is newer).
             egressStats.cacheHits++;
             const estimatedSaved = JSON.stringify(localCache.data).length;
             egressStats.estimatedBytesSaved += estimatedSaved;
-            // console.log(`⚡ [Egress Saver] Cache Hit for "${key}"! Saved ~${(estimatedSaved / 1024).toFixed(1)} KB.`);
             return localCache.data;
           }
         }
@@ -279,8 +288,8 @@ export const supabaseKeyStore = {
         const key = row.key;
         const serverTs = String(row.updated_at || '');
         const local = getLocalCacheData(key);
-        // If local data doesn't exist or timestamp does not match server, Cloud has newer/different data
-        if (local.data === null || local.timestamp !== serverTs) {
+        // Only return true if local data doesn't exist or server timestamp is strictly newer
+        if (local.data === null || isServerTimestampNewer(serverTs, local.timestamp)) {
           return true;
         }
       }
@@ -322,7 +331,7 @@ export const supabaseKeyStore = {
         const serverTs = String(row.updated_at || '');
         const local = getLocalCacheData(key);
 
-        if (local.data !== null && local.timestamp === serverTs) {
+        if (local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
           cachedCount++;
           egressStats.cacheHits++;
           egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;

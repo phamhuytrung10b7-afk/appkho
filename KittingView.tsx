@@ -31,7 +31,28 @@ import {
   Filter,
   Search,
   RotateCcw,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Undo2,
+  Lock,
+  ArrowRight,
+  Layers,
+  Eye,
 } from 'lucide-react';
+
+export interface PendingVoucherGroup {
+  voucherCode: string;
+  voucherTitle: string;
+  createdAt: string;
+  operatorName?: string;
+  items: KittingQueueItem[];
+  totalPartsCount: number;
+  totalRawQty: number;
+  totalKittedQty: number;
+  remainingQty: number;
+  isCompleted: boolean;
+}
 
 interface KittingViewProps {
   queue: KittingQueueItem[];
@@ -102,6 +123,16 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
   // Compact Toast Notification
   const [compactToast, setCompactToast] = useState<string | null>(null);
+
+  // Voucher-based Kitting Management States
+  const [selectedVoucherCode, setSelectedVoucherCode] = useState<string>('');
+  const [expandedVoucherCodes, setExpandedVoucherCodes] = useState<string[]>([]);
+  const [voucherSearchTerm, setVoucherSearchTerm] = useState<string>('');
+  const [rollbackModalData, setRollbackModalData] = useState<{
+    isOpen: boolean;
+    voucher: PendingVoucherGroup | null;
+  }>({ isOpen: false, voucher: null });
+  const [isRollbacking, setIsRollbacking] = useState<boolean>(false);
 
   useEffect(() => {
     const loaded = storageService.getMasterContainerTags();
@@ -193,7 +224,68 @@ export const KittingView: React.FC<KittingViewProps> = ({
   const totalFilteredKittedQty = filteredCompletedItems.reduce((sum, i) => sum + (i.kittedQuantity || 0), 0);
   const totalFilteredScrapQty = filteredCompletedItems.reduce((sum, i) => sum + (i.scrapQuantity || 0), 0);
 
-  // Group pending items by partCode (case insensitive)
+  // Group pending items by Mã Phiếu Xuất Kho (voucherCode)
+  const groupedVouchersMap = new Map<string, PendingVoucherGroup>();
+
+  rawPendingItems.forEach((item) => {
+    const vCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+    const existing = groupedVouchersMap.get(vCode);
+    const unkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
+
+    if (existing) {
+      existing.items.push(item);
+      existing.totalPartsCount = existing.items.length;
+      existing.totalRawQty += item.rawQuantity;
+      existing.totalKittedQty += (item.kittedQuantity || 0);
+      existing.remainingQty += unkitted;
+      if (new Date(item.createdAt).getTime() < new Date(existing.createdAt).getTime()) {
+        existing.createdAt = item.createdAt;
+      }
+    } else {
+      groupedVouchersMap.set(vCode, {
+        voucherCode: vCode,
+        voucherTitle:
+          item.voucherTitle ||
+          (vCode === 'PHIẾU_XUẤT_LẺ'
+            ? 'Linh kiện xuất lẻ (Chưa gán mã phiếu)'
+            : `Phiếu xuất ${vCode}`),
+        createdAt: item.createdAt,
+        operatorName: item.operatorName,
+        items: [item],
+        totalPartsCount: 1,
+        totalRawQty: item.rawQuantity,
+        totalKittedQty: item.kittedQuantity || 0,
+        remainingQty: unkitted,
+        isCompleted: false,
+      });
+    }
+  });
+
+  // Sort vouchers by createdAt DESC (newest first)
+  const groupedVouchersList: PendingVoucherGroup[] = Array.from(groupedVouchersMap.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  const filteredVouchersList = groupedVouchersList.filter((v) => {
+    if (!voucherSearchTerm.trim()) return true;
+    const q = voucherSearchTerm.toLowerCase().trim();
+    const matchVoucher =
+      v.voucherCode.toLowerCase().includes(q) ||
+      v.voucherTitle.toLowerCase().includes(q) ||
+      (v.operatorName && v.operatorName.toLowerCase().includes(q));
+    if (matchVoucher) return true;
+    return v.items.some(
+      (i) => i.partCode.toLowerCase().includes(q) || i.partName.toLowerCase().includes(q)
+    );
+  });
+
+  const toggleVoucherExpanded = (vCode: string) => {
+    setExpandedVoucherCodes((prev) =>
+      prev.includes(vCode) ? prev.filter((c) => c !== vCode) : [...prev, vCode]
+    );
+  };
+
+  // Legacy partCode grouped list (for fast lookup & summary)
   interface PendingGroup {
     partCode: string;
     partName: string;
@@ -208,7 +300,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
   }
 
   const groupedPendingMap = new Map<string, PendingGroup>();
-
   rawPendingItems.forEach((item) => {
     const key = item.partCode.trim().toLowerCase();
     const existing = groupedPendingMap.get(key);
@@ -238,11 +329,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
   });
 
-  // Sort batches inside each group by createdAt ASC (oldest first for FIFO)
-  groupedPendingMap.forEach((group) => {
-    group.batches.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  });
-
   const groupedPendingList = Array.from(groupedPendingMap.values());
 
   // Handle Scanning or Selecting a Container Tag
@@ -270,6 +356,16 @@ export const KittingView: React.FC<KittingViewProps> = ({
     const matchingBuf = buffers.find((b) => b.partCode === tag.partCode && b.status !== 'EMPTY');
     const emptyBuf = buffers.find((b) => b.status === 'EMPTY');
     setTargetBuffer(matchingBuf ? matchingBuf.locationId : emptyBuf ? emptyBuf.locationId : 'BUFFER-A1-01');
+
+    // Automatically detect pending vouchers containing this partCode
+    const vouchersForPart = rawPendingItems.filter(
+      (i) => i.partCode.trim().toLowerCase() === (tag.partCode || '').trim().toLowerCase()
+    );
+    if (vouchersForPart.length > 0) {
+      // Default to the first voucher containing this part
+      const firstVoucherCode = (vouchersForPart[0].voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      setSelectedVoucherCode(firstVoucherCode);
+    }
 
     // Automatically open popup modal for Kitting Info
     setIsAutoKittingModalOpen(true);
@@ -304,10 +400,13 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
   const handleOpenQueueKittingModal = (item: KittingQueueItem) => {
     setSelectedItem(item);
+    setSelectedVoucherCode((item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim());
     setPartCode(item.partCode);
     setPartName(item.partName);
-    setStandardQty(item.rawQuantity);
-    setActualQty(item.rawQuantity);
+
+    const remainingUnkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
+    setStandardQty(remainingUnkitted || item.rawQuantity);
+    setActualQty(remainingUnkitted || item.rawQuantity);
     setUnit(item.unit);
     setScrapQty(0);
 
@@ -384,12 +483,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
         item.partCode.trim().toLowerCase() === partCode.trim().toLowerCase()
     );
 
-    const totalPendingAvailable = pendingForPart.reduce(
-      (sum, item) => sum + (item.rawQuantity || 0),
-      0
-    );
-
-    if (pendingForPart.length === 0 || totalPendingAvailable <= 0) {
+    if (pendingForPart.length === 0) {
       setResultModal({
         isOpen: true,
         isSuccess: false,
@@ -399,24 +493,55 @@ export const KittingView: React.FC<KittingViewProps> = ({
       return;
     }
 
-    if (actualQty > totalPendingAvailable) {
+    // Determine target voucher to deduct from (User requirement: Trừ đúng theo từng mã phiếu xuất kho)
+    let targetVoucher = selectedVoucherCode.trim();
+    if (!targetVoucher) {
+      // Pick oldest voucher containing this part
+      targetVoucher = (pendingForPart[0]?.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+    }
+
+    // Find pending items belonging specifically to this target voucher
+    const targetVoucherItems = pendingForPart.filter(
+      (i) => (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === targetVoucher.toLowerCase()
+    );
+
+    const availableInTargetVoucher = targetVoucherItems.reduce(
+      (sum, item) => sum + Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)),
+      0
+    );
+
+    if (targetVoucherItems.length === 0 || availableInTargetVoucher <= 0) {
       setResultModal({
         isOpen: true,
         isSuccess: false,
         title: 'BÓC TÁCH THẤT BẠI',
-        message: `SỐ LƯỢNG BÓC TÁCH KHÔNG ĐỦ! Trong Danh Sách Chờ Bóc Tách hiện chỉ có ${totalPendingAvailable} ${unit}, nhưng bạn đang yêu cầu bóc tách ${actualQty} ${unit}. Không được phép bóc tách quá số lượng cho phép!`,
+        message: `Linh kiện [${partCode}] KHÔNG CÒN TỒN trong Mã phiếu [${targetVoucher}]! Vui lòng kiểm tra và chọn đúng Mã phiếu xuất kho có linh kiện này.`,
       });
       return;
     }
 
-    // Process deduction from pending queue
+    if (actualQty > availableInTargetVoucher) {
+      setResultModal({
+        isOpen: true,
+        isSuccess: false,
+        title: 'BÓC TÁCH THẤT BẠI',
+        message: `SỐ LƯỢNG BÓC TÁCH VƯỢT QUÁ TỒN TRONG PHIẾU! Trong Mã phiếu [${targetVoucher}] hiện chỉ còn ${availableInTargetVoucher} ${unit}, nhưng bạn đang yêu cầu bóc tách ${actualQty} ${unit}. Vui lòng nhập tối đa ${availableInTargetVoucher} ${unit}.`,
+      });
+      return;
+    }
+
+    // Process deduction strictly from the selected voucher items
     try {
       let remainingToKitting = actualQty;
 
-      // If a specific queue item was clicked
+      // If a specific queue item was clicked and belongs to this voucher
       if (selectedItem && selectedItem.partCode.toLowerCase() === partCode.toLowerCase()) {
         const currentItemInQueue = allQueue.find((q) => q.id === selectedItem.id);
-        if (currentItemInQueue && currentItemInQueue.status === 'PENDING_KITTING') {
+        if (
+          currentItemInQueue &&
+          currentItemInQueue.status === 'PENDING_KITTING' &&
+          (currentItemInQueue.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === targetVoucher.toLowerCase()
+        ) {
           if (remainingToKitting <= currentItemInQueue.rawQuantity) {
             if (remainingToKitting < currentItemInQueue.rawQuantity) {
               const leftover = currentItemInQueue.rawQuantity - remainingToKitting;
@@ -434,7 +559,11 @@ export const KittingView: React.FC<KittingViewProps> = ({
                 rawQuantity: leftover,
                 kittedQuantity: 0,
                 status: 'PENDING_KITTING',
-                createdAt: currentItemInQueue.createdAt, // Preserve original timestamp for FIFO
+                createdAt: currentItemInQueue.createdAt,
+                voucherCode: currentItemInQueue.voucherCode,
+                voucherTitle: currentItemInQueue.voucherTitle,
+                sourceBin: currentItemInQueue.sourceBin,
+                fifoAllocations: currentItemInQueue.fifoAllocations,
               };
               const refreshedQueue = storageService.getKittingQueue();
               refreshedQueue.unshift(newPendingLeftover);
@@ -454,9 +583,9 @@ export const KittingView: React.FC<KittingViewProps> = ({
         }
       }
 
-      // If remainingToKitting > 0, consume sequentially from pending queue
+      // If remainingToKitting > 0, consume sequentially from this voucher's items
       if (remainingToKitting > 0) {
-        for (const pItem of pendingForPart) {
+        for (const pItem of targetVoucherItems) {
           if (remainingToKitting <= 0) break;
 
           const freshQueue = storageService.getKittingQueue();
@@ -489,7 +618,11 @@ export const KittingView: React.FC<KittingViewProps> = ({
               rawQuantity: leftover,
               kittedQuantity: 0,
               status: 'PENDING_KITTING',
-              createdAt: freshItem.createdAt, // Preserve original timestamp for FIFO
+              createdAt: freshItem.createdAt,
+              voucherCode: freshItem.voucherCode,
+              voucherTitle: freshItem.voucherTitle,
+              sourceBin: freshItem.sourceBin,
+              fifoAllocations: freshItem.fifoAllocations,
             };
             const refreshedQueue = storageService.getKittingQueue();
             refreshedQueue.unshift(newPendingLeftover);
@@ -630,6 +763,41 @@ export const KittingView: React.FC<KittingViewProps> = ({
         storageService.deleteKittingItem(b.id);
       });
       onRefresh();
+    }
+  };
+
+  const handleConfirmRollback = () => {
+    if (!rollbackModalData.voucher) return;
+    if (!isAdmin) {
+      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền hoàn kho rollback!');
+      return;
+    }
+    const targetVCode = rollbackModalData.voucher.voucherCode;
+    setIsRollbacking(true);
+    try {
+      const result = storageService.rollbackVoucherStockOut(
+        targetVCode,
+        currentUser ? `${currentUser.fullName} (Admin)` : 'Admin Quản Trị'
+      );
+      if (result.success) {
+        setResultModal({
+          isOpen: true,
+          isSuccess: true,
+          title: 'ROLLBACK HOÀN KHO THÀNH CÔNG',
+          message: `✅ ĐÃ ROLLBACK THÀNH CÔNG PHIẾU [${targetVCode}]!\nĐã hoàn trả ${result.totalPartsRolledBack} linh kiện (tổng số lượng: ${result.totalQtyRolledBack.toLocaleString('vi-VN')}) về ĐÚNG CÁC VỊ TRÍ BIN gốc đã xuất trước đó trong kho. Dữ liệu tồn kho và thẻ kho đã được cập nhật chính xác!`,
+        });
+        setRollbackModalData({ isOpen: false, voucher: null });
+        onRefresh();
+      }
+    } catch (err: any) {
+      setResultModal({
+        isOpen: true,
+        isSuccess: false,
+        title: 'ROLLBACK THẤT BẠI',
+        message: err.message || 'Lỗi hệ thống khi rollback hoàn kho!',
+      });
+    } finally {
+      setIsRollbacking(false);
     }
   };
 
@@ -862,94 +1030,315 @@ export const KittingView: React.FC<KittingViewProps> = ({
           </div>
         )}
 
-        {/* Tab 2: Pending Queue */}
+        {/* Tab 2: Pending Queue Grouped by Mã Phiếu Xuất Kho */}
         {activeTab === 'pending' && (
-          <div className="p-4 sm:p-6">
-            {groupedPendingList.length === 0 ? (
+          <div className="p-4 sm:p-6 space-y-5">
+            {/* Toolbar & Filter */}
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-indigo-100 text-indigo-800 rounded-2xl">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-900 flex items-center space-x-2">
+                    <span>DANH SÁCH CHỜ BÓC TÁCH THEO MÃ PHIẾU XUẤT</span>
+                    <span className="px-2.5 py-0.5 bg-indigo-100 text-indigo-900 text-xs font-black rounded-full">
+                      {groupedVouchersList.length} Phiếu
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Linh kiện được gom nhóm theo từng Mã phiếu xuất kho. Bấm vào mã phiếu để xem chi tiết linh kiện cần bóc.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={voucherSearchTerm}
+                    onChange={(e) => setVoucherSearchTerm(e.target.value)}
+                    placeholder="Tìm mã phiếu / linh kiện..."
+                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-indigo-500 w-48 sm:w-64 outline-hidden"
+                  />
+                </div>
+
+                {groupedVouchersList.length > 0 && (
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedVoucherCodes(groupedVouchersList.map((v) => v.voucherCode))}
+                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Mở tất cả
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedVoucherCodes([])}
+                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Thu gọn
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* List of Vouchers */}
+            {filteredVouchersList.length === 0 ? (
               <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-3">
                 <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
-                <h3 className="text-base font-bold text-slate-800">Không có linh kiện nào chờ bóc tách!</h3>
+                <h3 className="text-base font-bold text-slate-800">
+                  {voucherSearchTerm ? 'Không tìm thấy mã phiếu nào phù hợp với từ khóa!' : 'Không có mã phiếu nào đang chờ bóc tách!'}
+                </h3>
                 <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  Tất cả các lô xuất kho từ Kho thô đã được xử lý xong kitting đóng thùng xanh. Khi có đơn xuất mới, hệ thống sẽ tự động hiển thị tại đây.
+                  Tất cả các lô xuất kho từ Kho thô đã được xử lý xong kitting đóng thùng xanh. Khi có đơn xuất mới, hệ thống sẽ tự động hiển thị theo từng mã phiếu tại đây.
                 </p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs whitespace-nowrap">
-                  <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[11px] border-b border-slate-200">
-                    <tr>
-                      <th className="p-3 w-10 text-center">STT</th>
-                      <th className="p-3">Mã Linh Kiện</th>
-                      <th className="p-3">Tên Linh Kiện</th>
-                      <th className="p-3 text-right">SL Xuất Thô (Cộng Dồn)</th>
-                      <th className="p-3 text-center">ĐVT</th>
-                      <th className="p-3">Các Mốc Thời Gian & SL Cụ Thể (Lô FIFO)</th>
-                      {isAdmin && <th className="p-3 text-center w-16">Xóa</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {groupedPendingList.map((group, idx) => (
-                      <tr key={group.partCode} className="hover:bg-blue-50/50 transition-colors">
-                        <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
-                        <td className="p-3 font-mono font-bold text-blue-700 text-sm">
-                          {group.partCode}
-                        </td>
-                        <td className="p-3 font-semibold text-slate-900">{group.partName}</td>
-                        <td className="p-3 text-right font-black text-amber-900 bg-amber-50/80 text-sm">
-                          {group.totalRawQuantity.toLocaleString('vi-VN')}
-                        </td>
-                        <td className="p-3 text-center text-slate-600 font-medium">{group.unit}</td>
-                        <td className="p-3">
-                          <div className="flex flex-wrap gap-1.5 py-1">
-                            {group.batches.map((batch, bIdx) => {
-                              const dateObj = new Date(batch.createdAt);
-                              const timeStr = dateObj.toLocaleTimeString('vi-VN', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                              });
-                              const dateStr = dateObj.toLocaleDateString('vi-VN');
-                              return (
-                                <span
-                                  key={batch.id}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-medium text-slate-700 shadow-2xs"
-                                >
-                                  <span className="font-extrabold text-blue-800">Lô #{bIdx + 1}:</span>
-                                  <span className="text-slate-600 font-mono">{timeStr} ({dateStr})</span>
-                                  <span className="font-black text-amber-800 bg-amber-100/90 px-1.5 py-0.5 rounded text-[11px]">
-                                    +{batch.rawQuantity.toLocaleString('vi-VN')} {group.unit}
-                                  </span>
-                                  {isAdmin && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteBatch(batch.id, group.partCode)}
-                                      className="ml-1 text-slate-400 hover:text-rose-600 font-bold px-1 rounded cursor-pointer"
-                                      title="Xóa riêng mốc thời gian/lô này (Quản trị viên)"
-                                    >
-                                      ✕
-                                    </button>
-                                  )}
+              <div className="space-y-4">
+                {filteredVouchersList.map((voucher) => {
+                  const isExpanded = expandedVoucherCodes.includes(voucher.voucherCode);
+                  const progressPct =
+                    voucher.totalRawQty > 0
+                      ? Math.round((voucher.totalKittedQty / voucher.totalRawQty) * 100)
+                      : 0;
+
+                  return (
+                    <div
+                      key={voucher.voucherCode}
+                      className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:border-indigo-300 transition-all overflow-hidden"
+                    >
+                      {/* Voucher Card Header */}
+                      <div className="p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4 bg-gradient-to-r from-slate-50/70 via-white to-slate-50/40">
+                        <div
+                          onClick={() => toggleVoucherExpanded(voucher.voucherCode)}
+                          className="flex items-center space-x-3.5 cursor-pointer flex-1 min-w-[260px]"
+                        >
+                          <button
+                            type="button"
+                            className="p-1.5 text-slate-400 hover:text-indigo-600 bg-white border border-slate-200 rounded-lg shadow-2xs"
+                          >
+                            {isExpanded ? (
+                              <ChevronDown className="w-4 h-4" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4" />
+                            )}
+                          </button>
+
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono font-black text-sm px-3 py-1 bg-indigo-100 text-indigo-950 border border-indigo-200 rounded-xl shadow-2xs">
+                                📦 {voucher.voucherCode}
+                              </span>
+                              <h4 className="font-extrabold text-sm text-slate-900">
+                                {voucher.voucherTitle}
+                              </h4>
+                              {progressPct > 0 && progressPct < 100 && (
+                                <span className="px-2 py-0.5 bg-amber-100 text-amber-900 text-[10px] font-black rounded-md">
+                                  Đang bóc tách ({progressPct}%)
                                 </span>
-                              );
-                            })}
+                              )}
+                              {progressPct === 100 && (
+                                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-900 text-[10px] font-black rounded-md">
+                                  Đã hoàn thành 100%
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1">
+                              <span>
+                                🕒 Xuất: <strong>{new Date(voucher.createdAt).toLocaleString('vi-VN')}</strong>
+                              </span>
+                              <span>•</span>
+                              <span>
+                                👤 Người xuất: <strong>{voucher.operatorName || 'Thủ kho'}</strong>
+                              </span>
+                              <span>•</span>
+                              <span>
+                                📋 Tổng: <strong>{voucher.totalPartsCount}</strong> linh kiện
+                              </span>
+                            </div>
                           </div>
-                        </td>
-                        {isAdmin && (
-                          <td className="p-3 text-center">
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteGroup(group.partCode, group.batches)}
-                              className="p-1.5 text-rose-500 hover:bg-rose-50 hover:text-rose-700 rounded-lg cursor-pointer transition-colors"
-                              title="Xóa toàn bộ linh kiện chờ bóc tách này (Chỉ Quản trị viên)"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </div>
+
+                        {/* Progress stats & action buttons */}
+                        <div className="flex flex-wrap items-center gap-3 shrink-0">
+                          {/* Progress summary */}
+                          <div className="text-right min-w-[140px]">
+                            <div className="text-xs font-bold text-slate-700">
+                              Đã bóc:{' '}
+                              <strong className="text-emerald-700 font-black">
+                                {voucher.totalKittedQty.toLocaleString('vi-VN')}
+                              </strong>{' '}
+                              /{' '}
+                              <strong className="text-slate-900 font-black">
+                                {voucher.totalRawQty.toLocaleString('vi-VN')}
+                              </strong>
+                            </div>
+                            <div className="w-32 h-2 bg-slate-200 rounded-full overflow-hidden mt-1 ml-auto">
+                              <div
+                                className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-300"
+                                style={{ width: `${Math.min(100, progressPct)}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Action Button: Rollback Hoàn Kho (Admin Only) */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!isAdmin) {
+                                alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền Rollback hoàn kho cả mã phiếu!');
+                                return;
+                              }
+                              setRollbackModalData({ isOpen: true, voucher });
+                            }}
+                            className={`px-3.5 py-2 text-xs font-bold rounded-xl border flex items-center space-x-1.5 transition-all cursor-pointer ${
+                              isAdmin
+                                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 hover:border-amber-400 active:scale-95 shadow-2xs'
+                                : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                            }`}
+                            title={
+                              isAdmin
+                                ? 'Rollback hoàn kho toàn bộ linh kiện còn tồn trong mã phiếu về đúng vị trí BIN đã xuất'
+                                : 'Chỉ tài khoản Quản trị viên (Admin) mới có quyền hoàn kho rollback'
+                            }
+                          >
+                            {isAdmin ? (
+                              <Undo2 className="w-3.5 h-3.5 text-amber-700" />
+                            ) : (
+                              <Lock className="w-3.5 h-3.5 text-slate-400" />
+                            )}
+                            <span>Rollback Hoàn Kho</span>
+                          </button>
+
+                          {/* Toggle Expand Button */}
+                          <button
+                            type="button"
+                            onClick={() => toggleVoucherExpanded(voucher.voucherCode)}
+                            className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer text-xs font-bold flex items-center space-x-1"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">
+                              {isExpanded ? 'Thu gọn' : 'Xem linh kiện'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expanded Items Table for this Voucher */}
+                      {isExpanded && (
+                        <div className="border-t border-slate-200 p-4 sm:p-5 bg-white space-y-3 animate-in fade-in duration-150">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-slate-800 uppercase tracking-wide flex items-center space-x-1.5">
+                              <Layers className="w-4 h-4 text-indigo-600" />
+                              <span>Chi Tiết Linh Kiện Trong Phiếu [{voucher.voucherCode}]</span>
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              (Chỉ hiển thị các linh kiện xuất của mã phiếu này)
+                            </span>
+                          </div>
+
+                          <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
+                            <table className="w-full text-left text-xs whitespace-nowrap">
+                              <thead className="bg-slate-100 text-slate-700 font-black uppercase text-[11px] border-b border-slate-200">
+                                <tr>
+                                  <th className="p-3 w-10 text-center">STT</th>
+                                  <th className="p-3">Mã Linh Kiện</th>
+                                  <th className="p-3">Tên Linh Kiện</th>
+                                  <th className="p-3 text-center">ĐVT</th>
+                                  <th className="p-3 text-right">SL Đề Nghị (Ban Đầu)</th>
+                                  <th className="p-3 text-right text-emerald-800 bg-emerald-50">Đã Bóc Tách</th>
+                                  <th className="p-3 text-right text-amber-800 bg-amber-50">Còn Tồn Chờ Bóc</th>
+                                  <th className="p-3 text-blue-900 bg-blue-50">Vị Trí Xuất Gốc (BIN)</th>
+                                  <th className="p-3 text-center">Trạng Thái</th>
+                                  <th className="p-3 text-center">Thao Tác</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {voucher.items.map((item, idx) => {
+                                  const unkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
+                                  const isDone = unkitted === 0;
+                                  const binDisplay =
+                                    item.fifoAllocations && item.fifoAllocations.length > 0
+                                      ? item.fifoAllocations.map((a) => a.locationName).join(', ')
+                                      : item.sourceBin || 'Kho chính';
+
+                                  return (
+                                    <tr
+                                      key={item.id}
+                                      className={`hover:bg-indigo-50/40 transition-colors ${
+                                        isDone ? 'bg-slate-50/50 opacity-60' : ''
+                                      }`}
+                                    >
+                                      <td className="p-3 text-center font-bold text-slate-400">
+                                        {idx + 1}
+                                      </td>
+                                      <td className="p-3 font-mono font-bold text-blue-700 text-sm">
+                                        {item.partCode}
+                                      </td>
+                                      <td className="p-3 font-semibold text-slate-900">
+                                        {item.partName}
+                                      </td>
+                                      <td className="p-3 text-center text-slate-600 font-medium">
+                                        {item.unit}
+                                      </td>
+                                      <td className="p-3 text-right font-bold text-slate-700">
+                                        {item.rawQuantity.toLocaleString('vi-VN')}
+                                      </td>
+                                      <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/40">
+                                        {(item.kittedQuantity || 0).toLocaleString('vi-VN')}
+                                      </td>
+                                      <td className="p-3 text-right font-black text-amber-900 bg-amber-50/60">
+                                        {unkitted.toLocaleString('vi-VN')}
+                                      </td>
+                                      <td className="p-3 font-bold text-blue-800 bg-blue-50/40">
+                                        📍 {binDisplay}
+                                      </td>
+                                      <td className="p-3 text-center">
+                                        {isDone ? (
+                                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-md">
+                                            ✓ Đã xong
+                                          </span>
+                                        ) : item.kittedQuantity > 0 ? (
+                                          <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded-md">
+                                            Đang bóc tách
+                                          </span>
+                                        ) : (
+                                          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded-md">
+                                            Chờ bóc
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="p-3 text-center">
+                                        {!isDone ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedVoucherCode(voucher.voucherCode);
+                                              handleOpenQueueKittingModal(item);
+                                            }}
+                                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold cursor-pointer transition-all active:scale-95 shadow-2xs"
+                                          >
+                                            Bóc Tách
+                                          </button>
+                                        ) : (
+                                          <span className="text-slate-400 text-xs">---</span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1392,6 +1781,70 @@ export const KittingView: React.FC<KittingViewProps> = ({
               </div>
             </div>
 
+            {/* Voucher Selection & Deduction Target (User Requirement) */}
+            {(() => {
+              const pendingVouchersForPart = rawPendingItems.filter(
+                (i) => i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase()
+              );
+              const voucherMap = new Map<string, { code: string; title: string; remainingQty: number }>();
+              pendingVouchersForPart.forEach((i) => {
+                const code = (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+                const unkitted = Math.max(0, i.rawQuantity - (i.kittedQuantity || 0));
+                const ex = voucherMap.get(code);
+                if (ex) {
+                  ex.remainingQty += unkitted;
+                } else {
+                  voucherMap.set(code, {
+                    code,
+                    title: i.voucherTitle || (code === 'PHIẾU_XUẤT_LẺ' ? 'Linh kiện xuất lẻ' : `Phiếu xuất ${code}`),
+                    remainingQty: unkitted,
+                  });
+                }
+              });
+              const voucherList = Array.from(voucherMap.values());
+              const currentVoucherInfo =
+                voucherList.find((v) => v.code === selectedVoucherCode) || voucherList[0];
+
+              return (
+                <div className="p-4 bg-indigo-50/70 border-2 border-indigo-200 rounded-2xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="block font-black text-indigo-950 text-xs flex items-center space-x-1.5">
+                      <FileText className="w-4 h-4 text-indigo-600" />
+                      <span>MÃ PHIẾU XUẤT KHO TRỪ TỒN <span className="text-rose-500">*</span></span>
+                    </label>
+                    {currentVoucherInfo && (
+                      <span className="text-xs font-bold text-indigo-900 bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-300">
+                        Tồn khả dụng trong phiếu: <strong className="font-black text-indigo-950">{currentVoucherInfo.remainingQty} {unit}</strong>
+                      </span>
+                    )}
+                  </div>
+
+                  {voucherList.length === 0 ? (
+                    <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold">
+                      ⚠️ Linh kiện này chưa có trong bất kỳ mã phiếu xuất kho nào đang chờ bóc tách!
+                    </div>
+                  ) : (
+                    <div>
+                      <select
+                        value={selectedVoucherCode || (voucherList[0]?.code || '')}
+                        onChange={(e) => setSelectedVoucherCode(e.target.value)}
+                        className="w-full px-3.5 py-2.5 bg-white border-2 border-indigo-300 rounded-xl font-bold text-indigo-950 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
+                      >
+                        {voucherList.map((v) => (
+                          <option key={v.code} value={v.code}>
+                            📦 [{v.code}] {v.title} — Còn tồn: {v.remainingQty} {unit}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-indigo-700 mt-1.5">
+                        * Hệ thống sẽ trừ số lượng bóc tách chính xác bên trong Mã phiếu xuất kho được chọn này.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Inputs for Actual Qty & Buffer location */}
             <div className="space-y-4 text-xs">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1528,6 +1981,158 @@ export const KittingView: React.FC<KittingViewProps> = ({
               >
                 <Check className="w-4 h-4 text-amber-300" />
                 <span>XÁC NHẬN BÓC TÁCH & ĐƯA VÀO BUFFER</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN ROLLBACK CONFIRMATION MODAL */}
+      {rollbackModalData.isOpen && rollbackModalData.voucher && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-3xl w-full p-6 sm:p-8 shadow-2xl border-2 border-amber-500 my-8 space-y-5 relative">
+            {/* Close Button */}
+            <button
+              type="button"
+              disabled={isRollbacking}
+              onClick={() => setRollbackModalData({ isOpen: false, voucher: null })}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 bg-slate-100 rounded-full cursor-pointer transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Header */}
+            <div className="flex items-center space-x-3 pb-3 border-b border-slate-200">
+              <div className="p-3 bg-amber-100 text-amber-800 rounded-2xl">
+                <Undo2 className="w-6 h-6 text-amber-700" />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded-full inline-flex items-center space-x-1">
+                    <ShieldCheck className="w-3 h-3 text-amber-700" />
+                    <span>QUYỀN HẠN QUẢN TRỊ VIÊN (ADMIN ONLY)</span>
+                  </span>
+                </div>
+                <h2 className="text-lg sm:text-xl font-black text-slate-900 mt-1">
+                  XÁC NHẬN ROLLBACK HOÀN KHO PHIẾU XUẤT
+                </h2>
+              </div>
+            </div>
+
+            {/* Voucher Information Card */}
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center space-x-2">
+                  <span className="font-mono font-black text-sm px-3 py-1 bg-indigo-100 text-indigo-950 border border-indigo-200 rounded-xl">
+                    📦 {rollbackModalData.voucher.voucherCode}
+                  </span>
+                  <strong className="text-sm text-slate-900 font-extrabold">
+                    {rollbackModalData.voucher.voucherTitle}
+                  </strong>
+                </div>
+                <span className="text-xs text-slate-500 font-medium">
+                  🕒 Xuất lúc: <strong>{new Date(rollbackModalData.voucher.createdAt).toLocaleString('vi-VN')}</strong>
+                </span>
+              </div>
+
+              {/* Warning Notice */}
+              <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-start space-x-2.5 text-xs text-amber-950">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-black text-amber-900">
+                    LƯU Ý QUAN TRỌNG VỀ CƠ CHẾ ROLLBACK HOÀN KHO:
+                  </p>
+                  <p className="mt-0.5 leading-relaxed">
+                    Hệ thống sẽ <strong>hủy bỏ và hoàn trả toàn bộ các linh kiện còn tồn chưa bóc tách</strong> trong mã phiếu này về <strong>ĐÚNG VỊ TRÍ BIN gốc</strong> đã xuất trước đó trong kho. Tồn kho và thẻ kho của các linh kiện sẽ được cộng hoàn trả tự động.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Items Table to Rollback */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                <span>DANH SÁCH LINH KIỆN SẼ ĐƯỢC HOÀN VỀ VỊ TRÍ BIN GỐC:</span>
+                <span className="text-slate-500 font-normal">
+                  (Tổng cộng: <strong>{rollbackModalData.voucher.items.length}</strong> linh kiện)
+                </span>
+              </div>
+
+              <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs max-h-64 overflow-y-auto">
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead className="bg-slate-100 text-slate-700 font-black uppercase text-[11px] sticky top-0 border-b border-slate-200">
+                    <tr>
+                      <th className="p-2.5 w-10 text-center">STT</th>
+                      <th className="p-2.5">Mã Linh Kiện</th>
+                      <th className="p-2.5">Tên Linh Kiện</th>
+                      <th className="p-2.5 text-center">ĐVT</th>
+                      <th className="p-2.5 text-right text-slate-600">SL Xuất Thô</th>
+                      <th className="p-2.5 text-right text-emerald-700">Đã Bóc</th>
+                      <th className="p-2.5 text-right font-black text-amber-900 bg-amber-50">SL Hoàn Trả</th>
+                      <th className="p-2.5 text-blue-900 bg-blue-50">Vị Trí BIN Sẽ Hoàn Về</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {rollbackModalData.voucher.items.map((item, idx) => {
+                      const unkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
+                      const binDisplay =
+                        item.fifoAllocations && item.fifoAllocations.length > 0
+                          ? item.fifoAllocations.map((a) => `${a.locationName} (${a.quantity})`).join(', ')
+                          : item.sourceBin || 'Kho chính';
+
+                      return (
+                        <tr key={item.id} className="hover:bg-amber-50/40">
+                          <td className="p-2.5 text-center font-bold text-slate-400">{idx + 1}</td>
+                          <td className="p-2.5 font-mono font-bold text-blue-700">{item.partCode}</td>
+                          <td className="p-2.5 font-semibold text-slate-900">{item.partName}</td>
+                          <td className="p-2.5 text-center text-slate-600">{item.unit}</td>
+                          <td className="p-2.5 text-right font-bold text-slate-600">{item.rawQuantity.toLocaleString('vi-VN')}</td>
+                          <td className="p-2.5 text-right font-bold text-emerald-700">{(item.kittedQuantity || 0).toLocaleString('vi-VN')}</td>
+                          <td className="p-2.5 text-right font-black text-amber-900 bg-amber-50/70">
+                            {unkitted.toLocaleString('vi-VN')}
+                          </td>
+                          <td className="p-2.5 font-bold text-blue-800 bg-blue-50/50">
+                            📍 {binDisplay}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Total summary */}
+            <div className="p-3 bg-slate-100 rounded-xl flex flex-wrap items-center justify-between text-xs">
+              <span className="text-slate-600 font-bold">
+                Tổng số lượng linh kiện sẽ hoàn kho:
+              </span>
+              <span className="font-mono font-black text-sm text-amber-950">
+                {rollbackModalData.voucher.remainingQty.toLocaleString('vi-VN')} đơn vị
+              </span>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                disabled={isRollbacking}
+                onClick={() => setRollbackModalData({ isOpen: false, voucher: null })}
+                className="w-full sm:w-auto px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-colors"
+              >
+                HỦY BỎ
+              </button>
+
+              <button
+                type="button"
+                disabled={isRollbacking}
+                onClick={handleConfirmRollback}
+                className="w-full sm:w-auto px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-black text-xs shadow-md transition-all cursor-pointer flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+              >
+                <Undo2 className="w-4 h-4 text-white" />
+                <span>
+                  {isRollbacking ? 'ĐANG TIẾN HÀNH ROLLBACK...' : 'XÁC NHẬN ROLLBACK VỀ VỊ TRÍ BIN GỐC'}
+                </span>
               </button>
             </div>
           </div>
