@@ -297,7 +297,7 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
   };
 
   // Confirm stock out according to FIFO
-  const handleConfirmStockOut = () => {
+  const handleConfirmStockOut = async () => {
     const selectedItems = items.filter((i) => i.selected && i.isValid && i.matchedPart);
     if (selectedItems.length === 0) {
       alert('Vui lòng chọn ít nhất một linh kiện hợp lệ có đủ tồn kho để xuất!');
@@ -316,6 +316,26 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
     const finalVoucherTitle = customVoucherTitle.trim() || (file ? `Xuất theo file: ${file.name}` : 'Phiếu Xuất Kho Excel');
 
     try {
+      const batchItems: Array<{
+        partId: string;
+        quantity: number;
+        date: string;
+        person: string;
+        productionOrder?: string;
+        reasonOrPurpose?: string;
+        notes?: string;
+        locationId?: string;
+        voucherCode?: string;
+        voucherTitle?: string;
+        sourceBin?: string;
+        fifoAllocations?: Array<{
+          locationName: string;
+          quantity: number;
+          lotId?: string;
+          contNumber?: string;
+        }>;
+      }> = [];
+
       const voucherItems: Array<{
         partCode: string;
         partName: string;
@@ -328,11 +348,10 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
       for (const item of selectedItems) {
         if (!item.matchedPart) continue;
 
-        // Perform stock out allocations sequentially by FIFO
         if (item.fifoAllocations && item.fifoAllocations.length > 0) {
           for (const alloc of item.fifoAllocations) {
             if (alloc.allocatedQty <= 0) continue;
-            storageService.addStockOut({
+            batchItems.push({
               partId: item.matchedPart.id,
               quantity: alloc.allocatedQty,
               date: nowIso,
@@ -348,8 +367,7 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
             });
           }
         } else {
-          // Fallback if no specific FIFO lot breakdown
-          storageService.addStockOut({
+          batchItems.push({
             partId: item.matchedPart.id,
             quantity: item.quantity,
             date: nowIso,
@@ -367,7 +385,6 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
 
         totalQtyOut += item.quantity;
 
-        // Format FIFO locations summary
         const fifoLocSummary = item.fifoAllocations && item.fifoAllocations.length > 0
           ? item.fifoAllocations.map((a) => `${a.locationName} (${a.allocatedQty})`).join(', ')
           : (item.matchedPart.location || 'Kho chính');
@@ -382,29 +399,12 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
         });
       }
 
-      // Save voucher history
-      try {
-        const vouchers = storageService.getBomExportVouchers();
-        const newVoucher: BomExportVoucher = {
-          id: 'vch-' + Date.now(),
-          voucherCode: finalVoucherCode,
-          modelName: finalVoucherTitle,
-          modelQty: 1,
-          dateTime: nowIso,
-          person: person.trim(),
-          items: voucherItems,
-          totalPartsCount: selectedItems.length,
-          totalQtyOut: Math.round(totalQtyOut * 100) / 100,
-          createdAt: nowIso,
-          voucherType: 'EXCEL',
-          status: 'ACTIVE',
-          notes: generalNotes.trim() || `Xuất file: ${file?.name || ''}`,
-        };
-        vouchers.unshift(newVoucher);
-        storageService.saveBomExportVouchers(vouchers);
-      } catch {
-        // Ignore fallback
-      }
+      await storageService.batchAddStockOutFifo(batchItems, {
+        voucherCode: finalVoucherCode,
+        voucherTitle: finalVoucherTitle,
+        person: person.trim(),
+        dateTime: nowIso,
+      });
 
       soundEffects.playSuccessTingTing();
       setSuccessReport({

@@ -545,6 +545,234 @@ export const storageService = {
     return newTx;
   },
 
+  async batchAddStockIn(items: Array<{
+    partId: string;
+    quantity: number;
+    date: string;
+    person: string;
+    reasonOrPurpose?: string;
+    notes?: string;
+    locationId?: string;
+  }>): Promise<Transaction[]> {
+    const parts = this.getParts();
+    const txs = this.getTransactions();
+    const newTxs: Transaction[] = [];
+    const partsMap = new Map<string, Part>();
+    parts.forEach((p) => partsMap.set(p.id, { ...p, locations: p.locations ? [...p.locations] : [] }));
+
+    for (const params of items) {
+      const part = partsMap.get(params.partId);
+      if (!part) continue;
+
+      const stockBefore = part.currentStock;
+      const stockAfter = stockBefore + params.quantity;
+      part.currentStock = stockAfter;
+
+      const targetLocName =
+        params.locationId?.trim() || part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+      const locs = this.getPartLocations(part);
+      const existingIndex = locs.findIndex(
+        (l) => l.locationName.toLowerCase() === targetLocName.toLowerCase()
+      );
+      if (existingIndex >= 0) {
+        locs[existingIndex].quantity += params.quantity;
+      } else {
+        locs.push({ locationName: targetLocName, quantity: params.quantity });
+      }
+      part.locations = locs;
+      part.location = this.formatPartLocationSummary(locs);
+      part.updatedAt = new Date().toISOString();
+
+      const newTx: Transaction = {
+        id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        partId: part.id,
+        partCode: part.code,
+        partName: part.name,
+        unit: part.unit,
+        type: 'IN',
+        quantity: params.quantity,
+        date: params.date || new Date().toISOString(),
+        person: params.person,
+        reasonOrPurpose: params.reasonOrPurpose || 'Nhập kho Excel',
+        notes: params.notes || '',
+        locationId: targetLocName,
+        stockBefore,
+        stockAfter,
+      };
+      newTxs.push(newTx);
+    }
+
+    const updatedParts = Array.from(partsMap.values());
+    localStorage.setItem(PARTS_KEY, JSON.stringify(updatedParts));
+    supabaseKeyStore.set(STORAGE_KEYS.PARTS, updatedParts);
+    await supabaseRelationalStore.upsertParts(updatedParts);
+
+    const allTxs = [...newTxs, ...txs];
+    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(allTxs));
+    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, allTxs);
+    await supabaseRelationalStore.upsertTransactions(allTxs);
+
+    return newTxs;
+  },
+
+  async batchAddStockOutFifo(
+    items: Array<{
+      partId: string;
+      quantity: number;
+      date: string;
+      person: string;
+      productionOrder?: string;
+      reasonOrPurpose?: string;
+      notes?: string;
+      locationId?: string;
+      voucherCode?: string;
+      voucherTitle?: string;
+      sourceBin?: string;
+      fifoAllocations?: Array<{
+        locationName: string;
+        quantity: number;
+        lotId?: string;
+        contNumber?: string;
+      }>;
+    }>,
+    voucherMeta?: { voucherCode: string; voucherTitle: string; person: string; dateTime: string }
+  ): Promise<{ transactions: Transaction[]; voucher: BomExportVoucher }> {
+    const parts = this.getParts();
+    const txs = this.getTransactions();
+    const queue = this.getKittingQueue();
+    const vouchers = this.getBomExportVouchers();
+
+    const newTxs: Transaction[] = [];
+    const newQueueItems: KittingQueueItem[] = [];
+    const partsMap = new Map<string, Part>();
+    parts.forEach((p) => partsMap.set(p.id, { ...p, locations: p.locations ? [...p.locations] : [] }));
+
+    const voucherCode = voucherMeta?.voucherCode || ('PXK-EXCEL-' + Date.now());
+    const voucherTitle = voucherMeta?.voucherTitle || 'Xuất kho Excel FIFO';
+
+    for (const params of items) {
+      const part = partsMap.get(params.partId);
+      if (!part) continue;
+      if (params.quantity > part.currentStock) {
+        throw new Error(
+          `Số lượng xuất (${params.quantity} ${part.unit}) vượt quá tồn kho hiện tại (${part.currentStock} ${part.unit}) cho [${part.code}]!`
+        );
+      }
+
+      const stockBefore = part.currentStock;
+      const stockAfter = stockBefore - params.quantity;
+      part.currentStock = stockAfter;
+
+      const locs = this.getPartLocations(part);
+      let remainingToDeduct = params.quantity;
+      if (params.locationId) {
+        const targetLoc = params.locationId.trim();
+        const existing = locs.find((l) => l.locationName.toLowerCase() === targetLoc.toLowerCase());
+        if (existing) {
+          const deduct = Math.min(existing.quantity, remainingToDeduct);
+          existing.quantity -= deduct;
+          remainingToDeduct -= deduct;
+        }
+      }
+      if (remainingToDeduct > 0) {
+        for (const loc of locs) {
+          if (loc.quantity > 0) {
+            const deduct = Math.min(loc.quantity, remainingToDeduct);
+            loc.quantity -= deduct;
+            remainingToDeduct -= deduct;
+            if (remainingToDeduct <= 0) break;
+          }
+        }
+      }
+
+      const activeLocs = locs.filter((l) => l.quantity > 0);
+      part.locations = locs;
+      part.location = this.formatPartLocationSummary(activeLocs.length > 0 ? activeLocs : locs);
+      part.updatedAt = new Date().toISOString();
+
+      const newTx: Transaction = {
+        id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        partId: part.id,
+        partCode: part.code,
+        partName: part.name,
+        unit: part.unit,
+        type: 'OUT',
+        quantity: params.quantity,
+        date: params.date || new Date().toISOString(),
+        person: params.person,
+        productionOrder: params.productionOrder || '',
+        reasonOrPurpose: params.reasonOrPurpose || 'Xuất sản xuất FIFO',
+        notes: params.notes || '',
+        locationId: params.locationId,
+        stockBefore,
+        stockAfter,
+      };
+      newTxs.push(newTx);
+
+      const newItem: KittingQueueItem = {
+        id: 'kit-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        transactionId: newTx.id,
+        voucherCode: voucherCode,
+        voucherTitle: voucherTitle,
+        sourceBin: params.sourceBin || params.locationId || 'Kho chính',
+        fifoAllocations: params.fifoAllocations,
+        partCode: part.code,
+        partName: part.name,
+        unit: part.unit,
+        rawQuantity: params.quantity,
+        kittedQuantity: 0,
+        scrapQuantity: 0,
+        bufferLocation: 'BUFFER-A1-01',
+        status: 'PENDING_KITTING',
+        createdAt: new Date().toISOString(),
+        operatorName: params.person,
+      };
+      newQueueItems.push(newItem);
+    }
+
+    const updatedParts = Array.from(partsMap.values());
+    localStorage.setItem(PARTS_KEY, JSON.stringify(updatedParts));
+    supabaseKeyStore.set(STORAGE_KEYS.PARTS, updatedParts);
+    await supabaseRelationalStore.upsertParts(updatedParts);
+
+    const allTxs = [...newTxs, ...txs];
+    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(allTxs));
+    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, allTxs);
+    await supabaseRelationalStore.upsertTransactions(allTxs);
+
+    const updatedQueue = [...newQueueItems, ...queue];
+    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(updatedQueue));
+    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, updatedQueue);
+
+    const newVoucher: BomExportVoucher = {
+      id: 'vch-' + Date.now(),
+      voucherCode,
+      modelName: voucherTitle,
+      modelQty: 1,
+      dateTime: voucherMeta?.dateTime || new Date().toISOString(),
+      person: voucherMeta?.person || 'Thủ kho',
+      notes: 'Xuất kho FIFO qua file Excel',
+      totalPartsCount: newTxs.length,
+      totalQtyOut: newTxs.reduce((sum, t) => sum + t.quantity, 0),
+      voucherType: 'EXCEL',
+      status: 'ACTIVE',
+      items: newTxs.map((t) => ({
+        partCode: t.partCode,
+        partName: t.partName,
+        unit: t.unit,
+        bomQtyPerSet: t.quantity,
+        totalQtyOut: t.quantity,
+        fifoLocation: t.locationId || 'Kho chính',
+      })),
+      createdAt: new Date().toISOString(),
+    };
+    vouchers.unshift(newVoucher);
+    localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
+    supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers);
+
+    return { transactions: newTxs, voucher: newVoucher };
+  },
+
   // Perform Stock-Out with Anti-Negative Stock Rule!
   addStockOut(params: {
     partId: string;
@@ -1782,10 +2010,10 @@ export const storageService = {
    * QUYỀN HẠN: Chỉ tài khoản Admin mới được thực hiện.
    * LƯU Ý: Trả về ĐÚNG vị trí BIN đã xuất trước đó!
    */
-  rollbackVoucherStockOut(
+  async rollbackVoucherStockOut(
     voucherCode: string,
     performedBy: string
-  ): {
+  ): Promise<{
     success: boolean;
     voucherCode: string;
     totalPartsRolledBack: number;
@@ -1797,14 +2025,13 @@ export const storageService = {
       unit: string;
       restoredBin: string;
     }>;
-  } {
+  }> {
     const cleanVoucherCode = voucherCode.trim();
     if (!cleanVoucherCode) {
       throw new Error('Vui lòng chỉ định Mã phiếu xuất kho cần rollback!');
     }
 
     const queue = this.getKittingQueue();
-    // Filter pending items belonging to this voucher
     const pendingItems = queue.filter(
       (item) =>
         item.voucherCode &&
@@ -1818,6 +2045,11 @@ export const storageService = {
       );
     }
 
+    const parts = this.getParts();
+    const txs = this.getTransactions();
+    const partsMap = new Map<string, Part>();
+    parts.forEach((p) => partsMap.set(p.id, { ...p, locations: p.locations ? [...p.locations] : [] }));
+
     const restoredItems: Array<{
       partCode: string;
       partName: string;
@@ -1828,107 +2060,94 @@ export const storageService = {
 
     const nowIso = new Date().toISOString();
     let totalQtyRolledBack = 0;
+    const newTxs: Transaction[] = [];
 
-    // Process each un-kitted item
     for (const item of pendingItems) {
       const remainingUnkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
       if (remainingUnkitted <= 0) continue;
 
       const part =
-        this.getPartByCode(item.partCode) ||
-        this.getParts().find((p) => p.code.toLowerCase().trim() === item.partCode.toLowerCase().trim());
+        partsMap.get(item.partCode) ||
+        Array.from(partsMap.values()).find((p) => p.code.toLowerCase().trim() === item.partCode.toLowerCase().trim());
       if (!part) continue;
 
-      // Determine restore destinations based on fifoAllocations or sourceBin
-      if (item.fifoAllocations && item.fifoAllocations.length > 0) {
-        let needToRestore = remainingUnkitted;
-        for (const alloc of item.fifoAllocations) {
-          if (needToRestore <= 0) break;
-          const returnQty = Math.min(alloc.quantity || (alloc as any).allocatedQty || needToRestore, needToRestore);
-          if (returnQty <= 0) continue;
+      let needToRestore = remainingUnkitted;
+      const allocs =
+        item.fifoAllocations && item.fifoAllocations.length > 0
+          ? item.fifoAllocations
+          : [{ locationName: item.sourceBin || 'Kho chính', quantity: remainingUnkitted }];
 
-          const binName = alloc.locationName || item.sourceBin || 'Kho chính';
+      for (const alloc of allocs) {
+        if (needToRestore <= 0) break;
+        const returnQty = Math.min(alloc.quantity || (alloc as any).allocatedQty || needToRestore, needToRestore);
+        if (returnQty <= 0) continue;
 
-          // Record rollback stock in to the exact original BIN
-          this.addStockIn({
-            partId: part.id,
-            quantity: returnQty,
-            date: nowIso,
-            person: performedBy || 'Admin Quản Trị',
-            reasonOrPurpose: 'Rollback hoàn kho phiếu xuất',
-            notes: `[Rollback Admin] Hoàn trả từ phiếu [${cleanVoucherCode}] về đúng BIN [${binName}]`,
-            locationId: binName,
-          });
+        const binName = alloc.locationName || item.sourceBin || 'Kho chính';
+        const stockBefore = part.currentStock;
+        const stockAfter = stockBefore + returnQty;
+        part.currentStock = stockAfter;
 
-          restoredItems.push({
-            partCode: part.code,
-            partName: part.name,
-            quantity: returnQty,
-            unit: part.unit,
-            restoredBin: binName,
-          });
+        const locs = this.getPartLocations(part);
+        const existingIndex = locs.findIndex(
+          (l) => l.locationName.toLowerCase() === binName.toLowerCase()
+        );
 
-          needToRestore -= returnQty;
-          totalQtyRolledBack += returnQty;
+        if (existingIndex >= 0) {
+          locs[existingIndex].quantity += returnQty;
+        } else {
+          locs.push({ locationName: binName, quantity: returnQty });
         }
 
-        // If any residual remains
-        if (needToRestore > 0) {
-          const fallbackBin = item.sourceBin || 'Kho chính';
-          this.addStockIn({
-            partId: part.id,
-            quantity: needToRestore,
-            date: nowIso,
-            person: performedBy || 'Admin Quản Trị',
-            reasonOrPurpose: 'Rollback hoàn kho phiếu xuất',
-            notes: `[Rollback Admin] Hoàn trả dư phiếu [${cleanVoucherCode}] về đúng BIN [${fallbackBin}]`,
-            locationId: fallbackBin,
-          });
+        part.locations = locs;
+        part.location = this.formatPartLocationSummary(locs);
+        part.updatedAt = nowIso;
 
-          restoredItems.push({
-            partCode: part.code,
-            partName: part.name,
-            quantity: needToRestore,
-            unit: part.unit,
-            restoredBin: fallbackBin,
-          });
-
-          totalQtyRolledBack += needToRestore;
-        }
-      } else {
-        // Restore to item.sourceBin
-        const binName = item.sourceBin || 'Kho chính';
-        this.addStockIn({
+        const rollbackTx: Transaction = {
+          id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
           partId: part.id,
-          quantity: remainingUnkitted,
+          partCode: part.code,
+          partName: part.name,
+          unit: part.unit,
+          type: 'IN',
+          quantity: returnQty,
           date: nowIso,
           person: performedBy || 'Admin Quản Trị',
           reasonOrPurpose: 'Rollback hoàn kho phiếu xuất',
           notes: `[Rollback Admin] Hoàn trả từ phiếu [${cleanVoucherCode}] về đúng BIN [${binName}]`,
           locationId: binName,
-        });
+          stockBefore,
+          stockAfter,
+        };
+        newTxs.push(rollbackTx);
 
         restoredItems.push({
           partCode: part.code,
           partName: part.name,
-          quantity: remainingUnkitted,
+          quantity: returnQty,
           unit: part.unit,
           restoredBin: binName,
         });
 
-        totalQtyRolledBack += remainingUnkitted;
+        needToRestore -= returnQty;
+        totalQtyRolledBack += returnQty;
       }
 
-      this.reconcilePartStock(part.id);
-
-      // Mark the item as rolled back
       item.status = 'ROLLED_BACK';
     }
 
-    // Save updated kitting queue
-    this.saveKittingQueue(queue);
+    const updatedParts = Array.from(partsMap.values());
+    localStorage.setItem(PARTS_KEY, JSON.stringify(updatedParts));
+    supabaseKeyStore.set(STORAGE_KEYS.PARTS, updatedParts);
+    await supabaseRelationalStore.upsertParts(updatedParts);
 
-    // Update voucher status if present in bomExportVouchers
+    const allTxs = [...newTxs, ...txs];
+    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(allTxs));
+    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, allTxs);
+    await supabaseRelationalStore.upsertTransactions(allTxs);
+
+    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(queue));
+    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue);
+
     try {
       const vouchers = this.getBomExportVouchers();
       const vIdx = vouchers.findIndex(
@@ -1940,11 +2159,10 @@ export const storageService = {
           status: 'ROLLED_BACK',
           notes: `${vouchers[vIdx].notes || ''} [Đã Rollback hoàn kho lúc ${new Date().toLocaleString('vi-VN')} bởi ${performedBy}]`.trim(),
         };
-        this.saveBomExportVouchers(vouchers);
+        localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
+        supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers);
       }
-    } catch {
-      // Ignore fallback
-    }
+    } catch {}
 
     return {
       success: true,

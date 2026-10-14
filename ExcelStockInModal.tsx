@@ -170,15 +170,22 @@ export const ExcelStockInModal: React.FC<ExcelStockInModalProps> = ({
     let totalQtyImported = 0;
 
     try {
-      // Re-fetch current parts in case of parallel changes
       let currentParts = storageService.getParts();
+      const batchItems: Array<{
+        partId: string;
+        quantity: number;
+        date: string;
+        person: string;
+        reasonOrPurpose?: string;
+        notes?: string;
+        locationId?: string;
+      }> = [];
 
       for (const item of selectedItems) {
         let targetPart = currentParts.find(
           (p) => p.code.toLowerCase().trim() === item.partCode.toLowerCase().trim()
         );
 
-        // 1. If part does not exist in system yet, create it automatically!
         if (!targetPart) {
           targetPart = storageService.addPart({
             code: item.partCode.trim(),
@@ -196,10 +203,9 @@ export const ExcelStockInModal: React.FC<ExcelStockInModalProps> = ({
           currentParts = storageService.getParts();
         }
 
-        // 2. Perform Stock-In transaction
         const targetLoc = item.location.trim() || targetPart.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
 
-        storageService.addStockIn({
+        batchItems.push({
           partId: targetPart.id,
           quantity: item.quantity,
           date: new Date(dateTime).toISOString(),
@@ -213,6 +219,8 @@ export const ExcelStockInModal: React.FC<ExcelStockInModalProps> = ({
 
         totalQtyImported += item.quantity;
       }
+
+      await storageService.batchAddStockIn(batchItems);
 
       soundEffects.playSuccessTingTing();
       setSuccessReport({

@@ -766,7 +766,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
   };
 
-  const handleConfirmRollback = () => {
+  const handleConfirmRollback = async () => {
     if (!rollbackModalData.voucher) return;
     if (!isAdmin) {
       alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền hoàn kho rollback!');
@@ -775,7 +775,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
     const targetVCode = rollbackModalData.voucher.voucherCode;
     setIsRollbacking(true);
     try {
-      const result = storageService.rollbackVoucherStockOut(
+      const result = await storageService.rollbackVoucherStockOut(
         targetVCode,
         currentUser ? `${currentUser.fullName} (Admin)` : 'Admin Quản Trị'
       );
@@ -1007,23 +1007,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
                       </div>
                     ))}
                   </div>
-                </div>
-
-                <div className="p-4 bg-blue-50/60 border border-blue-200 rounded-2xl space-y-2">
-                  <span className="font-extrabold text-blue-900 block uppercase text-[10px]">
-                    📦 DANH SÁCH CHỜ BÓC TÁCH TỪ KHO THÔ ({rawPendingItems.length} Lô Chờ)
-                  </span>
-                  <p className="text-slate-600 leading-relaxed text-[11px]">
-                    Tất cả linh kiện đã xuất Kho Thô sẽ nằm trong <strong>Danh Sách Chờ Bóc Tách</strong>. Khi quét Thẻ Thùng, hệ thống sẽ tự động đối soát và trừ lùi FIFO.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('pending')}
-                    className="mt-1 px-3.5 py-2 bg-blue-800 hover:bg-blue-900 text-white rounded-xl font-bold text-xs inline-flex items-center space-x-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>Xem Chi Tiết Danh Sách Chờ ({groupedPendingList.length} Mã)</span>
-                  </button>
                 </div>
               </div>
             </div>

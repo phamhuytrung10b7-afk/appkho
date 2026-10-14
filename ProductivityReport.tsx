@@ -223,24 +223,6 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
     });
   }
 
-  // 3. Aggregate transactions on reportDate if no logs/queue
-  if (partMap.size === 0) {
-    const dateTxs = transactions.filter((tx) => {
-      const isOut = tx.type === 'OUT' || (tx as any).type === 'KITTING' || (tx as any).type === 'EXPORT';
-      return isOut && tx.date && tx.date.startsWith(reportDate);
-    });
-    dateTxs.forEach((tx) => {
-      const item = initPartEntry(tx.partCode, tx.partName || tx.partCode);
-      const dt = tx.date.includes('T') ? new Date(tx.date) : new Date(tx.date + 'T08:30:00');
-      const slotKey = getSlotKey(dt);
-      item.thucHien += tx.quantity;
-      item.hourly[slotKey] = (item.hourly[slotKey] || 0) + tx.quantity;
-      item.tongSanLuong += tx.quantity;
-      item.conLai = Math.max(0, item.khsx - item.thucHien);
-      item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
-    });
-  }
-
   const items = Array.from(partMap.values());
 
   // Calculate hourly sums and metrics
