@@ -394,13 +394,13 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
 
                       {/* Location */}
                       <td className="p-3 font-medium text-slate-700 max-w-[180px]">
-                        {p.currentStock > 0 && storageService.formatPartLocationSummary(p) !== 'Chưa phân vị trí' ? (
+                        {p.currentStock > 0 && storageService.getOldestFifoLocationSummary(p) !== 'Chưa phân vị trí' ? (
                           <span
                             className="inline-flex items-center px-2 py-1 bg-slate-100 border border-slate-200 rounded-md text-[11px] leading-tight font-medium text-slate-700"
-                            title={storageService.formatPartLocationSummary(p)}
+                            title={`Tất cả các kệ: ${storageService.formatPartLocationSummary(p)}`}
                           >
                             <MapPin className="w-3 h-3 mr-1 text-slate-500 shrink-0" />
-                            <span className="truncate">{storageService.formatPartLocationSummary(p)}</span>
+                            <span className="truncate">{storageService.getOldestFifoLocationSummary(p)}</span>
                           </span>
                         ) : (
                           <span className="inline-flex items-center px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-[11px] leading-tight text-slate-400">

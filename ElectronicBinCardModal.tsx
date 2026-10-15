@@ -81,12 +81,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
     });
   }, [allHistory, dateFrom, dateTo, filterText]);
 
-  // Calculate part multi-location breakdown (hide any shelf where quantity <= 0)
-  const partLocations = useMemo(() => {
-    if (!part || actualCurrentStock <= 0) return [];
-    const rawLocs = storageService.getPartLocations(part);
-    return rawLocs.filter((l) => typeof l.quantity === 'number' && l.quantity > 0);
-  }, [part, actualCurrentStock]);
+
 
   const totalIn = useMemo(() => {
     return filteredHistory
@@ -238,29 +233,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                 </p>
               </div>
 
-              <div className="col-span-1 md:col-span-2">
-                <p className="text-xs text-slate-500 font-medium mb-1">Vị trí trên kệ (Các kệ đang chứa linh kiện):</p>
-                <div className="flex flex-wrap gap-1.5 items-center">
-                  {partLocations.map((loc, idx) => (
-                    <span
-                      key={idx}
-                      className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-900 border border-emerald-300 shadow-2xs"
-                    >
-                      <MapPin className="w-3.5 h-3.5 mr-1 text-emerald-600 shrink-0" />
-                      <span>{loc.locationName}</span>
-                      <span className="ml-1.5 text-[11px] font-mono text-emerald-950 bg-emerald-200/90 px-1.5 py-0.5 rounded-md font-extrabold">
-                        {loc.quantity.toLocaleString('vi-VN')} {part.unit}
-                      </span>
-                    </span>
-                  ))}
-                  {partLocations.length === 0 && (
-                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">
-                      <MapPin className="w-3.5 h-3.5 mr-1 text-slate-400 shrink-0" />
-                      <span>Chưa có hàng trên kệ (Tồn kho = 0)</span>
-                    </span>
-                  )}
-                </div>
-              </div>
+
 
               <div>
                 <p className="text-xs text-slate-500 font-medium">Đơn vị tính:</p>
@@ -331,7 +304,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                       let rawItemLoc = item.locationId?.trim() || '';
                       let cleanItemLoc = rawItemLoc.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
                       if (!cleanItemLoc || cleanItemLoc.toLowerCase().includes('chưa phân')) {
-                        cleanItemLoc = partLocations[0]?.locationName || 'Kho chính';
+                        cleanItemLoc = storageService.getPartLocations(part)[0]?.locationName || 'Kho chính';
                       }
 
                       return (

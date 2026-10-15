@@ -247,9 +247,42 @@ const INITIAL_MATERIAL_CALLS: MaterialCallRequest[] = [
   },
 ];
 
+// Check if a location name is a real physical shelf location (not warehouse code 2BVL, not generic 'kho chính', etc.)
+export function isRealShelfLocation(name: string | undefined | null): boolean {
+  if (!name) return false;
+  const clean = name.trim().toLowerCase();
+  if (
+    !clean ||
+    clean === '2bvl' ||
+    clean.includes('2bvl') ||
+    clean === 'kho chính' ||
+    clean === 'kho 1' ||
+    clean === 'kho' ||
+    clean === 'n/a' ||
+    clean.includes('chưa phân') ||
+    clean.includes('hết hàng')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// Helper to normalize a shelf identifier (stripping accents, 'kệ', spaces, punctuation)
+export function normalizeShelfKey(name: string | undefined | null): string {
+  if (!name) return '';
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\([\d\.\,\s]+\)$/, '') // remove (500)
+    .replace(/^(kệ|ke|khay|o|ô)\s+/i, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
 // Helper for location matching that handles accents, case, prefixes, and sub-compartments accurately
 export function isLocationMatch(locA: string | undefined | null, locB: string | undefined | null): boolean {
   if (!locA || !locB) return false;
+  if (!isRealShelfLocation(locA) || !isRealShelfLocation(locB)) return false;
+
   const a = locA.trim().toLowerCase();
   const b = locB.trim().toLowerCase();
   if (a === b) return true;
@@ -259,23 +292,29 @@ export function isLocationMatch(locA: string | undefined | null, locB: string | 
   const cleanB = b.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
   if (cleanA === cleanB) return true;
 
-  // Sub-compartment check: "Kệ A1 - Khay 01" matches "Kệ A1"
-  const prefixA = cleanA.split(/\s*[-/]\s*/)[0].trim();
-  const prefixB = cleanB.split(/\s*[-/]\s*/)[0].trim();
-  if (prefixA === cleanB || prefixB === cleanA || (prefixA && prefixA === prefixB)) {
-    return true;
-  }
-
-  // Vietnamese prefix "kệ " / "ke " strip and normalize
-  const normA = cleanA.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
-  const normB = cleanB.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
+  const normA = normalizeShelfKey(cleanA);
+  const normB = normalizeShelfKey(cleanB);
   if (normA && normA === normB) return true;
 
-  // Also check prefix normalized
-  const normPrefixA = prefixA.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
-  const normPrefixB = prefixB.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
-  if (normPrefixA && (normPrefixA === normB || normPrefixA === normPrefixB)) return true;
-  if (normPrefixB && (normPrefixB === normA || normPrefixB === normPrefixA)) return true;
+  // Parent shelf vs sub-compartment matching:
+  // e.g. cleanB is parent shelf "Kệ A1", cleanA is "Kệ A1 - Khay 01" -> matches!
+  // BUT cleanA "Kệ A1 - Khay 01" and cleanB "Kệ A1 - Khay 02" must NOT match!
+  const hasSubA = /[-/]/.test(cleanA);
+  const hasSubB = /[-/]/.test(cleanB);
+
+  if (hasSubA && !hasSubB) {
+    // A has sub-compartment, B is parent shelf
+    const parentA = cleanA.split(/\s*[-/]\s*/)[0].trim();
+    if (parentA === cleanB || normalizeShelfKey(parentA) === normB) {
+      return true;
+    }
+  } else if (!hasSubA && hasSubB) {
+    // B has sub-compartment, A is parent shelf
+    const parentB = cleanB.split(/\s*[-/]\s*/)[0].trim();
+    if (parentB === cleanA || normalizeShelfKey(parentB) === normA) {
+      return true;
+    }
+  }
 
   return false;
 }
@@ -469,7 +508,7 @@ export const storageService = {
     return txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   },
 
-  // Helper to get normalized location breakdown array for a part (only shelves with stock > 0)
+  // Helper to get normalized location breakdown array for a part (only real shelves with stock > 0)
   getPartLocations(part: Part): PartLocationStock[] {
     const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
     
@@ -481,7 +520,7 @@ export const storageService = {
     if (Array.isArray(part.locations) && part.locations.length > 0) {
       const active = part.locations
         .map((l) => ({ locationName: l.locationName.trim(), quantity: Math.max(0, Number(l.quantity) || 0) }))
-        .filter((l) => l.quantity > 0);
+        .filter((l) => l.quantity > 0 && isRealShelfLocation(l.locationName));
       if (active.length > 0) {
         return active;
       }
@@ -489,48 +528,64 @@ export const storageService = {
 
     if (part.location && part.location.trim()) {
       const raw = part.location.trim();
-      if (raw.toLowerCase().includes('chưa phân') || raw.toLowerCase().includes('hết hàng')) {
+      if (raw.toLowerCase().includes('chưa phân') || raw.toLowerCase().includes('hết hàng') || !isRealShelfLocation(raw)) {
         return [];
       }
 
       if (raw.includes(',')) {
         const segments = raw.split(',');
         const result: PartLocationStock[] = [];
-        let parsedWithQtyCount = 0;
         for (const seg of segments) {
           const trimmed = seg.trim();
           const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
           if (match) {
             const name = match[1].trim();
             const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
-            if (qty > 0) {
+            if (qty > 0 && isRealShelfLocation(name)) {
               result.push({ locationName: name, quantity: qty });
             }
-            parsedWithQtyCount++;
+          } else {
+            if (trimmed && isRealShelfLocation(trimmed)) {
+              result.push({ locationName: trimmed, quantity: currentStock });
+            }
           }
         }
         if (result.length > 0) return result;
-        if (parsedWithQtyCount > 0 && result.length === 0) {
-          return [];
-        }
-        const firstSeg = segments[0]?.trim();
-        if (firstSeg && !firstSeg.toLowerCase().includes('chưa phân')) {
-          return [{ locationName: firstSeg, quantity: currentStock }];
-        }
       } else {
         const match = raw.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
         if (match) {
           const name = match[1].trim();
           const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
-          if (qty > 0) {
+          if (qty > 0 && isRealShelfLocation(name)) {
             return [{ locationName: name, quantity: qty }];
           }
           return [];
         }
-        return [{ locationName: raw, quantity: currentStock }];
+        if (isRealShelfLocation(raw)) {
+          return [{ locationName: raw, quantity: currentStock }];
+        }
       }
     }
-    return [{ locationName: 'Kho chính', quantity: currentStock }];
+    return [];
+  },
+
+  getOldestFifoLocationSummary(part: Part): string {
+    const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+    if (currentStock <= 0) return 'Chưa phân vị trí';
+
+    const fifoLots = this.getPartFifoLots(part.id);
+    const activeLot = fifoLots.find((l) => l.remainingQty > 0 && isRealShelfLocation(l.locationName));
+    if (activeLot) {
+      return `${activeLot.locationName} (${activeLot.remainingQty.toLocaleString('vi-VN')})`;
+    }
+
+    const locs = this.getPartLocations(part);
+    const validLocs = locs.filter((l) => l.quantity > 0 && isRealShelfLocation(l.locationName));
+    if (validLocs.length > 0) {
+      return `${validLocs[0].locationName} (${validLocs[0].quantity.toLocaleString('vi-VN')})`;
+    }
+
+    return 'Chưa phân vị trí';
   },
 
   formatPartLocationSummary(input: PartLocationStock[] | Part | undefined | null): string {
