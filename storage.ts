@@ -247,6 +247,39 @@ const INITIAL_MATERIAL_CALLS: MaterialCallRequest[] = [
   },
 ];
 
+// Helper for location matching that handles accents, case, prefixes, and sub-compartments accurately
+export function isLocationMatch(locA: string | undefined | null, locB: string | undefined | null): boolean {
+  if (!locA || !locB) return false;
+  const a = locA.trim().toLowerCase();
+  const b = locB.trim().toLowerCase();
+  if (a === b) return true;
+
+  // Clean parenthesis with qty, e.g. "Kệ A1 (500)" -> "Kệ A1"
+  const cleanA = a.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
+  const cleanB = b.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
+  if (cleanA === cleanB) return true;
+
+  // Sub-compartment check: "Kệ A1 - Khay 01" matches "Kệ A1"
+  const prefixA = cleanA.split(/\s*[-/]\s*/)[0].trim();
+  const prefixB = cleanB.split(/\s*[-/]\s*/)[0].trim();
+  if (prefixA === cleanB || prefixB === cleanA || (prefixA && prefixA === prefixB)) {
+    return true;
+  }
+
+  // Vietnamese prefix "kệ " / "ke " strip and normalize
+  const normA = cleanA.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
+  const normB = cleanB.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
+  if (normA && normA === normB) return true;
+
+  // Also check prefix normalized
+  const normPrefixA = prefixA.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
+  const normPrefixB = prefixB.replace(/^(kệ|ke)\s+/i, '').replace(/[^a-z0-9]/g, '');
+  if (normPrefixA && (normPrefixA === normB || normPrefixA === normPrefixB)) return true;
+  if (normPrefixB && (normPrefixB === normA || normPrefixB === normPrefixA)) return true;
+
+  return false;
+}
+
 // Helper for initial load
 export const storageService = {
   // Settings
@@ -314,16 +347,16 @@ export const storageService = {
     if (history.length === 0) return part;
     const latestTx = history[history.length - 1];
     const trueStock = Math.max(0, latestTx.stockAfter);
-    if (part.currentStock !== trueStock) {
+    if (part.currentStock !== trueStock || (trueStock === 0 && Array.isArray(part.locations) && part.locations.length > 0)) {
       const locs = this.getPartLocations(part);
       if (trueStock === 0) {
         locs.forEach((l) => (l.quantity = 0));
       }
       const activeLocs = locs.filter((l) => l.quantity > 0);
-      const newLocSummary = this.formatPartLocationSummary(activeLocs.length > 0 ? activeLocs : locs);
+      const newLocSummary = this.formatPartLocationSummary(activeLocs);
       const updated = this.updatePart(part.id, {
         currentStock: trueStock,
-        locations: locs,
+        locations: activeLocs,
         location: newLocSummary,
       });
       return updated;
@@ -424,74 +457,119 @@ export const storageService = {
     const partCodeClean = part?.code?.trim().toLowerCase();
     const txs = this.getTransactions().filter(
       (t) =>
-        t.partId === partId ||
-        (Boolean(partCodeClean) && Boolean(t.partCode) && t.partCode.trim().toLowerCase() === partCodeClean)
+        (t.partId === partId ||
+        (Boolean(partCodeClean) && Boolean(t.partCode) && t.partCode.trim().toLowerCase() === partCodeClean)) &&
+        // Pure NG warehouse operations (manual/excel import directly to NG, RTV or Scrap) do NOT affect the Main Warehouse bin card
+        // ONLY TRANSFER_TO_NG affects main warehouse stock!
+        t.type !== 'IMPORT_NG' &&
+        t.type !== 'EXPORT_NG_RTV' &&
+        t.type !== 'EXPORT_NG_SCRAP'
     );
     // Sort by date ascending
     return txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   },
 
-  // Helper to get normalized location breakdown array for a part
+  // Helper to get normalized location breakdown array for a part (only shelves with stock > 0)
   getPartLocations(part: Part): PartLocationStock[] {
-    if (Array.isArray(part.locations) && part.locations.length > 0) {
-      return part.locations.map((l) => ({ ...l }));
+    const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+    
+    // If current stock is 0, no shelves hold inventory
+    if (currentStock <= 0) {
+      return [];
     }
+
+    if (Array.isArray(part.locations) && part.locations.length > 0) {
+      const active = part.locations
+        .map((l) => ({ locationName: l.locationName.trim(), quantity: Math.max(0, Number(l.quantity) || 0) }))
+        .filter((l) => l.quantity > 0);
+      if (active.length > 0) {
+        return active;
+      }
+    }
+
     if (part.location && part.location.trim()) {
       const raw = part.location.trim();
+      if (raw.toLowerCase().includes('chưa phân') || raw.toLowerCase().includes('hết hàng')) {
+        return [];
+      }
+
       if (raw.includes(',')) {
         const segments = raw.split(',');
         const result: PartLocationStock[] = [];
+        let parsedWithQtyCount = 0;
         for (const seg of segments) {
           const trimmed = seg.trim();
           const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
           if (match) {
             const name = match[1].trim();
             const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
-            result.push({ locationName: name, quantity: qty });
-          } else if (trimmed) {
-            result.push({ locationName: trimmed, quantity: Math.max(0, part.currentStock) });
+            if (qty > 0) {
+              result.push({ locationName: name, quantity: qty });
+            }
+            parsedWithQtyCount++;
           }
         }
         if (result.length > 0) return result;
+        if (parsedWithQtyCount > 0 && result.length === 0) {
+          return [];
+        }
+        const firstSeg = segments[0]?.trim();
+        if (firstSeg && !firstSeg.toLowerCase().includes('chưa phân')) {
+          return [{ locationName: firstSeg, quantity: currentStock }];
+        }
       } else {
         const match = raw.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
         if (match) {
           const name = match[1].trim();
-          const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || part.currentStock;
-          return [{ locationName: name, quantity: qty }];
+          const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
+          if (qty > 0) {
+            return [{ locationName: name, quantity: qty }];
+          }
+          return [];
         }
-        return [{ locationName: raw, quantity: part.currentStock }];
+        return [{ locationName: raw, quantity: currentStock }];
       }
     }
-    return [{ locationName: 'Kho chính', quantity: part.currentStock }];
+    return [{ locationName: 'Kho chính', quantity: currentStock }];
   },
 
   formatPartLocationSummary(input: PartLocationStock[] | Part | undefined | null): string {
     if (!input) return 'Chưa phân vị trí';
     let locs: PartLocationStock[] = [];
+
     if (Array.isArray(input)) {
       locs = input;
     } else if (typeof input === 'object') {
-      locs = this.getPartLocations(input as Part);
+      const p = input as Part;
+      const currentStock = typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0;
+      if (currentStock <= 0) {
+        return 'Chưa phân vị trí';
+      }
+      locs = this.getPartLocations(p);
     }
+
     if (!Array.isArray(locs)) return 'Chưa phân vị trí';
+    // Only shelves with quantity > 0
     const active = locs.filter((l) => l && typeof l.quantity === 'number' && l.quantity > 0);
     if (active.length === 0) return 'Chưa phân vị trí';
-    if (active.length === 1) {
-      return active[0].locationName;
-    }
     return active.map((l) => `${l.locationName} (${l.quantity.toLocaleString('vi-VN')})`).join(', ');
   },
 
   getPartStockAtLocation(part: Part, locationName: string): number {
     const locs = this.getPartLocations(part);
-    const found = locs.find((l) => l.locationName.toLowerCase() === locationName.toLowerCase());
-    return found ? found.quantity : 0;
+    let totalAtLoc = 0;
+    for (const l of locs) {
+      if (typeof l.quantity === 'number' && l.quantity > 0 && isLocationMatch(l.locationName, locationName)) {
+        totalAtLoc += l.quantity;
+      }
+    }
+    return totalAtLoc;
   },
 
   getPartsAtLocation(parts: Part[], locationName: string): { part: Part; locationQty: number }[] {
     const result: { part: Part; locationQty: number }[] = [];
     for (const part of parts) {
+      if (typeof part.currentStock !== 'number' || part.currentStock <= 0) continue;
       const qty = this.getPartStockAtLocation(part, locationName);
       if (qty > 0) {
         result.push({ part, locationQty: qty });
@@ -517,12 +595,18 @@ export const storageService = {
     const stockBefore = part.currentStock;
     const stockAfter = stockBefore + params.quantity;
 
-    const targetLocName = params.locationId?.trim() || part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+    let targetLocName = params.locationId?.trim() || '';
+    if (!targetLocName && part.location) {
+      const activeLocs = this.getPartLocations(part);
+      targetLocName = activeLocs[0]?.locationName || 'Kho chính';
+    }
+    if (!targetLocName) targetLocName = 'Kho chính';
+    targetLocName = targetLocName.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
 
-    // Get current locations array and add stock to the specific location
+    // Get current locations array using stockBefore and add stock to the specific location
     const locs = this.getPartLocations(part);
     const existingIndex = locs.findIndex(
-      (l) => l.locationName.toLowerCase() === targetLocName.toLowerCase()
+      (l) => isLocationMatch(l.locationName, targetLocName)
     );
 
     if (existingIndex >= 0) {
@@ -531,12 +615,13 @@ export const storageService = {
       locs.push({ locationName: targetLocName, quantity: params.quantity });
     }
 
-    const newLocationSummary = this.formatPartLocationSummary(locs);
+    const activeLocs = locs.filter((l) => l.quantity > 0);
+    const newLocationSummary = this.formatPartLocationSummary(activeLocs);
 
     // Update part current stock & location breakdown
     this.updatePart(part.id, {
       currentStock: stockAfter,
-      locations: locs,
+      locations: activeLocs,
       location: newLocationSummary,
     });
 
@@ -587,21 +672,30 @@ export const storageService = {
 
       const stockBefore = part.currentStock;
       const stockAfter = stockBefore + params.quantity;
-      part.currentStock = stockAfter;
 
-      const targetLocName =
-        params.locationId?.trim() || part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+      let targetLocName = params.locationId?.trim() || '';
+      if (!targetLocName && part.location) {
+        const curActive = this.getPartLocations(part);
+        targetLocName = curActive[0]?.locationName || 'Kho chính';
+      }
+      if (!targetLocName) targetLocName = 'Kho chính';
+      targetLocName = targetLocName.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
+
+      // Retrieve current locations using stockBefore
       const locs = this.getPartLocations(part);
       const existingIndex = locs.findIndex(
-        (l) => l.locationName.toLowerCase() === targetLocName.toLowerCase()
+        (l) => isLocationMatch(l.locationName, targetLocName)
       );
       if (existingIndex >= 0) {
         locs[existingIndex].quantity += params.quantity;
       } else {
         locs.push({ locationName: targetLocName, quantity: params.quantity });
       }
-      part.locations = locs;
-      part.location = this.formatPartLocationSummary(locs);
+
+      const activeLocs = locs.filter((l) => l.quantity > 0);
+      part.currentStock = stockAfter;
+      part.locations = activeLocs;
+      part.location = this.formatPartLocationSummary(activeLocs);
       part.updatedAt = new Date().toISOString();
 
       const newTx: Transaction = {
@@ -682,34 +776,55 @@ export const storageService = {
 
       const stockBefore = part.currentStock;
       const stockAfter = stockBefore - params.quantity;
-      part.currentStock = stockAfter;
 
+      // Get current locations using stockBefore
       const locs = this.getPartLocations(part);
       let remainingToDeduct = params.quantity;
-      if (params.locationId) {
-        const targetLoc = params.locationId.trim();
-        const existing = locs.find((l) => l.locationName.toLowerCase() === targetLoc.toLowerCase());
+      const deductedLocations: Array<{ name: string; qty: number }> = [];
+
+      // Clean target location
+      const targetLoc = params.locationId
+        ? params.locationId.replace(/\s*\([\d\.\,\s]+\)$/, '').trim()
+        : '';
+
+      if (targetLoc) {
+        const existing = locs.find((l) => isLocationMatch(l.locationName, targetLoc) && l.quantity > 0);
         if (existing) {
           const deduct = Math.min(existing.quantity, remainingToDeduct);
           existing.quantity -= deduct;
           remainingToDeduct -= deduct;
+          deductedLocations.push({ name: existing.locationName, qty: deduct });
         }
       }
+
       if (remainingToDeduct > 0) {
         for (const loc of locs) {
           if (loc.quantity > 0) {
             const deduct = Math.min(loc.quantity, remainingToDeduct);
             loc.quantity -= deduct;
             remainingToDeduct -= deduct;
+            const existingDeducted = deductedLocations.find((d) => d.name === loc.locationName);
+            if (existingDeducted) {
+              existingDeducted.qty += deduct;
+            } else {
+              deductedLocations.push({ name: loc.locationName, qty: deduct });
+            }
             if (remainingToDeduct <= 0) break;
           }
         }
       }
 
+      // Filter only shelves with quantity > 0
       const activeLocs = locs.filter((l) => l.quantity > 0);
-      part.locations = locs;
-      part.location = this.formatPartLocationSummary(activeLocs.length > 0 ? activeLocs : locs);
+      part.currentStock = stockAfter;
+      part.locations = activeLocs;
+      part.location = this.formatPartLocationSummary(activeLocs);
       part.updatedAt = new Date().toISOString();
+
+      // Clean location description for transaction: actual shelves deducted from
+      const txLocation = deductedLocations.length > 0
+        ? deductedLocations.map((d) => d.name).join(', ')
+        : (targetLoc || 'Kho chính');
 
       const newTx: Transaction = {
         id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
@@ -724,7 +839,7 @@ export const storageService = {
         productionOrder: params.productionOrder || '',
         reasonOrPurpose: params.reasonOrPurpose || 'Xuất sản xuất FIFO',
         notes: params.notes || '',
-        locationId: params.locationId,
+        locationId: txLocation,
         stockBefore,
         stockAfter,
       };
@@ -828,14 +943,19 @@ export const storageService = {
     // Deduct stock from specific location or sequentially
     const locs = this.getPartLocations(part);
     let remainingToDeduct = params.quantity;
+    const deductedLocations: Array<{ name: string; qty: number }> = [];
 
-    if (params.locationId) {
-      const targetLoc = params.locationId.trim();
-      const existing = locs.find((l) => l.locationName.toLowerCase() === targetLoc.toLowerCase());
+    const targetLoc = params.locationId
+      ? params.locationId.replace(/\s*\([\d\.\,\s]+\)$/, '').trim()
+      : '';
+
+    if (targetLoc) {
+      const existing = locs.find((l) => isLocationMatch(l.locationName, targetLoc) && l.quantity > 0);
       if (existing) {
         const deduct = Math.min(existing.quantity, remainingToDeduct);
         existing.quantity -= deduct;
         remainingToDeduct -= deduct;
+        deductedLocations.push({ name: existing.locationName, qty: deduct });
       }
     }
 
@@ -845,20 +965,30 @@ export const storageService = {
           const deduct = Math.min(loc.quantity, remainingToDeduct);
           loc.quantity -= deduct;
           remainingToDeduct -= deduct;
+          const existingDeducted = deductedLocations.find((d) => d.name === loc.locationName);
+          if (existingDeducted) {
+            existingDeducted.qty += deduct;
+          } else {
+            deductedLocations.push({ name: loc.locationName, qty: deduct });
+          }
           if (remainingToDeduct <= 0) break;
         }
       }
     }
 
     const activeLocs = locs.filter((l) => l.quantity > 0);
-    const newLocationSummary = this.formatPartLocationSummary(activeLocs.length > 0 ? activeLocs : locs);
+    const newLocationSummary = this.formatPartLocationSummary(activeLocs);
 
     // Update part current stock & location breakdown
     this.updatePart(part.id, {
       currentStock: stockAfter,
-      locations: locs,
+      locations: activeLocs,
       location: newLocationSummary,
     });
+
+    const txLocation = deductedLocations.length > 0
+      ? deductedLocations.map((d) => d.name).join(', ')
+      : (targetLoc || 'Kho chính');
 
     // Create transaction
     const newTx: Transaction = {
@@ -874,7 +1004,7 @@ export const storageService = {
       productionOrder: params.productionOrder || '',
       reasonOrPurpose: params.reasonOrPurpose || 'Xuất sản xuất',
       notes: params.notes || '',
-      locationId: params.locationId,
+      locationId: txLocation,
       stockBefore,
       stockAfter,
     };
@@ -889,7 +1019,7 @@ export const storageService = {
       this.addKittingQueueItemFromStockOut(newTx, {
         voucherCode: params.voucherCode,
         voucherTitle: params.voucherTitle,
-        sourceBin: params.sourceBin || params.locationId,
+        sourceBin: params.sourceBin || txLocation,
         fifoAllocations: params.fifoAllocations,
       });
     } catch {
@@ -928,7 +1058,7 @@ export const storageService = {
 
     const locs = this.getPartLocations(part);
     const fromIndex = locs.findIndex(
-      (l) => l.locationName.toLowerCase() === fromLoc.toLowerCase()
+      (l) => isLocationMatch(l.locationName, fromLoc)
     );
 
     const availableInFrom = fromIndex >= 0 ? locs[fromIndex].quantity : 0;
@@ -943,7 +1073,7 @@ export const storageService = {
 
     // Add to toLocation
     const toIndex = locs.findIndex(
-      (l) => l.locationName.toLowerCase() === toLoc.toLowerCase()
+      (l) => isLocationMatch(l.locationName, toLoc)
     );
     if (toIndex >= 0) {
       locs[toIndex].quantity += params.quantity;
@@ -951,12 +1081,12 @@ export const storageService = {
       locs.push({ locationName: toLoc, quantity: params.quantity });
     }
 
-    // Keep locations with non-zero or all if empty
+    // Keep locations with non-zero only
     const activeLocs = locs.filter((l) => l.quantity > 0);
-    const newLocationSummary = this.formatPartLocationSummary(activeLocs.length > 0 ? activeLocs : locs);
+    const newLocationSummary = this.formatPartLocationSummary(activeLocs);
 
     const updatedPart = this.updatePart(part.id, {
-      locations: locs,
+      locations: activeLocs,
       location: newLocationSummary,
     });
 
@@ -1377,26 +1507,31 @@ export const storageService = {
         month: '2-digit',
         year: 'numeric',
       });
+      const isTransferNg = t.type === 'TRANSFER_TO_NG';
 
       return {
         'Ngày tháng': dateFormatted,
-        'Diễn giải / Nội dung': t.reasonOrPurpose || (t.type === 'IN' ? 'Nhập kho' : 'Xuất kho'),
+        'Diễn giải / Nội dung': isTransferNg ? `[Chuyển Kho NG] ${t.reasonOrPurpose || t.notes || ''}` : (t.reasonOrPurpose || (t.type === 'IN' ? 'Nhập kho' : 'Xuất kho')),
         'Nhập': t.type === 'IN' ? t.quantity : '',
-        'Xuất': t.type === 'OUT' ? t.quantity : '',
+        'Xuất': (t.type === 'OUT' || isTransferNg) ? t.quantity : '',
         'Tồn cuối': t.stockAfter,
+        'Kệ / Vị trí': (t.locationId || '').replace(/\s*\([\d\.\,\s]+\)$/, '').trim() + (isTransferNg ? ' (Xuất NG)' : ''),
         'Người thực hiện': t.person || '',
-        'Lệnh sản xuất': t.productionOrder || '',
+        'Lệnh sản xuất': t.productionOrder || (isTransferNg ? 'KHO-NG' : ''),
         'Ghi chú': t.notes || '',
       };
     });
 
     // Create sheet with title AOA first
+    const activeLocs = this.getPartLocations(part);
+    const locSummary = activeLocs.map((l) => `${l.locationName} (${l.quantity.toLocaleString('vi-VN')})`).join(', ') || 'Chưa phân vị trí';
+
     const ws = XLSX.utils.aoa_to_sheet([
       [settings.companyName.toUpperCase()],
       [settings.warehouseName],
       ['THẺ KHO ĐIỆN TỬ'],
       [`Mã linh kiện: ${part.code} | Tên: ${part.name}`],
-      [`Vị trí: ${part.location} | Đơn vị: ${part.unit} | Tồn hiện tại: ${part.currentStock}`],
+      [`Vị trí trên kệ: ${locSummary} | Đơn vị: ${part.unit} | Tồn hiện tại: ${part.currentStock}`],
       [],
     ]);
 
@@ -1409,22 +1544,30 @@ export const storageService = {
   },
 
   exportBinCardHistoryToExcel(transactions: Transaction[], fileName = 'nhat_ky_the_kho_dien_tu.xlsx'): void {
-    const excelData = transactions.map((t, idx) => ({
-      'STT': idx + 1,
-      'Thời Gian': new Date(t.date).toLocaleString('vi-VN'),
-      'Loại': t.type === 'IN' ? 'NHẬP KHO' : t.type === 'OUT' ? 'XUẤT KHO' : 'KIỂM KÊ',
-      'Mã Linh Kiện': t.partCode,
-      'Tên Linh Kiện': t.partName,
-      'Số Lượng Nhập (+)': t.type === 'IN' ? t.quantity : '',
-      'Số Lượng Xuất (-)': t.type === 'OUT' ? t.quantity : '',
-      'Tồn Sau Giao Dịch': t.stockAfter,
-      'Đơn Vị': t.unit,
-      'Kệ / Vị Trí': t.locationId || '',
-      'Người Thực Hiện': t.person || '',
-      'Lệnh Sản Xuất': t.productionOrder || '',
-      'Diễn Giải / Mục Đích': t.reasonOrPurpose || '',
-      'Ghi Chú': t.notes || '',
-    }));
+    // Filter out pure NG internal transactions
+    const mainTxs = transactions.filter(
+      (t) => t.type !== 'IMPORT_NG' && t.type !== 'EXPORT_NG_RTV' && t.type !== 'EXPORT_NG_SCRAP'
+    );
+
+    const excelData = mainTxs.map((t, idx) => {
+      const isTransferNg = t.type === 'TRANSFER_TO_NG';
+      return {
+        'STT': idx + 1,
+        'Thời Gian': new Date(t.date).toLocaleString('vi-VN'),
+        'Loại': t.type === 'IN' ? 'NHẬP KHO' : isTransferNg ? 'CHUYỂN KHO NG' : t.type === 'OUT' ? 'XUẤT KHO' : 'KIỂM KÊ',
+        'Mã Linh Kiện': t.partCode,
+        'Tên Linh Kiện': t.partName,
+        'Số Lượng Nhập (+)': t.type === 'IN' ? t.quantity : '',
+        'Số Lượng Xuất (-)': (t.type === 'OUT' || isTransferNg) ? t.quantity : '',
+        'Tồn Sau Giao Dịch': t.stockAfter,
+        'Đơn Vị': t.unit,
+        'Kệ / Vị Trí': (t.locationId || '').replace(/\s*\([\d\.\,\s]+\)$/, '').trim() + (isTransferNg ? ' (Xuất NG)' : ''),
+        'Người Thực Hiện': t.person || '',
+        'Lệnh Sản Xuất': t.productionOrder || (isTransferNg ? 'KHO-NG' : ''),
+        'Diễn Giải / Mục Đích': isTransferNg ? `[Chuyển Kho NG] ${t.reasonOrPurpose || ''}` : (t.reasonOrPurpose || ''),
+        'Ghi Chú': t.notes || '',
+      };
+    });
 
     const ws = XLSX.utils.json_to_sheet(excelData);
     const wb = XLSX.utils.book_new();

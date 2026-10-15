@@ -986,10 +986,25 @@ const NgImportModal: React.FC<NgImportModalProps> = ({
         const newCurrentStock = Math.max(0, oldCurrentStock - totalTransferQty);
         const newQtyNg = oldQtyNg + totalTransferQty;
 
+        // Deduct from shelf locations
+        const locs = storageService.getPartLocations(part);
+        let rem = totalTransferQty;
+        for (const loc of locs) {
+          if (loc.quantity > 0) {
+            const dec = Math.min(loc.quantity, rem);
+            loc.quantity -= dec;
+            rem -= dec;
+            if (rem <= 0) break;
+          }
+        }
+        const activeLocs = locs.filter((l) => l.quantity > 0);
+
         partsToUpdate.push({
           ...part,
           currentStock: newCurrentStock,
           qtyNg: newQtyNg,
+          locations: activeLocs,
+          location: storageService.formatPartLocationSummary(activeLocs),
           updatedAt: new Date().toISOString(),
         });
       });
@@ -999,6 +1014,9 @@ const NgImportModal: React.FC<NgImportModalProps> = ({
         const p = item.part;
         const currentStock = p.currentStock || 0;
         const currentQtyNg = p.qtyNg || 0;
+
+        const activeLocs = storageService.getPartLocations(p);
+        const sourceLoc = activeLocs[0]?.locationName || p.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
 
         transactionsToInsert.push({
           id: 'tx-ng-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
@@ -1010,9 +1028,10 @@ const NgImportModal: React.FC<NgImportModalProps> = ({
           quantity: item.quantity,
           date: new Date().toISOString(),
           person: transferPerson,
-          reasonOrPurpose: item.reason,
+          reasonOrPurpose: `Chuyển Kho NG: ${item.reason}`,
           ngReason: item.reason,
           notes: item.notes || `Chuyển ${item.quantity} ${p.unit} từ Kho Chính sang Kho NG`,
+          locationId: sourceLoc,
           stockBefore: currentStock,
           stockAfter: Math.max(0, currentStock - item.quantity),
           ngStockBefore: currentQtyNg,

@@ -203,7 +203,15 @@ export const ExcelStockInModal: React.FC<ExcelStockInModalProps> = ({
           currentParts = storageService.getParts();
         }
 
-        const targetLoc = item.location.trim() || targetPart.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+        const activeLocs = storageService.getPartLocations(targetPart);
+        let targetLoc = item.location?.trim() || '';
+        if (!targetLoc) {
+          targetLoc = activeLocs[0]?.locationName || 'Kho chính';
+        }
+        targetLoc = targetLoc.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
+        if (!targetLoc || targetLoc.toLowerCase().includes('chưa phân')) {
+          targetLoc = 'Kho chính';
+        }
 
         batchItems.push({
           partId: targetPart.id,

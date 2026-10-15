@@ -93,10 +93,10 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
     });
   }, [partHistory, dateFrom, dateTo, binCardFilterText]);
 
-  // Multi-location breakdown for Selected Part
+  // Multi-location breakdown for Selected Part (hide any shelf where quantity <= 0)
   const partLocations = useMemo(() => {
-    if (!selectedPart) return [];
-    return storageService.getPartLocations(selectedPart);
+    if (!selectedPart || selectedPart.currentStock <= 0) return [];
+    return storageService.getPartLocations(selectedPart).filter((l) => typeof l.quantity === 'number' && l.quantity > 0);
   }, [selectedPart]);
 
   // Summary Metrics for Selected Part
@@ -108,7 +108,7 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
 
   const totalOut = useMemo(() => {
     return filteredHistory
-      .filter((t) => t.type === 'OUT')
+      .filter((t) => t.type === 'OUT' || t.type === 'TRANSFER_TO_NG')
       .reduce((sum, t) => sum + t.quantity, 0);
   }, [filteredHistory]);
 
@@ -343,7 +343,10 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
                     </span>
                   ))}
                   {partLocations.length === 0 && (
-                    <span className="text-slate-500 italic">Chưa xác định vị trí</span>
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                      <MapPin className="w-3.5 h-3.5 mr-1 text-slate-400 shrink-0" />
+                      <span>Chưa có hàng trên kệ (Tồn kho = 0)</span>
+                    </span>
                   )}
                 </div>
               </div>
@@ -429,7 +432,13 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
                     filteredHistory.map((item, idx) => {
                       const isStockIn = item.type === 'IN';
                       const isAudit = item.type === 'AUDIT_ADJUSTMENT';
-                      const itemLoc = item.locationId || selectedPart.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+                      const isTransferToNg = item.type === 'TRANSFER_TO_NG';
+
+                      let rawItemLoc = item.locationId?.trim() || '';
+                      let cleanItemLoc = rawItemLoc.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
+                      if (!cleanItemLoc || cleanItemLoc.toLowerCase().includes('chưa phân')) {
+                        cleanItemLoc = partLocations[0]?.locationName || 'Kho chính';
+                      }
 
                       return (
                         <tr key={item.id} className="border-b border-slate-200 hover:bg-blue-50/30 transition-colors">
@@ -455,9 +464,13 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
                             {item.stockAfter.toLocaleString('vi-VN')} {selectedPart.unit}
                           </td>
                           <td className="p-2 border-r border-slate-200 font-bold text-slate-800 whitespace-nowrap">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-950 border border-emerald-300 shadow-2xs">
-                              <MapPin className="w-3 h-3 mr-1 text-emerald-600 shrink-0" />
-                              {itemLoc}
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${
+                              isTransferToNg
+                                ? 'bg-amber-100 text-amber-950 border border-amber-300'
+                                : 'bg-emerald-50 text-emerald-950 border border-emerald-300'
+                            } shadow-2xs`}>
+                              <MapPin className={`w-3 h-3 mr-1 ${isTransferToNg ? 'text-amber-600' : 'text-emerald-600'} shrink-0`} />
+                              {cleanItemLoc}{isTransferToNg ? ' (Xuất NG)' : ''}
                             </span>
                           </td>
                           <td className="p-2 border-r border-slate-200 font-medium text-slate-800">
@@ -468,12 +481,22 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
                               <span className="px-1.5 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200">
                                 {item.productionOrder}
                               </span>
+                            ) : isTransferToNg ? (
+                              <span className="px-1.5 py-0.5 bg-amber-50 text-amber-800 rounded border border-amber-200">
+                                KHO-NG
+                              </span>
                             ) : (
                               '-'
                             )}
                           </td>
                           <td className="p-2 text-slate-600">
-                            {item.reasonOrPurpose} {item.notes ? `(${item.notes})` : ''}
+                            {isTransferToNg ? (
+                              <span className="font-semibold text-amber-800">
+                                [Chuyển Kho NG] {item.reasonOrPurpose || item.ngReason || ''} {item.notes ? `(${item.notes})` : ''}
+                              </span>
+                            ) : (
+                              <>{item.reasonOrPurpose} {item.notes ? `(${item.notes})` : ''}</>
+                            )}
                           </td>
                         </tr>
                       );

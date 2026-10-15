@@ -223,8 +223,13 @@ export async function parseStockInExcel(
       errorMessage = 'Số lượng nhập phải lớn hơn 0';
     }
 
-    // Default location if empty: use matched part location or default warehouse
-    const resolvedLoc = rawLoc || (matchedPart?.location ? matchedPart.location.split(',')[0].split('(')[0].trim() : 'Kho chính');
+    // Default location if empty: use matched part active location or default warehouse
+    let resolvedLoc = rawLoc;
+    if (!resolvedLoc && matchedPart) {
+      const activeLocs = storageService.getPartLocations(matchedPart);
+      resolvedLoc = activeLocs[0]?.locationName || 'Kho chính';
+    }
+    if (!resolvedLoc) resolvedLoc = 'Kho chính';
 
     items.push({
       id: `in-${r}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -280,10 +285,11 @@ export function calculatePartFifoAllocation(
   for (const lot of activeLots) {
     if (remainingNeed <= 0) break;
     const allocQty = Math.min(lot.remainingQty, remainingNeed);
+    const activeLocs = storageService.getPartLocations(part);
     allocations.push({
       lotId: lot.id,
       contNumber: lot.contNumber,
-      locationName: lot.locationName || part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính',
+      locationName: lot.locationName || activeLocs[0]?.locationName || 'Kho chính',
       importDate: lot.importDate,
       availableQty: lot.remainingQty,
       allocatedQty: allocQty,
@@ -320,10 +326,11 @@ export function calculatePartFifoAllocation(
 
   // 3. Fallback if still remaining but part.currentStock >= requestedQty
   if (remainingNeed > 0 && part.currentStock >= requestedQty) {
+    const activeLocs = storageService.getPartLocations(part);
     allocations.push({
       lotId: `fallback-${part.id}`,
       contNumber: 'Kho Chính',
-      locationName: part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính',
+      locationName: activeLocs[0]?.locationName || 'Kho chính',
       importDate: part.createdAt || new Date().toISOString(),
       availableQty: part.currentStock,
       allocatedQty: remainingNeed,

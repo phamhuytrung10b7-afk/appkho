@@ -367,6 +367,8 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
             });
           }
         } else {
+          const activeLocs = storageService.getPartLocations(item.matchedPart);
+          const firstActive = activeLocs[0]?.locationName || 'Kho chính';
           batchItems.push({
             partId: item.matchedPart.id,
             quantity: item.quantity,
@@ -375,10 +377,10 @@ export const ExcelStockOutFifoModal: React.FC<ExcelStockOutFifoModalProps> = ({
             productionOrder: productionOrder.trim() || 'LSX-XUAT-EXCEL',
             reasonOrPurpose: purpose.trim() || 'Xuất theo file Excel (FIFO)',
             notes: `Xuất kho FIFO từ file Excel - Phiếu: ${finalVoucherCode}`,
-            locationId: item.matchedPart.location,
+            locationId: firstActive,
             voucherCode: finalVoucherCode,
             voucherTitle: finalVoucherTitle,
-            sourceBin: item.matchedPart.location,
+            sourceBin: firstActive,
             fifoAllocations: item.fifoAllocations,
           });
         }

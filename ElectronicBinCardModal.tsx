@@ -81,14 +81,11 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
     });
   }, [allHistory, dateFrom, dateTo, filterText]);
 
-  // Calculate part multi-location breakdown (if actual stock is 0, zero out location quantities)
+  // Calculate part multi-location breakdown (hide any shelf where quantity <= 0)
   const partLocations = useMemo(() => {
-    if (!part) return [];
+    if (!part || actualCurrentStock <= 0) return [];
     const rawLocs = storageService.getPartLocations(part);
-    if (actualCurrentStock === 0) {
-      return rawLocs.map((l) => ({ ...l, quantity: 0 }));
-    }
-    return rawLocs;
+    return rawLocs.filter((l) => typeof l.quantity === 'number' && l.quantity > 0);
   }, [part, actualCurrentStock]);
 
   const totalIn = useMemo(() => {
@@ -99,7 +96,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
 
   const totalOut = useMemo(() => {
     return filteredHistory
-      .filter((t) => t.type === 'OUT')
+      .filter((t) => t.type === 'OUT' || t.type === 'TRANSFER_TO_NG')
       .reduce((sum, t) => sum + t.quantity, 0);
   }, [filteredHistory]);
 
@@ -257,7 +254,10 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                     </span>
                   ))}
                   {partLocations.length === 0 && (
-                    <span className="text-xs text-slate-500 italic">Chưa phân vị trí</span>
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                      <MapPin className="w-3.5 h-3.5 mr-1 text-slate-400 shrink-0" />
+                      <span>Chưa có hàng trên kệ (Tồn kho = 0)</span>
+                    </span>
                   )}
                 </div>
               </div>
@@ -325,8 +325,14 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                     filteredHistory.map((item, idx) => {
                       const isStockIn = item.type === 'IN';
                       const isAudit = item.type === 'AUDIT_ADJUSTMENT';
+                      const isTransferToNg = item.type === 'TRANSFER_TO_NG';
 
-                      const itemLoc = item.locationId || part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+                      // Format clean shelf location (clean composite string, remove (0))
+                      let rawItemLoc = item.locationId?.trim() || '';
+                      let cleanItemLoc = rawItemLoc.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
+                      if (!cleanItemLoc || cleanItemLoc.toLowerCase().includes('chưa phân')) {
+                        cleanItemLoc = partLocations[0]?.locationName || 'Kho chính';
+                      }
 
                       return (
                         <tr
@@ -355,19 +361,29 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                             {item.stockAfter.toLocaleString('vi-VN')}
                           </td>
                           <td className="p-2 border-r border-slate-200 font-bold text-slate-800 bg-emerald-50/20 whitespace-nowrap">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100/90 text-emerald-950 border border-emerald-300 shadow-2xs">
-                              <MapPin className="w-3 h-3 mr-1 text-emerald-600 shrink-0" />
-                              {itemLoc}
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${
+                              isTransferToNg
+                                ? 'bg-amber-100 text-amber-950 border border-amber-300'
+                                : 'bg-emerald-100/90 text-emerald-950 border border-emerald-300'
+                            } shadow-2xs`}>
+                              <MapPin className={`w-3 h-3 mr-1 ${isTransferToNg ? 'text-amber-600' : 'text-emerald-600'} shrink-0`} />
+                              {cleanItemLoc}{isTransferToNg ? ' (Xuất NG)' : ''}
                             </span>
                           </td>
                           <td className="p-2 border-r border-slate-200 font-medium text-slate-800">
                             {item.person || '-'}
                           </td>
                           <td className="p-2 border-r border-slate-200 font-mono text-blue-700 font-semibold">
-                            {item.productionOrder || '-'}
+                            {item.productionOrder || (isTransferToNg ? 'KHO-NG' : '-')}
                           </td>
                           <td className="p-2 text-slate-600">
-                            {item.reasonOrPurpose} {item.notes ? `(${item.notes})` : ''}
+                            {isTransferToNg ? (
+                              <span className="font-semibold text-amber-800">
+                                [Chuyển Kho NG] {item.reasonOrPurpose || item.ngReason || ''} {item.notes ? `(${item.notes})` : ''}
+                              </span>
+                            ) : (
+                              <>{item.reasonOrPurpose} {item.notes ? `(${item.notes})` : ''}</>
+                            )}
                           </td>
                         </tr>
                       );

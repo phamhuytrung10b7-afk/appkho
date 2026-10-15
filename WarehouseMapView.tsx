@@ -280,7 +280,7 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
       alert('Chỉ tài khoản Quản trị viên (ADMIN) mới có quyền xóa vị trí kho!');
       return;
     }
-    const partsInLoc = parts.filter((p) => p.location === name);
+    const partsInLoc = storageService.getPartsAtLocation(parts, name);
     if (partsInLoc.length > 0) {
       if (
         !confirm(
@@ -321,12 +321,14 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   // Stats
   const totalLocations = locations.length;
   const occupiedLocationsCount = locations.filter((loc) =>
-    parts.some((p) => p.location === loc.name)
+    storageService.getPartsAtLocation(parts, loc.name).length > 0
   ).length;
   const emptyLocationsCount = totalLocations - occupiedLocationsCount;
-  const unassignedPartsCount = parts.filter(
-    (p) => !p.location || p.location === 'Chưa phân vị trí' || p.location === 'Kho chính'
-  ).length;
+  const unassignedPartsCount = parts.filter((p) => {
+    if (typeof p.currentStock !== 'number' || p.currentStock <= 0) return false;
+    const locs = storageService.getPartLocations(p);
+    return locs.length === 0;
+  }).length;
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">

@@ -55,7 +55,7 @@ export const FifoDetailModal: React.FC<FifoDetailModalProps> = ({ isOpen, onClos
               <p className="text-xl font-black text-slate-900 mt-0.5">
                 {part.currentStock.toLocaleString('vi-VN')} <span className="text-xs text-slate-500">{part.unit}</span>
               </p>
-              <p className="text-[10px] text-slate-500 mt-1">Vị trí: <strong>{part.location}</strong></p>
+              <p className="text-[10px] text-slate-500 mt-1">Vị trí: <strong>{storageService.formatPartLocationSummary(part)}</strong></p>
             </div>
 
             <div className="p-3.5 bg-amber-50 border-2 border-amber-300 rounded-xl sm:col-span-2">
