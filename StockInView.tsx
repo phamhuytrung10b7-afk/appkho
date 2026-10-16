@@ -534,13 +534,14 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     contNumber?: string,
     tagId?: string
   ) => {
+    let tx: any;
     try {
       const nowIso = new Date().toISOString();
       const staffPerson = person?.trim() || currentUserName || defaultPerson || 'Nhân sự kho';
       const reasonText = contNumber ? `Nhập kho theo Cont ${contNumber}` : 'Nhập kho thủ công';
       const noteText = tagId ? `Tem QR: ${tagId}` : (contNumber ? `Mã Cont: ${contNumber}` : '');
 
-      const tx = storageService.addStockIn({
+      tx = storageService.addStockIn({
         partId: part.id,
         quantity: actualQty,
         date: nowIso,
@@ -549,28 +550,39 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         notes: noteText,
         locationId: targetLocName,
       });
+    } catch (err: any) {
+      soundEffects.playErrorBuzzer();
+      setErrorModal({
+        isOpen: true,
+        title: '❌ LỖI LƯU NHẬP KHO',
+        message: `Không thể hoàn tất giao dịch nhập kho: ${err?.message || 'Lỗi không xác định'}`,
+      });
+      isManualStockInProcessingRef.current = false;
+      return;
+    }
 
-      // storageService.addStockIn already updates part location and stock breakdown automatically
-
-      // If imported via Cont QR Code, mark this tag as USED safely
+    // --- TRANSACTION HAS SUCCEEDED ---
+    // All UI updates, camera closures, audio, and sync are safely executed without triggering error modal
+    try {
+      // 1. Mark QR token as used safely if applicable
       if (tagId) {
         try {
           storageService.markQrTokenAsUsed(tagId, {
             partCode: part.code,
             quantity: actualQty,
             contNumber: contNumber || '',
-            person: staffPerson,
+            person: person?.trim() || currentUserName || defaultPerson || 'Nhân sự kho',
           });
         } catch (e) {
           console.warn('Mark token warning:', e);
         }
       }
 
-      // Close modal & stop camera immediately
-      setManualStockInModal(null);
+      // 2. Safely stop camera & close modal
       stopManualModalShelfCamera();
+      setManualStockInModal(null);
 
-      // Add to session history
+      // 3. Add to session history
       const nowTimeStr = new Date().toLocaleTimeString('vi-VN');
       setAutoScanHistory((prev) => [
         {
@@ -586,7 +598,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         ...prev,
       ]);
 
-      // Audio & success notification
+      // 4. Audio & success notification
       soundEffects.playSuccessTingTing();
       setMessage({
         type: 'success',
@@ -602,23 +614,18 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         },
       });
 
-      // Reset form states
+      // 5. Reset form states
       setManualModalQtyInput('');
       setManualModalShelfInput('');
 
-      // Safely notify parent to refresh state without throwing to the error modal
+      // 6. Safely notify parent to refresh state
       try {
         onSuccess();
       } catch (onSuccessErr) {
         console.warn('onSuccess callback non-blocking warning:', onSuccessErr);
       }
-    } catch (err: any) {
-      soundEffects.playErrorBuzzer();
-      setErrorModal({
-        isOpen: true,
-        title: '❌ LỖI LƯU NHẬP KHO',
-        message: `Không thể hoàn tất giao dịch nhập kho: ${err?.message || 'Lỗi không xác định'}`,
-      });
+    } catch (uiErr) {
+      console.warn('Non-critical UI update error:', uiErr);
     } finally {
       setTimeout(() => {
         isManualStockInProcessingRef.current = false;
@@ -643,10 +650,10 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
             if (hasHandledShelfFrame || isManualStockInProcessingRef.current) return;
             hasHandledShelfFrame = true;
 
-            if (html5QrCode.isScanning) {
-              html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
-            }
-            setIsManualModalShelfCamActive(false);
+            // Stop camera first safely
+            stopManualModalShelfCamera();
+
+            // Execute shelf scan processing
             handleManualModalShelfScan(decodedText);
           },
           () => {}
@@ -670,10 +677,30 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   };
 
   const stopManualModalShelfCamera = () => {
-    if (manualModalShelfHtml5QrRef.current && manualModalShelfHtml5QrRef.current.isScanning) {
-      manualModalShelfHtml5QrRef.current.stop().then(() => manualModalShelfHtml5QrRef.current?.clear()).catch(() => {});
+    try {
+      const qrInstance = manualModalShelfHtml5QrRef.current;
+      manualModalShelfHtml5QrRef.current = null;
+      if (qrInstance) {
+        if (qrInstance.isScanning) {
+          qrInstance
+            .stop()
+            .then(() => {
+              try {
+                qrInstance.clear();
+              } catch {}
+            })
+            .catch(() => {});
+        } else {
+          try {
+            qrInstance.clear();
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn('Manual modal shelf camera stop error:', e);
+    } finally {
+      setIsManualModalShelfCamActive(false);
     }
-    setIsManualModalShelfCamActive(false);
   };
 
   // Submit handler for partial / batch import popup modal
