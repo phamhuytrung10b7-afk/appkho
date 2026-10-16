@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Part, AppSettings } from './types';
 import { storageService } from './storage';
 import { BatchPrintQrModal } from './BatchPrintQrModal';
 import { ContainerImportPrintModal } from './ContainerImportPrintModal';
 import { FifoDetailModal } from './FifoDetailModal';
+import { smartFuzzySearch } from './fuzzySearch';
 import {
   Package,
   Plus,
@@ -63,26 +64,40 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
   const [selectedPartForFifo, setSelectedPartForFifo] = useState<Part | null>(null);
   const pageSize = 10;
 
-  // Filter & Search Logic
-  const filteredParts = useMemo(() => {
+  const [debouncedSearch, setDebouncedSearch] = useState(searchTerm);
+
+  // Debounce search input (220ms)
+  useEffect(() => {
+    if (!searchTerm.trim()) {
+      setDebouncedSearch('');
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  // Filter by status first
+  const statusFilteredParts = useMemo(() => {
+    if (statusFilter === 'ALL') return parts;
     return parts.filter((p) => {
-      // Status Filter
       if (statusFilter === 'SAFE' && (p.currentStock === 0 || p.currentStock <= p.minStock)) return false;
       if (statusFilter === 'LOW' && (p.currentStock === 0 || p.currentStock > p.minStock)) return false;
       if (statusFilter === 'OUT' && p.currentStock > 0) return false;
-
-      // Text Search
-      if (searchTerm) {
-        const query = searchTerm.toLowerCase();
-        const matchCode = p.code.toLowerCase().includes(query);
-        const matchName = p.name.toLowerCase().includes(query);
-        const matchLoc = p.location.toLowerCase().includes(query);
-        const matchNote = p.note?.toLowerCase().includes(query);
-        if (!matchCode && !matchName && !matchLoc && !matchNote) return false;
-      }
       return true;
     });
-  }, [parts, statusFilter, searchTerm]);
+  }, [parts, statusFilter]);
+
+  // Filter & Rank by Smart Fuzzy Search
+  const filteredParts = useMemo(() => {
+    if (!debouncedSearch.trim()) return statusFilteredParts;
+    return smartFuzzySearch<Part>(
+      statusFilteredParts,
+      (p: Part) => [p.code, p.name, p.location || '', p.barcode || '', p.qrCode || '', p.note || ''],
+      debouncedSearch
+    );
+  }, [statusFilteredParts, debouncedSearch]);
 
   // Sort Logic
   const sortedParts = useMemo(() => {

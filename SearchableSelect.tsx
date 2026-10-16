@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Search, ChevronDown, Check, Plus, X } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Search, ChevronDown, Check, Plus, X, Sparkles } from 'lucide-react';
 import { smartFuzzySearch } from './fuzzySearch';
 
 export interface SelectOption {
@@ -26,7 +26,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   options,
   value,
   onChange,
-  placeholder = '— Chọn hoặc tìm kiếm —',
+  placeholder = '— Chọn hoặc gõ tìm kiếm linh kiện —',
   allowCustom = true,
   required = false,
   icon,
@@ -38,35 +38,45 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Debounce search term (250ms)
+  // Debounce search term (220ms) - clears immediately if empty to remain ultra responsive
   useEffect(() => {
+    if (!searchTerm.trim()) {
+      setDebouncedSearch('');
+      return;
+    }
     const timer = setTimeout(() => {
       setDebouncedSearch(searchTerm);
-    }, 250);
+    }, 220);
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Normalize options to SelectOption[]
-  const normalizedOptions: SelectOption[] = options.map((opt) => {
-    if (typeof opt === 'string') {
-      return { value: opt, label: opt };
-    }
-    return opt;
-  });
+  // Normalize options to SelectOption[] using memoization
+  const normalizedOptions: SelectOption[] = useMemo(() => {
+    return options.map((opt) => {
+      if (typeof opt === 'string') {
+        return { value: opt, label: opt };
+      }
+      return opt;
+    });
+  }, [options]);
 
   // Find currently selected label
   const selectedOpt = normalizedOptions.find((o) => o.value === value);
   const displayLabel = selectedOpt ? selectedOpt.label : value || placeholder;
 
-  // Filtered options based on smart fuzzy search
-  const filteredOptions = smartFuzzySearch(
-    normalizedOptions,
-    (opt) => [opt.label, opt.value, opt.sublabel || '', opt.badge || ''],
-    debouncedSearch
-  );
+  // Filtered options based on smart fuzzy search with In-Memory RAM Cache
+  const filteredOptions = useMemo(() => {
+    return smartFuzzySearch(
+      normalizedOptions,
+      (opt) => [opt.label, opt.value, opt.sublabel || '', opt.badge || ''],
+      debouncedSearch
+    );
+  }, [normalizedOptions, debouncedSearch]);
 
   const isExactMatch = normalizedOptions.some(
-    (o) => o.value.toLowerCase() === searchTerm.trim().toLowerCase() || o.label.toLowerCase() === searchTerm.trim().toLowerCase()
+    (o) =>
+      o.value.toLowerCase() === searchTerm.trim().toLowerCase() ||
+      o.label.toLowerCase() === searchTerm.trim().toLowerCase()
   );
 
   // Close dropdown on click outside
@@ -88,6 +98,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
       }, 50);
     } else {
       setSearchTerm('');
+      setDebouncedSearch('');
     }
   }, [isOpen]);
 
@@ -107,61 +118,77 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
       {/* Main Trigger Button */}
       <div
         onClick={() => setIsOpen(!isOpen)}
-        className={`w-full flex items-center justify-between px-3 py-2.5 bg-slate-50 hover:bg-slate-100/80 border rounded-xl cursor-pointer transition-all ${
-          isOpen ? 'border-blue-500 ring-2 ring-blue-500/20 bg-white' : 'border-slate-300'
+        className={`w-full flex items-center justify-between px-3.5 py-2.5 sm:py-3 bg-slate-50 hover:bg-slate-100/90 border rounded-xl cursor-pointer transition-all shadow-2xs select-none ${
+          isOpen ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-white' : 'border-slate-300'
         }`}
       >
         <div className="flex items-center space-x-2 min-w-0 pr-2">
           {icon && <span className="text-slate-400 shrink-0">{icon}</span>}
           <span
-            className={`text-xs truncate font-medium ${
+            className={`text-xs sm:text-sm truncate font-medium ${
               value ? 'text-slate-900 font-bold' : 'text-slate-400'
             }`}
           >
             {displayLabel}
           </span>
         </div>
-        <ChevronDown
-          className={`w-4 h-4 text-slate-400 shrink-0 transition-transform duration-200 ${
-            isOpen ? 'rotate-180 text-blue-600' : ''
-          }`}
-        />
+        <div className="flex items-center space-x-1.5 shrink-0">
+          <ChevronDown
+            className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+              isOpen ? 'rotate-180 text-emerald-600' : ''
+            }`}
+          />
+        </div>
       </div>
 
       {/* Dropdown Menu */}
       {isOpen && (
-        <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+        <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 max-w-full">
           {/* Search Header */}
-          <div className="p-2 border-b border-slate-100 bg-slate-50/50 flex items-center space-x-2">
-            <Search className="w-4 h-4 text-slate-400 shrink-0 ml-1.5" />
+          <div className="p-2.5 border-b border-slate-100 bg-slate-50 flex items-center space-x-2">
+            <Search className="w-4 h-4 text-emerald-600 shrink-0 ml-1" />
             <input
               ref={searchInputRef}
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Gõ để tìm kiếm..."
-              className="w-full bg-transparent border-none text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden py-1"
+              placeholder="Gõ từ khóa không dấu, rời rạc (VD: plc s7, bulong 25)..."
+              className="w-full bg-transparent border-none text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-hidden py-1 font-medium"
             />
             {searchTerm && (
               <button
                 type="button"
                 onClick={() => setSearchTerm('')}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-full"
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200 transition-colors"
+                title="Xóa tìm kiếm"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-4 h-4" />
               </button>
             )}
           </div>
 
+          {/* Quick status bar showing result count */}
+          <div className="px-3 py-1 bg-emerald-50/60 border-b border-emerald-100 flex items-center justify-between text-[11px] text-emerald-800 font-medium">
+            <span className="flex items-center space-x-1">
+              <Sparkles className="w-3 h-3 text-emerald-600" />
+              <span>
+                {debouncedSearch ? `Tìm thấy ${filteredOptions.length} kết quả phù hợp` : `Tổng cộng ${normalizedOptions.length} linh kiện`}
+              </span>
+            </span>
+            {debouncedSearch && (
+              <span className="text-[10px] text-slate-400">Đã sắp xếp độ khớp cao nhất</span>
+            )}
+          </div>
+
           {/* Options List */}
-          <div className="max-h-60 overflow-y-auto p-1 divide-y divide-slate-50">
+          <div className="max-h-64 sm:max-h-72 overflow-y-auto p-1.5 divide-y divide-slate-100 overscroll-contain">
             {/* Custom Input Option if allowed and user typed something not matching */}
             {allowCustom && searchTerm.trim() && !isExactMatch && (
               <div
                 onClick={() => handleSelect(searchTerm.trim())}
-                className="p-2.5 hover:bg-blue-50 text-blue-700 rounded-xl cursor-pointer text-xs font-semibold flex items-center space-x-2 transition-colors mb-1 border border-dashed border-blue-200"
+                className="p-2.5 hover:bg-emerald-50 text-emerald-700 rounded-xl cursor-pointer text-xs font-semibold flex items-center space-x-2 transition-colors mb-1 border border-dashed border-emerald-200"
               >
-                <Plus className="w-4 h-4 text-blue-600 shrink-0" />
+                <Plus className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
                   Dùng giá trị tự nhập: <strong className="font-bold">"{searchTerm.trim()}"</strong>
                 </span>
@@ -169,8 +196,9 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
             )}
 
             {filteredOptions.length === 0 && (!allowCustom || !searchTerm.trim()) ? (
-              <div className="p-4 text-center text-xs text-slate-400 italic">
-                Không tìm thấy kết quả phù hợp
+              <div className="p-6 text-center text-xs text-slate-400 italic space-y-1">
+                <p>Không tìm thấy linh kiện nào khớp với từ khóa "{debouncedSearch}"</p>
+                <p className="text-[10px] text-slate-400">Thử gõ mã viết tắt, tên không dấu hoặc vị trí kệ</p>
               </div>
             ) : (
               filteredOptions.map((opt) => {
@@ -179,17 +207,17 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                   <div
                     key={opt.value}
                     onClick={() => handleSelect(opt.value)}
-                    className={`p-2.5 rounded-xl cursor-pointer text-xs flex items-center justify-between transition-colors ${
+                    className={`p-2.5 sm:p-3 rounded-xl cursor-pointer text-xs flex items-center justify-between transition-colors ${
                       isSelected
-                        ? 'bg-blue-50/80 text-blue-900 font-bold'
-                        : 'hover:bg-slate-50 text-slate-700 font-medium'
+                        ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-200'
+                        : 'hover:bg-slate-50 text-slate-700 active:bg-emerald-50/50'
                     }`}
                   >
                     <div className="min-w-0 pr-2">
-                      <div className="flex items-center space-x-2">
-                        <span className="truncate">{opt.label}</span>
+                      <div className="flex items-center space-x-2 flex-wrap">
+                        <span className="truncate text-xs sm:text-sm font-semibold">{opt.label}</span>
                         {opt.badge && (
-                          <span className="px-1.5 py-0.5 text-[10px] bg-slate-100 text-slate-600 rounded-md font-mono shrink-0">
+                          <span className="px-1.5 py-0.5 text-[10px] bg-emerald-100/70 text-emerald-800 rounded-md font-mono shrink-0 font-bold">
                             {opt.badge}
                           </span>
                         )}
@@ -200,7 +228,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                         </p>
                       )}
                     </div>
-                    {isSelected && <Check className="w-4 h-4 text-blue-600 shrink-0 ml-1" />}
+                    {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 ml-1.5" />}
                   </div>
                 );
               })

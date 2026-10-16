@@ -74,9 +74,6 @@ export function findLocationMatch(
     raw = parts[parts.length - 1].trim();
   }
 
-  const normScanned = normalizeLocationStr(raw);
-  if (!normScanned) return undefined;
-
   // 1. Exact case-insensitive match on name or id
   let found = locations.find(
     (l) =>
@@ -85,39 +82,57 @@ export function findLocationMatch(
   );
   if (found) return found;
 
+  const normScanned = normalizeLocationStr(raw);
+  if (!normScanned) return undefined;
+
+  // Normalized version without prefixes (e.g. 'kea01' -> 'a01')
+  const cleanNormScanned = normScanned.replace(/^(ke|kho|rack|shelf|vitri|khoang)/i, '');
+
   // 2. Exact match on prefix/short name (e.g. "A01" matching "A01 (Khoang 01 - Tầng 1 - Vị trí 1)")
   found = locations.find((l) => {
     const shortName = l.name.split('(')[0].trim();
+    const shortNorm = normalizeLocationStr(shortName);
+    const shortCleanNorm = shortNorm.replace(/^(ke|kho|rack|shelf|vitri|khoang)/i, '');
     return (
       shortName.toLowerCase() === raw.toLowerCase() ||
-      normalizeLocationStr(shortName) === normScanned
+      shortNorm === normScanned ||
+      shortCleanNorm === cleanNormScanned ||
+      shortCleanNorm === normScanned ||
+      shortNorm === cleanNormScanned
     );
   });
   if (found) return found;
 
   // 3. Normalized string match on l.name or l.id
-  found = locations.find(
-    (l) =>
-      normalizeLocationStr(l.name) === normScanned ||
-      normalizeLocationStr(l.id) === normScanned
-  );
-  if (found) return found;
-
-  // 4. If scanned text is a long QR barcode payload containing the exact full location name/id
   found = locations.find((l) => {
     const normName = normalizeLocationStr(l.name);
     const normId = normalizeLocationStr(l.id);
-    const shortNameNorm = normalizeLocationStr(l.name.split('(')[0].trim());
-
+    const cleanNormName = normName.replace(/^(ke|kho|rack|shelf|vitri|khoang)/i, '');
     return (
-      (normName.length >= 2 && normScanned.includes(normName)) ||
-      (shortNameNorm.length >= 2 && normScanned.includes(shortNameNorm)) ||
-      (normId.length >= 2 && normScanned.includes(normId))
+      normName === normScanned ||
+      cleanNormName === cleanNormScanned ||
+      cleanNormName === normScanned ||
+      normName === cleanNormScanned ||
+      normId === normScanned ||
+      normId === cleanNormScanned
     );
   });
   if (found) return found;
 
-  // 5. Match description exactly
+  // 4. Substring inclusion match (e.g. "A01" inside "Kho kệ A01")
+  found = locations.find((l) => {
+    const normName = normalizeLocationStr(l.name);
+    const shortNameNorm = normalizeLocationStr(l.name.split('(')[0].trim());
+    const cleanShort = shortNameNorm.replace(/^(ke|kho|rack|shelf|vitri|khoang)/i, '');
+
+    return (
+      (cleanShort.length >= 2 && (cleanNormScanned === cleanShort || cleanNormScanned.includes(cleanShort) || cleanShort.includes(cleanNormScanned))) ||
+      (normName.length >= 2 && (normScanned.includes(normName) || normName.includes(normScanned)))
+    );
+  });
+  if (found) return found;
+
+  // 5. Match description
   found = locations.find(
     (l) => l.description && normalizeLocationStr(l.description) === normScanned
   );
@@ -203,6 +218,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   const manualModalQtyInputRef = useRef<HTMLInputElement>(null);
   const manualModalShelfInputRef = useRef<HTMLInputElement>(null);
   const manualModalShelfHtml5QrRef = useRef<Html5Qrcode | null>(null);
+  const isManualStockInProcessingRef = useRef(false);
 
   const selectedPart = parts.find((p) => p.id === selectedPartId);
 
@@ -375,15 +391,20 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         const html5QrCode = new Html5Qrcode('loc-qr-reader-container');
         locHtml5QrRef.current = html5QrCode;
 
+        let hasHandledLocFrame = false;
+
         await html5QrCode.start(
           { facingMode: 'environment' },
           { fps: 10, qrbox: { width: 220, height: 220 } },
           (decodedText) => {
-            handleLocScanResult(decodedText);
+            if (hasHandledLocFrame) return;
+            hasHandledLocFrame = true;
+
             if (html5QrCode.isScanning) {
               html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
             }
             setIsLocScannerActive(false);
+            handleLocScanResult(decodedText);
           },
           () => {}
         );
@@ -464,9 +485,15 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
     if (!manualStockInModal || !manualStockInModal.part) return;
 
+    // Prevent duplicate triggers if already executing
+    if (isManualStockInProcessingRef.current) {
+      return;
+    }
+
     // STRICT LOCATION VALIDATION: Must exist in settings.locations (Sơ đồ vị trí kho hàng Ảnh 2)
     const foundLoc = findLocationMatch(rawLoc, settings.locations || []);
     if (!foundLoc) {
+      isManualStockInProcessingRef.current = false;
       soundEffects.playErrorBuzzer();
       setManualModalShelfInput('');
       setErrorModal({
@@ -479,6 +506,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
     const numQty = typeof manualModalQtyInput === 'number' ? manualModalQtyInput : parseInt(String(manualModalQtyInput), 10);
     if (!numQty || numQty <= 0) {
+      isManualStockInProcessingRef.current = false;
       soundEffects.playErrorBuzzer();
       setErrorModal({
         isOpen: true,
@@ -490,6 +518,9 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       }, 100);
       return;
     }
+
+    // Lock to prevent subsequent video frames from double submitting
+    isManualStockInProcessingRef.current = true;
 
     // Auto complete stock in immediately!
     const targetLocName = foundLoc.name;
@@ -535,7 +566,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         }
       }
 
-      // Close modal
+      // Close modal & stop camera immediately
       setManualStockInModal(null);
       stopManualModalShelfCamera();
 
@@ -555,7 +586,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         ...prev,
       ]);
 
-      // Audio & notification
+      // Audio & success notification
       soundEffects.playSuccessTingTing();
       setMessage({
         type: 'success',
@@ -571,10 +602,16 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         },
       });
 
-      // Reset states
+      // Reset form states
       setManualModalQtyInput('');
       setManualModalShelfInput('');
-      onSuccess();
+
+      // Safely notify parent to refresh state without throwing to the error modal
+      try {
+        onSuccess();
+      } catch (onSuccessErr) {
+        console.warn('onSuccess callback non-blocking warning:', onSuccessErr);
+      }
     } catch (err: any) {
       soundEffects.playErrorBuzzer();
       setErrorModal({
@@ -582,6 +619,10 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         title: '❌ LỖI LƯU NHẬP KHO',
         message: `Không thể hoàn tất giao dịch nhập kho: ${err?.message || 'Lỗi không xác định'}`,
       });
+    } finally {
+      setTimeout(() => {
+        isManualStockInProcessingRef.current = false;
+      }, 500);
     }
   };
 
@@ -592,10 +633,16 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         const html5QrCode = new Html5Qrcode('manual-modal-shelf-qr-reader');
         manualModalShelfHtml5QrRef.current = html5QrCode;
 
+        let hasHandledShelfFrame = false;
+
         await html5QrCode.start(
           { facingMode: 'environment' },
           { fps: 15, qrbox: { width: 220, height: 220 } },
           (decodedText) => {
+            // Guard against multiple frames firing before stop() resolves
+            if (hasHandledShelfFrame || isManualStockInProcessingRef.current) return;
+            hasHandledShelfFrame = true;
+
             if (html5QrCode.isScanning) {
               html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
             }
