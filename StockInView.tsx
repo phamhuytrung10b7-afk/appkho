@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { SearchableLocationSelect } from './SearchableLocationSelect';
-import { QrScannerModal } from './QrScannerModal';
+import { QrScannerModal, parseScannedQrPayload } from './QrScannerModal';
 import { ContainerImportPrintModal } from './ContainerImportPrintModal';
 import { InlineQrScanner } from './InlineQrScanner';
 import { Html5Qrcode } from 'html5-qrcode';
@@ -33,6 +33,7 @@ import { normalizeLocationStr } from './StockOutScanModal';
 import { soundEffects } from './soundEffects';
 import { ExcelStockInModal } from './ExcelStockInModal';
 import { downloadSampleStockInExcel } from './excelStockInOutParser';
+import { setupVideoElementAttributes } from './cameraScannerUtils';
 
 interface StockInMessage {
   type: 'success' | 'error';
@@ -188,12 +189,20 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   const locScanGunInputRef = useRef<HTMLInputElement>(null);
   const locHtml5QrRef = useRef<Html5Qrcode | null>(null);
 
-  // Manual Tab (Tab 2) Shelf Scanner & Fast Submit States
-  const [manualShelfScanInput, setManualShelfScanInput] = useState('');
-  const [isManualShelfCamActive, setIsManualShelfCamActive] = useState(false);
-  const [showManualAdvanced, setShowManualAdvanced] = useState(false);
-  const manualShelfScanInputRef = useRef<HTMLInputElement>(null);
-  const manualShelfHtml5QrRef = useRef<Html5Qrcode | null>(null);
+  // Manual Tab (Tab 2) Modal Popup & Fast Submit States
+  const [manualStockInModal, setManualStockInModal] = useState<{
+    isOpen: boolean;
+    part: Part;
+    contNumber?: string;
+    tagId?: string;
+  } | null>(null);
+  const [manualModalQtyInput, setManualModalQtyInput] = useState<number | ''>('');
+  const [manualModalShelfInput, setManualModalShelfInput] = useState('');
+  const [isManualModalShelfCamActive, setIsManualModalShelfCamActive] = useState(false);
+  const [manualPartScanInput, setManualPartScanInput] = useState('');
+  const manualModalQtyInputRef = useRef<HTMLInputElement>(null);
+  const manualModalShelfInputRef = useRef<HTMLInputElement>(null);
+  const manualModalShelfHtml5QrRef = useRef<Html5Qrcode | null>(null);
 
   const selectedPart = parts.find((p) => p.id === selectedPartId);
 
@@ -215,6 +224,23 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       setLocScanGunInput('');
     }
   }, [partialImportModal?.isOpen]);
+
+  // Auto focus into Quantity Input when Manual Stock In Modal opens
+  useEffect(() => {
+    if (manualStockInModal?.isOpen) {
+      setManualModalQtyInput('');
+      setManualModalShelfInput('');
+      setSelectedLocation('');
+      setCustomLocation('');
+      setIsManualModalShelfCamActive(false);
+      setTimeout(() => {
+        manualModalQtyInputRef.current?.focus();
+      }, 150);
+    } else {
+      stopManualModalShelfCamera();
+      setManualModalShelfInput('');
+    }
+  }, [manualStockInModal?.isOpen]);
 
   const [errorModal, setErrorModal] = useState<{
     isOpen: boolean;
@@ -361,6 +387,17 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
           },
           () => {}
         );
+
+        // Ensure iOS Safari plays inline and doesn't freeze
+        const pollForLocVideo = () => {
+          const videoEl = document.querySelector('#loc-qr-reader-container video') as HTMLVideoElement;
+          if (videoEl) {
+            setupVideoElementAttributes(videoEl);
+          } else if (html5QrCode.isScanning) {
+            requestAnimationFrame(pollForLocVideo);
+          }
+        };
+        pollForLocVideo();
       } catch (err: any) {
         console.warn('Loc camera error:', err);
         setLocScannerError('Không mở được camera trực tiếp. Vui lòng dùng súng quét USB/Bluetooth hoặc chọn vị trí kệ trong danh sách.');
@@ -375,47 +412,106 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     setIsLocScannerActive(false);
   };
 
-  const handleManualShelfScan = (scannedLocText: string) => {
-    const rawLoc = (scannedLocText || '').trim();
-    if (!rawLoc) return;
+  const openManualStockInModal = (part: Part, contNumber?: string, tagId?: string) => {
+    setSelectedPartId(part.id);
+    setManualStockInModal({
+      isOpen: true,
+      part,
+      contNumber,
+      tagId,
+    });
+    setManualModalQtyInput('');
+    setManualModalShelfInput('');
+    setSelectedLocation('');
+    setCustomLocation('');
+  };
 
-    if (!selectedPartId || !selectedPart) {
+  const handleManualPartLookup = (scannedPartText: string) => {
+    const clean = (scannedPartText || '').trim();
+    if (!clean) return;
+
+    const parsed = parseScannedQrPayload(clean);
+    const searchCode = (parsed.partCode || clean).toLowerCase();
+
+    // Check if directly matches a part from master parts list
+    const found = parts.find(
+      (p) =>
+        p.code.toLowerCase() === searchCode ||
+        p.qrCode?.toLowerCase() === searchCode ||
+        p.barcode?.toLowerCase() === searchCode ||
+        p.name.toLowerCase() === searchCode ||
+        p.code.toLowerCase() === clean.toLowerCase()
+    );
+
+    if (!found) {
       soundEffects.playErrorBuzzer();
+      setManualPartScanInput('');
       setErrorModal({
         isOpen: true,
-        title: '⚠️ CHƯA CHỌN LINH KIỆN',
-        message: 'Vui lòng chọn hoặc quét mã linh kiện / mã Cont trước khi quét mã kệ!',
+        title: '❌ LINH KIỆN KHÔNG TỒN TẠI TRONG HỆ THỐNG',
+        message: `Mã linh kiện quét được "${clean}" KHÔNG CÓ trong danh mục ${parts.length} linh kiện của hệ thống! Vui lòng kiểm tra lại tem hoặc thêm mới linh kiện vào danh mục trước khi nhập kho.`,
       });
       return;
     }
 
-    const numQty = typeof quantity === 'number' ? quantity : parseInt(String(quantity), 10);
+    setManualPartScanInput('');
+    openManualStockInModal(found, parsed.contNumber, parsed.tagId);
+  };
+
+  const handleManualModalShelfScan = (scannedLocText: string) => {
+    const rawLoc = (scannedLocText || '').trim();
+    if (!rawLoc) return;
+
+    if (!manualStockInModal || !manualStockInModal.part) return;
+
+    // STRICT LOCATION VALIDATION: Must exist in settings.locations (Sơ đồ vị trí kho hàng Ảnh 2)
+    const foundLoc = findLocationMatch(rawLoc, settings.locations || []);
+    if (!foundLoc) {
+      soundEffects.playErrorBuzzer();
+      setManualModalShelfInput('');
+      setErrorModal({
+        isOpen: true,
+        title: '❌ MÃ KỆ KHÔNG TỒN TẠI TRONG SƠ ĐỒ KHO',
+        message: `Mã kệ "${rawLoc}" KHÔNG TỒN TẠI trong Sơ đồ vị trí kho hàng (Ảnh 2)! Bạn không được quét mã bậy bạ, vui lòng quét đúng mã QR kệ hợp lệ đã khai báo trong hệ thống (Ví dụ: A01, A02, A03...)!`,
+      });
+      return;
+    }
+
+    const numQty = typeof manualModalQtyInput === 'number' ? manualModalQtyInput : parseInt(String(manualModalQtyInput), 10);
     if (!numQty || numQty <= 0) {
       soundEffects.playErrorBuzzer();
       setErrorModal({
         isOpen: true,
-        title: '⚠️ BẮT BUỘC NHẬP SỐ LƯỢNG',
-        message: 'Vui lòng nhập Số Lượng Nhập thực tế trước khi quét mã kệ để hoàn tất!',
+        title: '⚠️ BẮT BUỘC ĐIỀN SỐ LƯỢNG',
+        message: 'Vui lòng nhập Số Lượng thực tế cần nhập trước khi quét mã kệ để hoàn tất!',
       });
       setTimeout(() => {
-        manualQtyInputRef.current?.focus();
+        manualModalQtyInputRef.current?.focus();
       }, 100);
       return;
     }
 
-    // Match shelf in settings or use raw
-    const foundLoc = findLocationMatch(rawLoc, settings.locations || []);
-    const targetLocName = foundLoc ? foundLoc.name : rawLoc;
+    // Auto complete stock in immediately!
+    const targetLocName = foundLoc.name;
+    executeManualStockIn(manualStockInModal.part, numQty, targetLocName, manualStockInModal.contNumber, manualStockInModal.tagId);
+  };
 
+  const executeManualStockIn = (
+    part: Part,
+    actualQty: number,
+    targetLocName: string,
+    contNumber?: string,
+    tagId?: string
+  ) => {
     try {
       const nowIso = new Date().toISOString();
       const staffPerson = person?.trim() || currentUserName || defaultPerson || 'Nhân sự kho';
-      const reasonText = reason?.trim() || (scannedTagId ? `Nhập kho theo Cont` : 'Nhập kho thủ công');
-      const noteText = notes?.trim() || (scannedTagId ? `Tem QR: ${scannedTagId}` : '');
+      const reasonText = contNumber ? `Nhập kho theo Cont ${contNumber}` : 'Nhập kho thủ công';
+      const noteText = tagId ? `Tem QR: ${tagId}` : (contNumber ? `Mã Cont: ${contNumber}` : '');
 
       const tx = storageService.addStockIn({
-        partId: selectedPart.id,
-        quantity: numQty,
+        partId: part.id,
+        quantity: actualQty,
         date: nowIso,
         person: staffPerson,
         reasonOrPurpose: reasonText,
@@ -424,55 +520,57 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       });
 
       // Update part's shelf location
-      storageService.updatePart(selectedPart.id, { location: targetLocName });
+      storageService.updatePart(part.id, { location: targetLocName });
 
       // If imported via Cont QR Code, mark this tag as USED
-      if (scannedTagId) {
-        storageService.markQrTokenAsUsed(scannedTagId, {
-          partCode: selectedPart.code,
-          quantity: numQty,
-          contNumber: reasonText.replace('Nhập kho theo Cont ', ''),
+      if (tagId) {
+        storageService.markQrTokenAsUsed(tagId, {
+          partCode: part.code,
+          quantity: actualQty,
+          contNumber: contNumber || '',
           person: staffPerson,
         });
-        setScannedTagId(null);
       }
+
+      // Close modal
+      setManualStockInModal(null);
+      stopManualModalShelfCamera();
 
       // Add to session history
       const nowTimeStr = new Date().toLocaleTimeString('vi-VN');
       setAutoScanHistory((prev) => [
         {
-          id: `${selectedPart.id}-${Date.now()}`,
-          partCode: selectedPart.code,
-          partName: selectedPart.name,
-          qty: numQty,
-          unit: selectedPart.unit,
+          id: `${part.id}-${Date.now()}`,
+          partCode: part.code,
+          partName: part.name,
+          qty: actualQty,
+          unit: part.unit,
           time: nowTimeStr,
-          contNumber: scannedTagId ? reasonText.replace('Nhập kho theo Cont ', '') : undefined,
+          contNumber: contNumber,
           stockAfter: tx.stockAfter,
         },
         ...prev,
       ]);
 
+      // Audio & notification
       soundEffects.playSuccessTingTing();
       setMessage({
         type: 'success',
-        text: `ĐÃ NHẬP KHO THỦ CÔNG: +${numQty.toLocaleString('vi-VN')} ${selectedPart.unit} [${selectedPart.code}] vào Kệ [${targetLocName}]. Tồn kho: ${tx.stockAfter.toLocaleString('vi-VN')} ${selectedPart.unit}.`,
+        text: `ĐÃ NHẬP KHO THỦ CÔNG: +${actualQty.toLocaleString('vi-VN')} ${part.unit} [${part.code}] vào Kệ [${targetLocName}]. Tồn kho mới: ${tx.stockAfter.toLocaleString('vi-VN')} ${part.unit}.`,
         details: {
-          partCode: selectedPart.code,
-          partName: selectedPart.name,
-          qty: numQty,
-          unit: selectedPart.unit,
+          partCode: part.code,
+          partName: part.name,
+          qty: actualQty,
+          unit: part.unit,
           location: targetLocName,
           stockAfter: tx.stockAfter,
-          contNumber: scannedTagId ? reasonText.replace('Nhập kho theo Cont ', '') : undefined,
+          contNumber: contNumber,
         },
       });
 
-      // Clear quantity & shelf input for next scan, keep shelf selected
-      setQuantity('' as any);
-      setManualShelfScanInput('');
-      setSelectedLocation(targetLocName);
-      setCustomLocation('');
+      // Reset states
+      setManualModalQtyInput('');
+      setManualModalShelfInput('');
       onSuccess();
     } catch (err: any) {
       soundEffects.playErrorBuzzer();
@@ -484,12 +582,12 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     }
   };
 
-  const startManualShelfCamera = async () => {
-    setIsManualShelfCamActive(true);
+  const startManualModalShelfCamera = async () => {
+    setIsManualModalShelfCamActive(true);
     setTimeout(async () => {
       try {
-        const html5QrCode = new Html5Qrcode('manual-shelf-qr-reader');
-        manualShelfHtml5QrRef.current = html5QrCode;
+        const html5QrCode = new Html5Qrcode('manual-modal-shelf-qr-reader');
+        manualModalShelfHtml5QrRef.current = html5QrCode;
 
         await html5QrCode.start(
           { facingMode: 'environment' },
@@ -498,23 +596,34 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
             if (html5QrCode.isScanning) {
               html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
             }
-            setIsManualShelfCamActive(false);
-            handleManualShelfScan(decodedText);
+            setIsManualModalShelfCamActive(false);
+            handleManualModalShelfScan(decodedText);
           },
           () => {}
         );
+
+        // Ensure iOS Safari plays inline and doesn't freeze
+        const pollForShelfVideo = () => {
+          const videoEl = document.querySelector('#manual-modal-shelf-qr-reader video') as HTMLVideoElement;
+          if (videoEl) {
+            setupVideoElementAttributes(videoEl);
+          } else if (html5QrCode.isScanning) {
+            requestAnimationFrame(pollForShelfVideo);
+          }
+        };
+        pollForShelfVideo();
       } catch (err: any) {
-        console.warn('Manual shelf camera error:', err);
-        setIsManualShelfCamActive(false);
+        console.warn('Manual modal shelf camera error:', err);
+        setIsManualModalShelfCamActive(false);
       }
     }, 120);
   };
 
-  const stopManualShelfCamera = () => {
-    if (manualShelfHtml5QrRef.current && manualShelfHtml5QrRef.current.isScanning) {
-      manualShelfHtml5QrRef.current.stop().then(() => manualShelfHtml5QrRef.current?.clear()).catch(() => {});
+  const stopManualModalShelfCamera = () => {
+    if (manualModalShelfHtml5QrRef.current && manualModalShelfHtml5QrRef.current.isScanning) {
+      manualModalShelfHtml5QrRef.current.stop().then(() => manualModalShelfHtml5QrRef.current?.clear()).catch(() => {});
     }
-    setIsManualShelfCamActive(false);
+    setIsManualModalShelfCamActive(false);
   };
 
   // Submit handler for partial / batch import popup modal
@@ -1248,6 +1357,316 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         </div>
       )}
 
+      {/* MANUAL STOCK IN POPUP MODAL (GIAO DIỆN POPUP Y NHƯ BÊN QUÉT MÃ TỰ ĐỘNG) */}
+      {manualStockInModal && manualStockInModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl sm:rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[94vh] sm:max-h-[90vh] border border-slate-100 animate-in zoom-in-95">
+            {/* Header */}
+            <div className="p-3.5 sm:p-4.5 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-emerald-800 to-teal-900 text-white shrink-0">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 bg-emerald-500/20 rounded-xl flex items-center justify-center border border-emerald-400/30">
+                  <Package className="w-5 h-5 text-emerald-300" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base tracking-tight leading-tight">
+                    Khai Báo Nhập Kho Linh Kiện (Thủ Công)
+                  </h3>
+                  <p className="text-[11px] text-emerald-200">
+                    Điền số lượng thực tế & quét mã kệ để tự động lưu
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setManualStockInModal(null);
+                  stopManualModalShelfCamera();
+                }}
+                className="p-1.5 text-emerald-200 hover:text-white rounded-xl hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (selectedLocation) {
+                  handleManualModalShelfScan(selectedLocation);
+                }
+              }}
+              className="p-4 sm:p-5 space-y-4 overflow-y-auto"
+            >
+              {/* Cont & Part Info Box (Y như bên quét mã tự động) */}
+              <div className="bg-slate-50 p-3.5 sm:p-4 rounded-xl border border-slate-200/80 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-mono font-bold text-blue-700 text-xs bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200/60 inline-block">
+                      {manualStockInModal.part.code}
+                    </span>
+                    <h4 className="font-extrabold text-slate-900 text-sm mt-1 leading-snug break-words">
+                      {manualStockInModal.part.name}
+                    </h4>
+                  </div>
+                  <span className="text-[11px] font-bold text-slate-600 bg-slate-200/70 px-2.5 py-1 rounded-lg shrink-0">
+                    ĐVT: {manualStockInModal.part.unit}
+                  </span>
+                </div>
+
+                {manualStockInModal.contNumber && (
+                  <div className="text-xs text-slate-600 flex items-center space-x-1.5">
+                    <span>Mã Container:</span>
+                    <strong className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/60">
+                      {manualStockInModal.contNumber}
+                    </strong>
+                  </div>
+                )}
+
+                {/* Current Stock Stats */}
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/80 text-xs">
+                  <div className="bg-white p-2 rounded-lg border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block font-medium">Tồn kho hiện tại</span>
+                    <strong className="font-mono font-bold text-emerald-600 text-sm">
+                      {manualStockInModal.part.currentStock.toLocaleString('vi-VN')} {manualStockInModal.part.unit}
+                    </strong>
+                  </div>
+                  <div className="bg-white p-2 rounded-lg border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block font-medium">Vị trí kệ hiện tại</span>
+                    <strong className="font-mono font-bold text-slate-700 text-sm truncate block">
+                      {manualStockInModal.part.location || 'Chưa gán kệ'}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Input Quantity (Không đề xuất sẵn, bắt buộc tự nhập) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-black text-slate-800 uppercase tracking-tight">
+                    1. Số lượng thực tế nhập ({manualStockInModal.part.unit}) *
+                  </label>
+                  <span className="text-[11px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200/60">
+                    * Bắt buộc tự nhập
+                  </span>
+                </div>
+
+                <input
+                  ref={manualModalQtyInputRef}
+                  type="number"
+                  min="1"
+                  required
+                  autoFocus
+                  value={manualModalQtyInput === '' ? '' : manualModalQtyInput}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      manualModalShelfInputRef.current?.focus();
+                      manualModalShelfInputRef.current?.select();
+                    }
+                  }}
+                  onChange={(e) => setManualModalQtyInput(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full px-3.5 py-2.5 sm:py-3 bg-amber-50/50 border-2 border-amber-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 rounded-xl text-base sm:text-lg font-mono font-bold text-slate-900 outline-hidden transition-all shadow-xs"
+                  placeholder="👉 Tự điền số lượng kiểm đếm đợt này..."
+                />
+                <p className="text-[10px] text-emerald-700 italic font-medium">
+                  💡 Gõ số lượng xong nhấn Enter để nhảy ngay tới ô Bắn mã QR Kệ. Hệ thống không tự điền sẵn.
+                </p>
+
+                {/* Quick Presets for Mobile */}
+                <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                  <span className="text-[10px] text-slate-400 font-medium">Nhanh:</span>
+                  {[10, 50, 100, 200, 500, 1000].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setManualModalQtyInput(preset)}
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 active:scale-95 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 transition-all cursor-pointer"
+                    >
+                      +{preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Location / Shelf Section (Chỉ quét kệ trong sơ đồ kho - Ảnh 2) */}
+              <div className="space-y-2.5 pt-3 border-t border-slate-100">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-black text-slate-800 flex items-center space-x-1.5 uppercase tracking-tight">
+                    <MapPin className="w-4 h-4 text-emerald-600" />
+                    <span>2. Vị trí / Kệ cất giữ linh kiện *</span>
+                  </label>
+                  
+                  <button
+                    type="button"
+                    onClick={() => (isManualModalShelfCamActive ? stopManualModalShelfCamera() : startManualModalShelfCamera())}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center space-x-1.5 cursor-pointer shadow-xs ${
+                      isManualModalShelfCamActive
+                        ? 'bg-rose-600 text-white hover:bg-rose-700'
+                        : 'bg-emerald-700 text-white hover:bg-emerald-800'
+                    }`}
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>{isManualModalShelfCamActive ? 'Tắt Camera Kệ' : 'Quét Camera Kệ'}</span>
+                  </button>
+                </div>
+
+                {/* Inline Camera for Shelf QR Scanning */}
+                {isManualModalShelfCamActive && (
+                  <div className="p-3 bg-slate-900 rounded-xl space-y-2 text-white animate-in zoom-in-95 border-2 border-emerald-400">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-bold flex items-center text-emerald-400">
+                        <MapPin className="w-3.5 h-3.5 mr-1 animate-bounce" />
+                        Đưa mã QR trên Kệ vào ô vuông bên dưới
+                      </span>
+                      <button
+                        type="button"
+                        onClick={stopManualModalShelfCamera}
+                        className="text-slate-400 hover:text-white p-1 cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div id="manual-modal-shelf-qr-reader" className="overflow-hidden rounded-lg min-h-[180px] bg-black" />
+                  </div>
+                )}
+
+                {/* PRIMARY: Handheld barcode gun input for Rack QR */}
+                <div className="space-y-1">
+                  <div className="relative flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-3.5" />
+                      <input
+                        ref={manualModalShelfInputRef}
+                        type="text"
+                        value={manualModalShelfInput}
+                        onChange={(e) => setManualModalShelfInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleManualModalShelfScan(manualModalShelfInput);
+                          }
+                        }}
+                        placeholder="🎯 Bắn súng quét mã QR kệ hoặc gõ mã kệ..."
+                        className="w-full pl-9 pr-3 py-2.5 sm:py-3 bg-emerald-50/60 border-2 border-emerald-400 rounded-xl text-xs sm:text-sm font-bold text-slate-900 placeholder-slate-400 focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-hidden transition-all"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleManualModalShelfScan(manualModalShelfInput)}
+                      className="px-3.5 py-2.5 sm:py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-xs transition-all cursor-pointer shrink-0"
+                    >
+                      Xác nhận Kệ
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-emerald-700 italic">
+                    ⚡ Bắt buộc quét mã QR kệ trong Sơ đồ vị trí kho hàng (Ảnh 2). Không được quét mã bậy bạ.
+                  </p>
+                </div>
+
+                {/* Status badge if location is selected */}
+                {selectedLocation && (
+                  <div className="p-2.5 bg-emerald-100/90 border border-emerald-300 rounded-xl flex items-center justify-between text-xs font-bold text-emerald-950">
+                    <span className="flex items-center space-x-1.5 truncate">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>Kệ đã nhận diện: <strong className="underline text-emerald-900">{selectedLocation}</strong></span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedLocation('');
+                        manualModalShelfInputRef.current?.focus();
+                      }}
+                      className="text-[11px] text-slate-500 hover:text-slate-800 underline font-normal shrink-0 ml-2 cursor-pointer"
+                    >
+                      Chọn lại
+                    </button>
+                  </div>
+                )}
+
+                {/* SECONDARY: Searchable Location Select (Chỉ danh mục kệ kho) */}
+                <div className="pt-1">
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                    Hoặc chọn vị trí trong danh sách sơ đồ kệ kho:
+                  </label>
+                  <SearchableLocationSelect
+                    locations={settings.locations || []}
+                    value={selectedLocation}
+                    onChange={(val) => {
+                      setSelectedLocation(val);
+                    }}
+                    placeholder="-- Chọn kệ trong sơ đồ kho (A01, A02, A03...) --"
+                    allowCustom={false}
+                    theme="emerald"
+                  />
+                </div>
+
+                {/* Quick Shelf Chips */}
+                <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                  <span className="text-[10px] text-slate-400 font-medium">Kệ nhanh:</span>
+                  {(settings.locations || []).slice(0, 8).map((loc) => (
+                    <button
+                      key={loc.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedLocation(loc.name);
+                        const numQty = typeof manualModalQtyInput === 'number' ? manualModalQtyInput : parseInt(String(manualModalQtyInput), 10);
+                        if (numQty && numQty > 0) {
+                          handleManualModalShelfScan(loc.name);
+                        }
+                      }}
+                      className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-all cursor-pointer ${
+                        selectedLocation === loc.name
+                          ? 'bg-emerald-600 text-white border-emerald-700'
+                          : 'bg-white text-slate-700 hover:bg-emerald-50 border-slate-200'
+                      }`}
+                    >
+                      {loc.name.split('(')[0].trim()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              {(() => {
+                const isModalQtyValid = typeof manualModalQtyInput === 'number' && manualModalQtyInput > 0;
+                const isModalLocValid = Boolean(selectedLocation && findLocationMatch(selectedLocation, settings.locations || []));
+                const isModalCanSubmit = isModalQtyValid && isModalLocValid;
+
+                return (
+                  <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setManualStockInModal(null);
+                        stopManualModalShelfCamera();
+                      }}
+                      className="px-4 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-xs transition-colors cursor-pointer"
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!isModalCanSubmit}
+                      className={`px-6 py-2.5 font-black rounded-xl text-xs shadow-md transition-all flex items-center space-x-1.5 cursor-pointer ${
+                        isModalCanSubmit
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-95'
+                          : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>XÁC NHẬN NHẬP KHO</span>
+                    </button>
+                  </div>
+                );
+              })()}
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* TAB 1: AUTO SCAN MODE */}
       {mainTab === 'scan' && (
         <div className="space-y-6">
@@ -1323,15 +1742,44 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
               ⚡ Hỗ trợ quét mã Tem Cont HOẶC quét trực tiếp mã QR / Barcode linh kiện trong danh mục.
             </p>
 
+            {/* PRIMARY: Handheld barcode gun or manual text input to scan Part QR/Barcode or Container Tag */}
+            <div className="space-y-1">
+              <div className="relative flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Package className="w-4 h-4 text-emerald-600 absolute left-3 top-3.5" />
+                  <input
+                    type="text"
+                    value={manualPartScanInput}
+                    onChange={(e) => setManualPartScanInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleManualPartLookup(manualPartScanInput);
+                      }
+                    }}
+                    placeholder="🎯 Bắn súng quét mã Cont hoặc Barcode / QR linh kiện rồi Enter..."
+                    className="w-full pl-9 pr-3 py-2.5 sm:py-3 bg-emerald-50/60 border-2 border-emerald-400 rounded-xl text-xs sm:text-sm font-bold text-slate-900 placeholder-slate-400 focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-hidden transition-all shadow-xs"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleManualPartLookup(manualPartScanInput)}
+                  className="px-3.5 py-2.5 sm:py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-xs transition-all cursor-pointer shrink-0"
+                >
+                  Tra cứu
+                </button>
+              </div>
+            </div>
+
             <SearchableSelect
               options={partOptions}
               value={selectedPartId}
               onChange={(val) => {
                 setSelectedPartId(val);
-                setQuantity('' as any);
-                setTimeout(() => {
-                  manualQtyInputRef.current?.focus();
-                }, 100);
+                const found = parts.find((p) => p.id === val);
+                if (found) {
+                  openManualStockInModal(found);
+                }
               }}
               placeholder="Gõ mã, tên linh kiện hoặc vị trí để tìm..."
               allowCustom={false}
@@ -1340,7 +1788,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
             {/* Selected Part Quick Summary Card */}
             {selectedPart && (
-              <div className="p-4 bg-emerald-50/70 border-2 border-emerald-300 rounded-2xl flex items-center justify-between text-xs animate-in fade-in duration-200 shadow-xs">
+              <div className="p-4 bg-emerald-50/70 border-2 border-emerald-300 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs animate-in fade-in duration-200 shadow-xs">
                 <div className="flex items-center space-x-3">
                   <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
                     <Package className="w-5 h-5 text-emerald-700 shrink-0" />
@@ -1352,258 +1800,88 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                     </p>
                   </div>
                 </div>
-                <div className="text-right shrink-0">
-                  <span className="text-slate-500 text-[11px] font-medium">Tồn kho hiện tại:</span>
-                  <p className="text-base font-black text-emerald-700">
-                    {selectedPart.currentStock.toLocaleString('vi-VN')} {selectedPart.unit}
-                  </p>
+                <div className="flex items-center space-x-3 ml-auto">
+                  <div className="text-right">
+                    <span className="text-slate-500 text-[11px] font-medium">Tồn kho hiện tại:</span>
+                    <p className="text-base font-black text-emerald-700">
+                      {selectedPart.currentStock.toLocaleString('vi-VN')} {selectedPart.unit}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openManualStockInModal(selectedPart)}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-xs transition-all flex items-center space-x-1.5 cursor-pointer active:scale-95"
+                  >
+                    <Package className="w-4 h-4 text-emerald-200" />
+                    <span>Mở Popup Nhập Kho</span>
+                  </button>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Step 2: Điền Số Lượng (Bắt buộc, không được đề xuất sẵn) */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
-            <label className="block text-xs font-black text-slate-900 uppercase tracking-tight flex items-center justify-between">
-              <span>2. Số Lượng Nhập Kho (Bắt buộc tự nhập, không đề xuất sẵn) *</span>
-              <span className="text-[11px] text-rose-600 font-bold">* Bắt buộc nhập</span>
-            </label>
-            <div className="relative">
-              <input
-                ref={manualQtyInputRef}
-                type="number"
-                min={1}
-                value={quantity === 0 || quantity === '' ? '' : quantity}
-                placeholder="Nhập số lượng thực tế cần nhập kho..."
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    manualShelfScanInputRef.current?.focus();
-                  }
-                }}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setQuantity(val === '' ? ('' as any) : parseInt(val, 10));
-                }}
-                className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl text-lg font-black text-emerald-800 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-hidden transition-all shadow-xs"
-              />
+          {/* Workflow guide & status */}
+          <div className="bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200/80 space-y-2">
+            <h4 className="text-xs font-black text-emerald-950 uppercase tracking-tight flex items-center space-x-1.5">
+              <Sparkles className="w-4 h-4 text-emerald-600" />
+              <span>Quy trình nhập kho thủ công (Popup thông minh chuẩn di động)</span>
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              <div className="bg-white p-2.5 rounded-xl border border-emerald-200 shadow-2xs">
+                <span className="font-bold text-emerald-700 block text-[11px]">Bước 1: Quét mã hoặc chọn</span>
+                <p className="text-slate-600 text-[11px] mt-0.5">Bắn mã vạch/QR tem Cont hoặc mã linh kiện trong danh mục. Popup sẽ tự động bật lên.</p>
+              </div>
+              <div className="bg-white p-2.5 rounded-xl border border-emerald-200 shadow-2xs">
+                <span className="font-bold text-emerald-700 block text-[11px]">Bước 2: Điền số lượng</span>
+                <p className="text-slate-600 text-[11px] mt-0.5">Bắt buộc tự gõ số lượng thực tế kiểm đếm (không đề xuất sẵn). Nhấn Enter để sang ô Kệ.</p>
+              </div>
+              <div className="bg-white p-2.5 rounded-xl border border-emerald-200 shadow-2xs">
+                <span className="font-bold text-emerald-700 block text-[11px]">Bước 3: Quét kệ sơ đồ kho</span>
+                <p className="text-slate-600 text-[11px] mt-0.5">Quét mã QR kệ trong sơ đồ kho (Ảnh 2). Hệ thống tự động hoàn thành ngay lập tức.</p>
+              </div>
             </div>
-            <p className="text-[11px] text-slate-500">
-              💡 Sau khi gõ số lượng, bạn chỉ cần <strong>quét mã QR Kệ</strong> là hệ thống sẽ tự động hoàn tất nhập kho ngay!
-            </p>
           </div>
 
-          {/* Step 3: Quét Kệ Tự Động Hoàn Thành */}
-          <div className="bg-emerald-50/70 p-5 rounded-2xl border-2 border-emerald-400 space-y-3.5 shadow-xs">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200/80 pb-2">
-              <div>
-                <h4 className="text-xs font-black text-emerald-950 uppercase tracking-tight flex items-center space-x-1.5">
-                  <MapPin className="w-4 h-4 text-emerald-700" />
-                  <span>3. QUÉT MÃ KỆ ĐỂ TỰ ĐỘNG HOÀN THÀNH NHẬP KHO *</span>
+          {/* Session history of manual stock-in */}
+          {autoScanHistory.length > 0 && (
+            <div className="pt-2 border-t border-slate-100 space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                <h4 className="font-extrabold text-xs text-slate-800 flex items-center space-x-2">
+                  <Clock className="w-4 h-4 text-emerald-600" />
+                  <span>CÁC LƯỢT NHẬP KHO VỪA THỰC HIỆN ({autoScanHistory.length})</span>
                 </h4>
-                <p className="text-[11px] text-emerald-800 font-medium">
-                  ⚡ Quét mã kệ bằng súng barcode hoặc camera. Hệ thống tự động xác nhận nhập kho ngay lập tức!
-                </p>
-              </div>
-
-              {/* Toggle Shelf Camera Scanner Button */}
-              <button
-                type="button"
-                onClick={() => {
-                  if (isManualShelfCamActive) {
-                    stopManualShelfCamera();
-                  } else {
-                    startManualShelfCamera();
-                  }
-                }}
-                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
-                  isManualShelfCamActive
-                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
-                    : 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-xs'
-                }`}
-              >
-                <Camera className="w-3.5 h-3.5" />
-                <span>{isManualShelfCamActive ? 'Đóng Camera Kệ' : '📷 Quét Camera Mã Kệ'}</span>
-              </button>
-            </div>
-
-            {/* Camera Viewfinder if active */}
-            {isManualShelfCamActive && (
-              <div className="p-3 bg-slate-900 rounded-2xl space-y-2 border-2 border-emerald-400">
-                <div className="flex items-center justify-between text-xs text-white px-1">
-                  <span className="font-bold flex items-center space-x-1.5 text-emerald-300">
-                    <Camera className="w-4 h-4 animate-pulse" />
-                    <span>Đưa mã QR Kệ vào giữa khung ngắm để tự động nhập kho</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={stopManualShelfCamera}
-                    className="p-1 hover:bg-slate-800 rounded-lg text-slate-300 cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="relative w-full rounded-xl overflow-hidden bg-black min-h-[220px] max-h-[340px] flex items-center justify-center">
-                  <div id="manual-shelf-qr-reader" className="w-full h-full min-h-[220px]"></div>
-                </div>
-              </div>
-            )}
-
-            {/* Handheld Barcode Gun / Manual Input for Rack QR */}
-            <div className="space-y-1.5">
-              <label className="block text-[11px] font-bold text-emerald-950">
-                Súng quét mã QR Kệ / Gõ mã kệ rồi nhấn Enter:
-              </label>
-              <div className="relative flex items-center gap-2">
-                <div className="relative flex-1">
-                  <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-3.5" />
-                  <input
-                    ref={manualShelfScanInputRef}
-                    type="text"
-                    value={manualShelfScanInput}
-                    onChange={(e) => setManualShelfScanInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleManualShelfScan(manualShelfScanInput);
-                      }
-                    }}
-                    placeholder="🎯 Bắn súng quét mã QR kệ hoặc gõ mã kệ rồi Enter..."
-                    className="w-full pl-9 pr-3 py-3 bg-white border-2 border-emerald-400 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-hidden transition-all shadow-xs"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleManualShelfScan(manualShelfScanInput)}
-                  className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-md transition-all cursor-pointer shrink-0"
-                >
-                  Xác Nhận Kệ & Nhập Kho
-                </button>
-              </div>
-            </div>
-
-            {/* Shelf Recognized badge */}
-            {selectedLocation && (
-              <div className="p-2.5 bg-emerald-100 border border-emerald-300 rounded-xl flex items-center justify-between text-xs font-bold text-emerald-950">
-                <span className="flex items-center space-x-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Kệ gần nhất đã nhập: <strong className="underline text-emerald-900">{selectedLocation === '__custom__' ? customLocation : selectedLocation}</strong></span>
+                <span className="text-[11px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md">
+                  Đã tự động cộng vào tồn kho & lưu thẻ kho
                 </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedLocation('');
-                    setCustomLocation('');
-                    manualShelfScanInputRef.current?.focus();
-                  }}
-                  className="text-[11px] text-slate-500 hover:text-slate-800 underline font-normal cursor-pointer"
-                >
-                  Chọn lại kệ
-                </button>
               </div>
-            )}
 
-            {/* Dropdown Selection as secondary option */}
-            <div className="pt-1 space-y-1">
-              <label className="block text-[11px] font-semibold text-slate-600">
-                Hoặc chọn vị trí kệ trong danh sách:
-              </label>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <div className="flex-1">
-                  <SearchableLocationSelect
-                    locations={settings.locations || []}
-                    value={selectedLocation}
-                    onChange={(val) => {
-                      setSelectedLocation(val);
-                      if (val !== '__custom__') {
-                        setCustomLocation('');
-                      }
-                    }}
-                    placeholder="-- Tìm kiếm nhanh tên kệ hoặc mô tả kệ --"
-                    allowCustom={true}
-                    customValue={customLocation}
-                    onCustomChange={(val) => setCustomLocation(val)}
-                    theme="emerald"
-                  />
-                </div>
-                {selectedLocation && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const loc = (selectedLocation === '__custom__' ? customLocation : selectedLocation).trim();
-                      if (loc) handleManualShelfScan(loc);
-                    }}
-                    disabled={!quantity || Number(quantity) <= 0}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer shrink-0 shadow-xs ${
-                      quantity && Number(quantity) > 0
-                        ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
-                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {autoScanHistory.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-xl flex items-center justify-between text-xs"
                   >
-                    ⚡ Hoàn tất vào Kệ này
-                  </button>
-                )}
+                    <div>
+                      <span className="font-mono font-bold text-slate-600">[{item.partCode}]</span>{' '}
+                      <strong className="text-slate-900">{item.partName}</strong>
+                      {item.contNumber && (
+                        <span className="ml-2 px-2 py-0.5 bg-amber-100 text-amber-900 text-[10px] font-bold rounded-md">
+                          Cont: {item.contNumber}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="text-right">
+                      <span className="font-black text-emerald-700 text-sm">
+                        +{item.qty} {item.unit}
+                      </span>
+                      <p className="text-[10px] text-slate-400">Tồn mới: {item.stockAfter} • {item.time}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
-
-          {/* Optional collapsible details for Person, Reason, Notes */}
-          <div className="pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => setShowManualAdvanced(!showManualAdvanced)}
-              className="text-[11px] text-slate-500 hover:text-slate-800 font-medium flex items-center space-x-1 underline cursor-pointer"
-            >
-              <span>{showManualAdvanced ? '▼ Thu gọn thông tin phụ' : '▶ Tùy chọn nâng cao (Đã tự động điền: Người thực hiện, Lý do, Ghi chú)'}</span>
-            </button>
-
-            {showManualAdvanced && (
-              <div className="mt-3 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 animate-in fade-in duration-150">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Người thực hiện (Mặc định: {currentUserName || 'Admin'})
-                    </label>
-                    <SearchableSelect
-                      options={staffOptions}
-                      value={person}
-                      onChange={(val) => setPerson(val)}
-                      placeholder="Chọn hoặc gõ tên nhân sự..."
-                      allowCustom={true}
-                      icon={<User className="w-3.5 h-3.5 text-slate-400" />}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Lý do nhập kho
-                    </label>
-                    <SearchableSelect
-                      options={settings.stockInReasons || []}
-                      value={reason}
-                      onChange={(val) => setReason(val)}
-                      placeholder="Chọn hoặc gõ lý do..."
-                      allowCustom={true}
-                      icon={<FileText className="w-3.5 h-3.5 text-slate-400" />}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Ghi chú thêm
-                    </label>
-                    <input
-                      type="text"
-                      value={notes}
-                      onChange={(e) => setNotes(e.target.value)}
-                      placeholder="Ghi chú thêm..."
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs outline-hidden"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       )}
 
@@ -1733,16 +2011,10 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         allowDirectPartCode={mainTab === 'manual'}
         onSelectPart={(p, autoQty, autoCont, tagId) => {
           setSelectedPartId(p.id);
+          setIsQrModalOpen(false);
           if (mainTab === 'manual') {
-            // Manual tab: require user to type quantity, do not pre-fill or suggest
-            setQuantity('' as any);
-            setTimeout(() => {
-              manualQtyInputRef.current?.focus();
-            }, 120);
-            setMessage({
-              type: 'success',
-              text: `Đã chọn [${p.code}] ${p.name}. Vui lòng nhập số lượng rồi quét mã kệ để tự động nhập kho!`,
-            });
+            // Manual tab: Open the POPUP modal immediately (Giao diện popup y như bên quét mã tự động)
+            openManualStockInModal(p, autoCont, tagId);
           } else {
             if (autoQty !== undefined && autoQty > 0) {
               setQuantity(autoQty);
@@ -1753,14 +2025,13 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                 text: `Đã tự động chọn [${p.code}] ${p.name}${autoQty ? ` và điền số lượng: ${autoQty.toLocaleString('vi-VN')} ${p.unit}` : ''}${autoCont ? ` từ Cont ${autoCont}` : ''}!`,
               });
             }
+            if (autoCont) {
+              setReason(`Nhập kho theo Cont ${autoCont}`);
+            }
+            if (tagId) {
+              setScannedTagId(tagId);
+            }
           }
-          if (autoCont) {
-            setReason(`Nhập kho theo Cont ${autoCont}`);
-          }
-          if (tagId) {
-            setScannedTagId(tagId);
-          }
-          setIsQrModalOpen(false);
         }}
       />
 

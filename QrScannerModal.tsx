@@ -25,6 +25,9 @@ import {
   startNativeBarcodeDetectorLoop,
   parseCameraError,
   STANDARD_SCANNER_FORMATS,
+  FAST_SCANNER_FORMATS,
+  isIOSDevice,
+  setupVideoElementAttributes,
   CameraDeviceInfo,
 } from './cameraScannerUtils';
 import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
@@ -203,12 +206,30 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       setUsedInfo(null);
     }
 
+    if (!directPartMatch) {
+      setCameraErrorDetails({
+        title: '❌ Linh kiện không tồn tại',
+        message: `Mã quét "${cleanInput}" KHÔNG CÓ trong danh mục ${parts.length} linh kiện hệ thống! Vui lòng kiểm tra lại.`,
+        isPermissionDenied: false,
+      });
+      setMatchedPart(null);
+      return;
+    }
+
     setMatchedPart(directPartMatch || null);
   }, [manualCode, parts, mode, allowDirectPartCode]);
 
   const handleCodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (matchedPart && !usedInfo?.isUsed) {
+    if (!matchedPart) {
+      setCameraErrorDetails({
+        title: '❌ Linh kiện không tồn tại',
+        message: `Mã linh kiện "${manualCode.trim()}" KHÔNG CÓ trong danh mục ${parts.length} linh kiện hệ thống!`,
+        isPermissionDenied: false,
+      });
+      return;
+    }
+    if (!usedInfo?.isUsed) {
       onSelectPart(matchedPart, scannedQty, scannedCont, scannedTagId || manualCode.trim());
       onClose();
     }
@@ -268,13 +289,15 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     setCameraErrorDetails(null);
     setIsTorchOn(false);
 
+    const isIOS = isIOSDevice();
+
     try {
       await stopCamera();
       setIsCameraActive(true);
       isScanningRef.current = true;
 
-      // 1. Probe permission with rear camera preference
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // 1. Probe permission with rear camera preference (skip probe track close on iOS)
+      if (!isIOS && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           const testStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: { ideal: 'environment' } },
@@ -294,14 +317,21 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       setCameras(sorted);
 
       let targetCamId = camId;
-      if (!targetCamId && !selectedCameraId && sorted.length > 0) {
+      if (!targetCamId && selectedCameraId) {
+        targetCamId = selectedCameraId;
+      } else if (!targetCamId && !isIOS && sorted.length > 0) {
         targetCamId = sorted[0].id;
         setSelectedCameraId(targetCamId);
-      } else if (!targetCamId && selectedCameraId) {
-        targetCamId = selectedCameraId;
       }
 
-      const html5QrCode = new Html5Qrcode('qr-reader');
+      const formatsToUse = isIOS ? FAST_SCANNER_FORMATS : STANDARD_SCANNER_FORMATS;
+      const targetFps = isIOS ? 15 : 25;
+
+      const html5QrCode = new Html5Qrcode('qr-reader', {
+        formatsToSupport: formatsToUse,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: !isIOS },
+        verbose: false,
+      });
       html5QrcodeRef.current = html5QrCode;
 
       const onScanSuccess = (decodedText: string) => {
@@ -353,40 +383,52 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
             );
             onClose();
           }, 120);
+        } else {
+          setCameraErrorDetails({
+            title: '❌ Linh kiện không tồn tại',
+            message: `Mã quét "${cleanInput}" KHÔNG CÓ trong danh sách ${parts.length} linh kiện hệ thống! Vui lòng kiểm tra lại.`,
+            isPermissionDenied: false,
+          });
         }
       };
 
-      const videoConstraints = getOptimizedVideoConstraints(targetCamId);
+      // 3. Determine camera source configuration
+      let cameraConfigToUse: any;
+      if (targetCamId) {
+        cameraConfigToUse = targetCamId;
+      } else {
+        cameraConfigToUse = { facingMode: 'environment' };
+      }
+
+      const videoConstraints = getOptimizedVideoConstraints(
+        typeof cameraConfigToUse === 'string' ? cameraConfigToUse : undefined
+      );
 
       const qrConfig = {
-        fps: 30,
+        fps: targetFps,
         qrbox: (w: number, h: number) => {
           const minEdge = Math.min(w, h);
-          const boxSize = Math.max(Math.floor(minEdge * 0.82), 220);
+          const boxSize = Math.max(Math.floor(minEdge * 0.85), 220);
           return { width: boxSize, height: boxSize };
         },
         videoConstraints,
         disableFlip: false,
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        formatsToSupport: STANDARD_SCANNER_FORMATS,
       };
 
-      if (targetCamId) {
-        try {
-          await html5QrCode.start(targetCamId, qrConfig, onScanSuccess, () => {});
-        } catch (startErr) {
-          console.warn('Start with specific camera ID failed, trying environment facing:', startErr);
-          await html5QrCode.start(
-            { facingMode: 'environment' },
-            qrConfig,
-            onScanSuccess,
-            () => {}
-          );
-        }
-      } else {
+      try {
+        await html5QrCode.start(cameraConfigToUse, qrConfig, onScanSuccess, () => {});
+      } catch (startErr) {
+        console.warn('Start with specific camera ID failed, trying environment facing:', startErr);
         await html5QrCode.start(
           { facingMode: 'environment' },
-          qrConfig,
+          {
+            fps: 12,
+            qrbox: (w: number, h: number) => {
+              const m = Math.min(w, h);
+              return { width: Math.max(Math.floor(m * 0.85), 220), height: Math.max(Math.floor(m * 0.85), 220) };
+            },
+            disableFlip: false,
+          },
           onScanSuccess,
           () => {}
         );
@@ -404,7 +446,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
         }
       }
 
-      // 5. Hardware BarcodeDetector acceleration loop for Android Chrome
+      // 5. Video element setup and Hardware BarcodeDetector acceleration loop
       const pollForVideoEl = () => {
         const videoEl = document.querySelector('#qr-reader video') as HTMLVideoElement;
         if (!videoEl || videoEl.readyState < 2) {
@@ -414,13 +456,17 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
           return;
         }
 
-        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
-          videoEl,
-          (decoded) => {
-            onScanSuccess(decoded);
-          },
-          () => isScanningRef.current
-        );
+        setupVideoElementAttributes(videoEl);
+
+        if (!isIOS) {
+          stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+            videoEl,
+            (decoded) => {
+              onScanSuccess(decoded);
+            },
+            () => isScanningRef.current
+          );
+        }
       };
       pollForVideoEl();
 
