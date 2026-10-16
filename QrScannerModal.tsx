@@ -35,6 +35,7 @@ interface QrScannerModalProps {
   onSelectPart: (part: Part, autoQty?: number, autoCont?: string, tagId?: string) => void;
   parts: Part[];
   mode?: 'in' | 'out';
+  allowDirectPartCode?: boolean;
 }
 
 export function parseScannedQrPayload(raw: string): {
@@ -92,6 +93,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   onSelectPart,
   parts,
   mode,
+  allowDirectPartCode = false,
 }) => {
   const [manualCode, setManualCode] = useState('');
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -147,43 +149,62 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       return;
     }
 
-    const parsed = parseScannedQrPayload(manualCode);
-    const searchCode = parsed.partCode.toLowerCase();
+    const cleanInput = manualCode.trim();
+    const parsed = parseScannedQrPayload(cleanInput);
+    const searchCode = (parsed.partCode || cleanInput).toLowerCase();
 
-    // STRICT CONTAINER BATCH VALIDATION FOR STOCK IN
-    if (mode === 'in' && manualCode.trim()) {
-      const validCheck = storageService.validateContainerQrTag(manualCode, parsed);
-      if (!validCheck.isValid) {
-        setCameraErrorDetails({
-          title: 'Mã QR không hợp lệ',
-          message: `⛔ ${validCheck.reason}`,
-          isPermissionDenied: false,
-        });
-        setMatchedPart(null);
-        return;
-      } else {
-        setCameraErrorDetails(null);
-      }
-    }
-
-    setScannedQty(parsed.qty);
-    setScannedCont(parsed.contNumber);
-    setScannedTagId(parsed.tagId);
-
-    // Check if this QR token or tagId has already been scanned & imported!
-    const tokenToCheck = parsed.tagId || manualCode.trim();
-    const usedCheck = storageService.isQrTokenUsed(tokenToCheck);
-    setUsedInfo(usedCheck.isUsed ? usedCheck : null);
-
-    const found = parts.find(
+    // Check if directly matches a part from master parts list
+    const directPartMatch = parts.find(
       (p) =>
         p.code.toLowerCase() === searchCode ||
         p.qrCode?.toLowerCase() === searchCode ||
         p.barcode?.toLowerCase() === searchCode ||
+        p.name.toLowerCase() === searchCode ||
+        p.code.toLowerCase() === cleanInput.toLowerCase() ||
         p.name.toLowerCase().includes(searchCode)
     );
-    setMatchedPart(found || null);
-  }, [manualCode, parts, mode]);
+
+    // CONTAINER BATCH VALIDATION FOR STOCK IN
+    if (mode === 'in' && cleanInput) {
+      if (allowDirectPartCode && directPartMatch) {
+        // Direct part is explicitly permitted in manual tab
+        setCameraErrorDetails(null);
+      } else {
+        const validCheck = storageService.validateContainerQrTag(cleanInput, parsed);
+        if (!validCheck.isValid) {
+          const errMessage = allowDirectPartCode
+            ? `⛔ Mã quét "${cleanInput}" không thuộc danh mục Cont và không trùng khớp với bất kỳ linh kiện nào trong danh mục!`
+            : `⛔ ${validCheck.reason}`;
+          setCameraErrorDetails({
+            title: 'Mã QR không hợp lệ',
+            message: errMessage,
+            isPermissionDenied: false,
+          });
+          setMatchedPart(null);
+          return;
+        } else {
+          setCameraErrorDetails(null);
+        }
+      }
+    }
+
+    // In direct part scan (without container), do not suggest qty
+    const isContTag = Boolean(parsed.tagId || parsed.contNumber || cleanInput.startsWith('CONT_IN|'));
+    setScannedQty(allowDirectPartCode && !isContTag ? undefined : parsed.qty);
+    setScannedCont(parsed.contNumber);
+    setScannedTagId(parsed.tagId);
+
+    // Only verify one-time token use if it's an actual container tag
+    if (isContTag) {
+      const tokenToCheck = parsed.tagId || cleanInput;
+      const usedCheck = storageService.isQrTokenUsed(tokenToCheck);
+      setUsedInfo(usedCheck.isUsed ? usedCheck : null);
+    } else {
+      setUsedInfo(null);
+    }
+
+    setMatchedPart(directPartMatch || null);
+  }, [manualCode, parts, mode, allowDirectPartCode]);
 
   const handleCodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -293,6 +314,46 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
         }
         setManualCode(decodedText);
         stopCamera();
+
+        const cleanInput = decodedText.trim();
+        const parsed = parseScannedQrPayload(cleanInput);
+        const searchCode = (parsed.partCode || cleanInput).toLowerCase();
+
+        const found = parts.find(
+          (p) =>
+            p.code.toLowerCase() === searchCode ||
+            p.qrCode?.toLowerCase() === searchCode ||
+            p.barcode?.toLowerCase() === searchCode ||
+            p.name.toLowerCase() === searchCode ||
+            p.code.toLowerCase() === cleanInput.toLowerCase() ||
+            p.name.toLowerCase().includes(searchCode)
+        );
+
+        if (found) {
+          const isContTag = Boolean(parsed.tagId || parsed.contNumber || cleanInput.startsWith('CONT_IN|'));
+          if (mode === 'in') {
+            if (isContTag) {
+              const tokenToCheck = parsed.tagId || cleanInput;
+              const usedCheck = storageService.isQrTokenUsed(tokenToCheck);
+              if (usedCheck.isUsed) return;
+              const validCheck = storageService.validateContainerQrTag(cleanInput, parsed);
+              if (!validCheck.isValid) return;
+            } else if (!allowDirectPartCode) {
+              return;
+            }
+          }
+
+          // Auto select on camera scan
+          setTimeout(() => {
+            onSelectPart(
+              found,
+              allowDirectPartCode && !isContTag ? undefined : parsed.qty,
+              parsed.contNumber,
+              parsed.tagId || (isContTag ? cleanInput : undefined)
+            );
+            onClose();
+          }, 120);
+        }
       };
 
       const videoConstraints = getOptimizedVideoConstraints(targetCamId);

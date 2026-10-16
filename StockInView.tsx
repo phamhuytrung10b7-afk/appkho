@@ -188,6 +188,13 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   const locScanGunInputRef = useRef<HTMLInputElement>(null);
   const locHtml5QrRef = useRef<Html5Qrcode | null>(null);
 
+  // Manual Tab (Tab 2) Shelf Scanner & Fast Submit States
+  const [manualShelfScanInput, setManualShelfScanInput] = useState('');
+  const [isManualShelfCamActive, setIsManualShelfCamActive] = useState(false);
+  const [showManualAdvanced, setShowManualAdvanced] = useState(false);
+  const manualShelfScanInputRef = useRef<HTMLInputElement>(null);
+  const manualShelfHtml5QrRef = useRef<Html5Qrcode | null>(null);
+
   const selectedPart = parts.find((p) => p.id === selectedPartId);
 
   useEffect(() => {
@@ -366,6 +373,148 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       locHtml5QrRef.current.stop().then(() => locHtml5QrRef.current?.clear()).catch(() => {});
     }
     setIsLocScannerActive(false);
+  };
+
+  const handleManualShelfScan = (scannedLocText: string) => {
+    const rawLoc = (scannedLocText || '').trim();
+    if (!rawLoc) return;
+
+    if (!selectedPartId || !selectedPart) {
+      soundEffects.playErrorBuzzer();
+      setErrorModal({
+        isOpen: true,
+        title: '⚠️ CHƯA CHỌN LINH KIỆN',
+        message: 'Vui lòng chọn hoặc quét mã linh kiện / mã Cont trước khi quét mã kệ!',
+      });
+      return;
+    }
+
+    const numQty = typeof quantity === 'number' ? quantity : parseInt(String(quantity), 10);
+    if (!numQty || numQty <= 0) {
+      soundEffects.playErrorBuzzer();
+      setErrorModal({
+        isOpen: true,
+        title: '⚠️ BẮT BUỘC NHẬP SỐ LƯỢNG',
+        message: 'Vui lòng nhập Số Lượng Nhập thực tế trước khi quét mã kệ để hoàn tất!',
+      });
+      setTimeout(() => {
+        manualQtyInputRef.current?.focus();
+      }, 100);
+      return;
+    }
+
+    // Match shelf in settings or use raw
+    const foundLoc = findLocationMatch(rawLoc, settings.locations || []);
+    const targetLocName = foundLoc ? foundLoc.name : rawLoc;
+
+    try {
+      const nowIso = new Date().toISOString();
+      const staffPerson = person?.trim() || currentUserName || defaultPerson || 'Nhân sự kho';
+      const reasonText = reason?.trim() || (scannedTagId ? `Nhập kho theo Cont` : 'Nhập kho thủ công');
+      const noteText = notes?.trim() || (scannedTagId ? `Tem QR: ${scannedTagId}` : '');
+
+      const tx = storageService.addStockIn({
+        partId: selectedPart.id,
+        quantity: numQty,
+        date: nowIso,
+        person: staffPerson,
+        reasonOrPurpose: reasonText,
+        notes: noteText,
+        locationId: targetLocName,
+      });
+
+      // Update part's shelf location
+      storageService.updatePart(selectedPart.id, { location: targetLocName });
+
+      // If imported via Cont QR Code, mark this tag as USED
+      if (scannedTagId) {
+        storageService.markQrTokenAsUsed(scannedTagId, {
+          partCode: selectedPart.code,
+          quantity: numQty,
+          contNumber: reasonText.replace('Nhập kho theo Cont ', ''),
+          person: staffPerson,
+        });
+        setScannedTagId(null);
+      }
+
+      // Add to session history
+      const nowTimeStr = new Date().toLocaleTimeString('vi-VN');
+      setAutoScanHistory((prev) => [
+        {
+          id: `${selectedPart.id}-${Date.now()}`,
+          partCode: selectedPart.code,
+          partName: selectedPart.name,
+          qty: numQty,
+          unit: selectedPart.unit,
+          time: nowTimeStr,
+          contNumber: scannedTagId ? reasonText.replace('Nhập kho theo Cont ', '') : undefined,
+          stockAfter: tx.stockAfter,
+        },
+        ...prev,
+      ]);
+
+      soundEffects.playSuccessTingTing();
+      setMessage({
+        type: 'success',
+        text: `ĐÃ NHẬP KHO THỦ CÔNG: +${numQty.toLocaleString('vi-VN')} ${selectedPart.unit} [${selectedPart.code}] vào Kệ [${targetLocName}]. Tồn kho: ${tx.stockAfter.toLocaleString('vi-VN')} ${selectedPart.unit}.`,
+        details: {
+          partCode: selectedPart.code,
+          partName: selectedPart.name,
+          qty: numQty,
+          unit: selectedPart.unit,
+          location: targetLocName,
+          stockAfter: tx.stockAfter,
+          contNumber: scannedTagId ? reasonText.replace('Nhập kho theo Cont ', '') : undefined,
+        },
+      });
+
+      // Clear quantity & shelf input for next scan, keep shelf selected
+      setQuantity('' as any);
+      setManualShelfScanInput('');
+      setSelectedLocation(targetLocName);
+      setCustomLocation('');
+      onSuccess();
+    } catch (err: any) {
+      soundEffects.playErrorBuzzer();
+      setErrorModal({
+        isOpen: true,
+        title: '❌ LỖI LƯU NHẬP KHO',
+        message: `Không thể hoàn tất giao dịch nhập kho: ${err?.message || 'Lỗi không xác định'}`,
+      });
+    }
+  };
+
+  const startManualShelfCamera = async () => {
+    setIsManualShelfCamActive(true);
+    setTimeout(async () => {
+      try {
+        const html5QrCode = new Html5Qrcode('manual-shelf-qr-reader');
+        manualShelfHtml5QrRef.current = html5QrCode;
+
+        await html5QrCode.start(
+          { facingMode: 'environment' },
+          { fps: 15, qrbox: { width: 220, height: 220 } },
+          (decodedText) => {
+            if (html5QrCode.isScanning) {
+              html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
+            }
+            setIsManualShelfCamActive(false);
+            handleManualShelfScan(decodedText);
+          },
+          () => {}
+        );
+      } catch (err: any) {
+        console.warn('Manual shelf camera error:', err);
+        setIsManualShelfCamActive(false);
+      }
+    }, 120);
+  };
+
+  const stopManualShelfCamera = () => {
+    if (manualShelfHtml5QrRef.current && manualShelfHtml5QrRef.current.isScanning) {
+      manualShelfHtml5QrRef.current.stop().then(() => manualShelfHtml5QrRef.current?.clear()).catch(() => {});
+    }
+    setIsManualShelfCamActive(false);
   };
 
   // Submit handler for partial / batch import popup modal
@@ -642,7 +791,13 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
         <button
           type="button"
-          onClick={() => setMainTab('manual')}
+          onClick={() => {
+            setMainTab('manual');
+            setQuantity('' as any);
+            setTimeout(() => {
+              manualQtyInputRef.current?.focus();
+            }, 100);
+          }}
           className={`flex-1 py-3 px-3 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center space-x-2 cursor-pointer ${
             mainTab === 'manual'
               ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
@@ -1147,173 +1302,309 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
       {/* TAB 2: MANUAL FORM MODE */}
       {mainTab === 'manual' && (
-        <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-semibold text-slate-700 flex items-center space-x-2">
-                <span>Chọn Linh Kiện Nhập Kho (Nhập thủ công)</span>
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
+          {/* Step 1: Chọn Linh kiện hoặc Quét Camera phụ */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-800 flex items-center space-x-2">
+                <span>1. CHỌN HOẶC QUÉT MÃ LINH KIỆN / CONT (NHẬP THỦ CÔNG) *</span>
               </label>
               <button
                 type="button"
                 onClick={() => setIsQrModalOpen(true)}
-                className="flex items-center space-x-1.5 px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold border border-emerald-200 transition-colors cursor-pointer"
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all cursor-pointer"
               >
-                <QrCode className="w-3.5 h-3.5 text-emerald-600" />
+                <Camera className="w-4 h-4 text-emerald-200" />
                 <span>Quét mã camera phụ</span>
               </button>
             </div>
 
+            <p className="text-[11px] text-slate-500 italic">
+              ⚡ Hỗ trợ quét mã Tem Cont HOẶC quét trực tiếp mã QR / Barcode linh kiện trong danh mục.
+            </p>
+
             <SearchableSelect
               options={partOptions}
               value={selectedPartId}
-              onChange={(val) => setSelectedPartId(val)}
+              onChange={(val) => {
+                setSelectedPartId(val);
+                setQuantity('' as any);
+                setTimeout(() => {
+                  manualQtyInputRef.current?.focus();
+                }, 100);
+              }}
               placeholder="Gõ mã, tên linh kiện hoặc vị trí để tìm..."
               allowCustom={false}
               icon={<Package className="w-4 h-4 text-emerald-600" />}
             />
-          </div>
 
-        {/* Selected Part Quick Summary Card */}
-        {selectedPart && (
-          <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-xs">
-            <div className="flex items-center space-x-3">
-              <Package className="w-5 h-5 text-emerald-600 shrink-0" />
-              <div>
-                <p className="font-bold text-slate-800">{selectedPart.name}</p>
-                <p className="text-slate-500 font-mono">Mã: {selectedPart.code} | Vị trí: {selectedPart.location}</p>
+            {/* Selected Part Quick Summary Card */}
+            {selectedPart && (
+              <div className="p-4 bg-emerald-50/70 border-2 border-emerald-300 rounded-2xl flex items-center justify-between text-xs animate-in fade-in duration-200 shadow-xs">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
+                    <Package className="w-5 h-5 text-emerald-700 shrink-0" />
+                  </div>
+                  <div>
+                    <p className="font-extrabold text-sm text-slate-900">{selectedPart.name}</p>
+                    <p className="text-slate-600 font-mono text-xs">
+                      Mã: <strong>{selectedPart.code}</strong> {selectedPart.location && <>| Vị trí kệ: <strong>{selectedPart.location}</strong></>}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-slate-500 text-[11px] font-medium">Tồn kho hiện tại:</span>
+                  <p className="text-base font-black text-emerald-700">
+                    {selectedPart.currentStock.toLocaleString('vi-VN')} {selectedPart.unit}
+                  </p>
+                </div>
               </div>
-            </div>
-            <div className="text-right shrink-0">
-              <span className="text-slate-500 font-medium">Tồn kho hiện tại:</span>
-              <p className="text-base font-black text-emerald-700">
-                {selectedPart.currentStock.toLocaleString('vi-VN')} {selectedPart.unit}
-              </p>
-            </div>
+            )}
           </div>
-        )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Location / Shelf Selector */}
-          {selectedPart && (
-            <div className="col-span-1 md:col-span-2 bg-emerald-50/60 p-3.5 rounded-xl border-2 border-emerald-300">
-              <label className="block text-xs font-extrabold text-emerald-950 mb-1 flex items-center justify-between">
-                <span>📍 BẮT BUỘC CHỌN KỆ / VỊ TRÍ NHẬP HÀNG *</span>
-                <span className="text-[11px] font-normal text-emerald-800">Cộng tồn kho cụ thể cho kệ được chọn</span>
-              </label>
-              <SearchableLocationSelect
-                locations={settings.locations || []}
-                value={selectedLocation}
-                onChange={(val) => {
-                  setSelectedLocation(val);
-                  if (val !== '__custom__') {
-                    setCustomLocation('');
+          {/* Step 2: Điền Số Lượng (Bắt buộc, không được đề xuất sẵn) */}
+          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2">
+            <label className="block text-xs font-black text-slate-900 uppercase tracking-tight flex items-center justify-between">
+              <span>2. Số Lượng Nhập Kho (Bắt buộc tự nhập, không đề xuất sẵn) *</span>
+              <span className="text-[11px] text-rose-600 font-bold">* Bắt buộc nhập</span>
+            </label>
+            <div className="relative">
+              <input
+                ref={manualQtyInputRef}
+                type="number"
+                min={1}
+                value={quantity === 0 || quantity === '' ? '' : quantity}
+                placeholder="Nhập số lượng thực tế cần nhập kho..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    manualShelfScanInputRef.current?.focus();
                   }
                 }}
-                placeholder="-- Tìm kiếm nhanh tên kệ hoặc mô tả kệ --"
-                allowCustom={true}
-                customValue={customLocation}
-                onCustomChange={(val) => setCustomLocation(val)}
-                theme="emerald"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setQuantity(val === '' ? ('' as any) : parseInt(val, 10));
+                }}
+                className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl text-lg font-black text-emerald-800 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-hidden transition-all shadow-xs"
               />
             </div>
-          )}
-
-          {/* Quantity */}
-          <div>
-            <label className="block text-xs font-extrabold text-slate-800 mb-1">
-              Số Lượng Nhập <span className="text-red-500">*</span>
-            </label>
-            <input
-              ref={manualQtyInputRef}
-              type="number"
-              min={1}
-              value={quantity}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  locationSelectRef.current?.focus();
-                }
-              }}
-              onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
-              className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-slate-300 rounded-xl text-base font-black text-emerald-700 focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-hidden"
-            />
-            <p className="text-[10px] text-slate-500 mt-1">
-              💡 Gõ số lượng xong nhấn Enter để chuyển sang ô Chọn Kệ.
+            <p className="text-[11px] text-slate-500">
+              💡 Sau khi gõ số lượng, bạn chỉ cần <strong>quét mã QR Kệ</strong> là hệ thống sẽ tự động hoàn tất nhập kho ngay!
             </p>
           </div>
 
-          {/* Date & Time (Giờ, phút, ngày) */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Ngày & Giờ Nhập Kho <span className="text-red-500">*</span>
-            </label>
-            <div className="relative">
-              <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="datetime-local"
-                value={dateTime}
-                onChange={(e) => setDateTime(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-hidden"
-              />
+          {/* Step 3: Quét Kệ Tự Động Hoàn Thành */}
+          <div className="bg-emerald-50/70 p-5 rounded-2xl border-2 border-emerald-400 space-y-3.5 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200/80 pb-2">
+              <div>
+                <h4 className="text-xs font-black text-emerald-950 uppercase tracking-tight flex items-center space-x-1.5">
+                  <MapPin className="w-4 h-4 text-emerald-700" />
+                  <span>3. QUÉT MÃ KỆ ĐỂ TỰ ĐỘNG HOÀN THÀNH NHẬP KHO *</span>
+                </h4>
+                <p className="text-[11px] text-emerald-800 font-medium">
+                  ⚡ Quét mã kệ bằng súng barcode hoặc camera. Hệ thống tự động xác nhận nhập kho ngay lập tức!
+                </p>
+              </div>
+
+              {/* Toggle Shelf Camera Scanner Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (isManualShelfCamActive) {
+                    stopManualShelfCamera();
+                  } else {
+                    startManualShelfCamera();
+                  }
+                }}
+                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                  isManualShelfCamActive
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                    : 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-xs'
+                }`}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>{isManualShelfCamActive ? 'Đóng Camera Kệ' : '📷 Quét Camera Mã Kệ'}</span>
+              </button>
+            </div>
+
+            {/* Camera Viewfinder if active */}
+            {isManualShelfCamActive && (
+              <div className="p-3 bg-slate-900 rounded-2xl space-y-2 border-2 border-emerald-400">
+                <div className="flex items-center justify-between text-xs text-white px-1">
+                  <span className="font-bold flex items-center space-x-1.5 text-emerald-300">
+                    <Camera className="w-4 h-4 animate-pulse" />
+                    <span>Đưa mã QR Kệ vào giữa khung ngắm để tự động nhập kho</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={stopManualShelfCamera}
+                    className="p-1 hover:bg-slate-800 rounded-lg text-slate-300 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="relative w-full rounded-xl overflow-hidden bg-black min-h-[220px] max-h-[340px] flex items-center justify-center">
+                  <div id="manual-shelf-qr-reader" className="w-full h-full min-h-[220px]"></div>
+                </div>
+              </div>
+            )}
+
+            {/* Handheld Barcode Gun / Manual Input for Rack QR */}
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-bold text-emerald-950">
+                Súng quét mã QR Kệ / Gõ mã kệ rồi nhấn Enter:
+              </label>
+              <div className="relative flex items-center gap-2">
+                <div className="relative flex-1">
+                  <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-3.5" />
+                  <input
+                    ref={manualShelfScanInputRef}
+                    type="text"
+                    value={manualShelfScanInput}
+                    onChange={(e) => setManualShelfScanInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleManualShelfScan(manualShelfScanInput);
+                      }
+                    }}
+                    placeholder="🎯 Bắn súng quét mã QR kệ hoặc gõ mã kệ rồi Enter..."
+                    className="w-full pl-9 pr-3 py-3 bg-white border-2 border-emerald-400 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-hidden transition-all shadow-xs"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleManualShelfScan(manualShelfScanInput)}
+                  className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-md transition-all cursor-pointer shrink-0"
+                >
+                  Xác Nhận Kệ & Nhập Kho
+                </button>
+              </div>
+            </div>
+
+            {/* Shelf Recognized badge */}
+            {selectedLocation && (
+              <div className="p-2.5 bg-emerald-100 border border-emerald-300 rounded-xl flex items-center justify-between text-xs font-bold text-emerald-950">
+                <span className="flex items-center space-x-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Kệ gần nhất đã nhập: <strong className="underline text-emerald-900">{selectedLocation === '__custom__' ? customLocation : selectedLocation}</strong></span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedLocation('');
+                    setCustomLocation('');
+                    manualShelfScanInputRef.current?.focus();
+                  }}
+                  className="text-[11px] text-slate-500 hover:text-slate-800 underline font-normal cursor-pointer"
+                >
+                  Chọn lại kệ
+                </button>
+              </div>
+            )}
+
+            {/* Dropdown Selection as secondary option */}
+            <div className="pt-1 space-y-1">
+              <label className="block text-[11px] font-semibold text-slate-600">
+                Hoặc chọn vị trí kệ trong danh sách:
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="flex-1">
+                  <SearchableLocationSelect
+                    locations={settings.locations || []}
+                    value={selectedLocation}
+                    onChange={(val) => {
+                      setSelectedLocation(val);
+                      if (val !== '__custom__') {
+                        setCustomLocation('');
+                      }
+                    }}
+                    placeholder="-- Tìm kiếm nhanh tên kệ hoặc mô tả kệ --"
+                    allowCustom={true}
+                    customValue={customLocation}
+                    onCustomChange={(val) => setCustomLocation(val)}
+                    theme="emerald"
+                  />
+                </div>
+                {selectedLocation && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const loc = (selectedLocation === '__custom__' ? customLocation : selectedLocation).trim();
+                      if (loc) handleManualShelfScan(loc);
+                    }}
+                    disabled={!quantity || Number(quantity) <= 0}
+                    className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer shrink-0 shadow-xs ${
+                      quantity && Number(quantity) > 0
+                        ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    ⚡ Hoàn tất vào Kệ này
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Person / Staff (Searchable select from Settings staff list) */}
-          <div>
-            <SearchableSelect
-              label="Người Thực Hiện / Người Nhập Kho"
-              required
-              options={staffOptions}
-              value={person}
-              onChange={(val) => setPerson(val)}
-              placeholder="Chọn nhân sự hoặc gõ tên mới..."
-              allowCustom={true}
-              icon={<User className="w-4 h-4 text-slate-400" />}
-            />
+          {/* Optional collapsible details for Person, Reason, Notes */}
+          <div className="pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setShowManualAdvanced(!showManualAdvanced)}
+              className="text-[11px] text-slate-500 hover:text-slate-800 font-medium flex items-center space-x-1 underline cursor-pointer"
+            >
+              <span>{showManualAdvanced ? '▼ Thu gọn thông tin phụ' : '▶ Tùy chọn nâng cao (Đã tự động điền: Người thực hiện, Lý do, Ghi chú)'}</span>
+            </button>
+
+            {showManualAdvanced && (
+              <div className="mt-3 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 animate-in fade-in duration-150">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Người thực hiện (Mặc định: {currentUserName || 'Admin'})
+                    </label>
+                    <SearchableSelect
+                      options={staffOptions}
+                      value={person}
+                      onChange={(val) => setPerson(val)}
+                      placeholder="Chọn hoặc gõ tên nhân sự..."
+                      allowCustom={true}
+                      icon={<User className="w-3.5 h-3.5 text-slate-400" />}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Lý do nhập kho
+                    </label>
+                    <SearchableSelect
+                      options={settings.stockInReasons || []}
+                      value={reason}
+                      onChange={(val) => setReason(val)}
+                      placeholder="Chọn hoặc gõ lý do..."
+                      allowCustom={true}
+                      icon={<FileText className="w-3.5 h-3.5 text-slate-400" />}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Ghi chú thêm
+                    </label>
+                    <input
+                      type="text"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="Ghi chú thêm..."
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs outline-hidden"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-
-          {/* Reason (Searchable select from Settings stockInReasons) */}
-          <div>
-            <SearchableSelect
-              label="Lý Do Nhập Kho"
-              options={settings.stockInReasons || []}
-              value={reason}
-              onChange={(val) => setReason(val)}
-              placeholder="Chọn lý do hoặc gõ lý do mới..."
-              allowCustom={true}
-              icon={<FileText className="w-4 h-4 text-slate-400" />}
-            />
-          </div>
         </div>
-
-        {/* Notes */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">Ghi Chú Thêm (Số hóa đơn, nhà cung cấp...)</label>
-          <input
-            type="text"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="VD: Nhập theo HĐ102, Hàng mới 100%..."
-            className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 outline-hidden"
-          />
-        </div>
-
-        {/* Submit Button */}
-        <div className="pt-3 border-t border-slate-100 flex justify-end">
-          <button
-            type="submit"
-            disabled={!selectedPartId || quantity <= 0 || !((selectedLocation === '__custom__' ? customLocation : selectedLocation).trim())}
-            className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer ${
-              selectedPartId && quantity > 0 && ((selectedLocation === '__custom__' ? customLocation : selectedLocation).trim())
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
-            }`}
-          >
-            <ArrowDownLeft className="w-4 h-4" />
-            <span>Xác Nhận Nhập Kho</span>
-          </button>
-        </div>
-      </form>
       )}
 
       {/* TAB 3: EXCEL IMPORT MODE */}
@@ -1439,22 +1730,35 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         isOpen={isQrModalOpen}
         onClose={() => setIsQrModalOpen(false)}
         parts={parts}
+        allowDirectPartCode={mainTab === 'manual'}
         onSelectPart={(p, autoQty, autoCont, tagId) => {
           setSelectedPartId(p.id);
-          if (autoQty !== undefined && autoQty > 0) {
-            setQuantity(autoQty);
+          if (mainTab === 'manual') {
+            // Manual tab: require user to type quantity, do not pre-fill or suggest
+            setQuantity('' as any);
+            setTimeout(() => {
+              manualQtyInputRef.current?.focus();
+            }, 120);
+            setMessage({
+              type: 'success',
+              text: `Đã chọn [${p.code}] ${p.name}. Vui lòng nhập số lượng rồi quét mã kệ để tự động nhập kho!`,
+            });
+          } else {
+            if (autoQty !== undefined && autoQty > 0) {
+              setQuantity(autoQty);
+            }
+            if (autoQty !== undefined || autoCont) {
+              setMessage({
+                type: 'success',
+                text: `Đã tự động chọn [${p.code}] ${p.name}${autoQty ? ` và điền số lượng: ${autoQty.toLocaleString('vi-VN')} ${p.unit}` : ''}${autoCont ? ` từ Cont ${autoCont}` : ''}!`,
+              });
+            }
           }
           if (autoCont) {
             setReason(`Nhập kho theo Cont ${autoCont}`);
           }
           if (tagId) {
             setScannedTagId(tagId);
-          }
-          if (autoQty !== undefined || autoCont) {
-            setMessage({
-              type: 'success',
-              text: `Đã tự động chọn [${p.code}] ${p.name}${autoQty ? ` và điền số lượng: ${autoQty.toLocaleString('vi-VN')} ${p.unit}` : ''}${autoCont ? ` từ Cont ${autoCont}` : ''}!`,
-            });
           }
           setIsQrModalOpen(false);
         }}
