@@ -27,6 +27,9 @@ import {
   startNativeBarcodeDetectorLoop,
   parseCameraError,
   STANDARD_SCANNER_FORMATS,
+  FAST_SCANNER_FORMATS,
+  isIOSDevice,
+  setupVideoElementAttributes,
   CameraDeviceInfo,
 } from './cameraScannerUtils';
 import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
@@ -204,13 +207,15 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     setCameraErrorDetails(null);
     setIsTorchOn(false);
 
+    const isIOS = isIOSDevice();
+
     try {
       await stopCamera();
       setIsCameraActive(true);
       isScanningRef.current = true;
 
-      // 1. Explicitly request permission first with back camera preference
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // 1. Explicitly request permission first with back camera preference (skip probe track close on iOS)
+      if (!isIOS && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           const testStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: { ideal: 'environment' } },
@@ -231,15 +236,21 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
       setCameras(sorted);
 
       let targetCamId = camId;
-      if (!targetCamId && !selectedCameraId && sorted.length > 0) {
-        // First camera in sorted list is the primary rear camera
+      if (!targetCamId && selectedCameraId) {
+        targetCamId = selectedCameraId;
+      } else if (!targetCamId && !isIOS && sorted.length > 0) {
         targetCamId = sorted[0].id;
         setSelectedCameraId(targetCamId);
-      } else if (!targetCamId && selectedCameraId) {
-        targetCamId = selectedCameraId;
       }
 
-      const html5QrCode = new Html5Qrcode(qrContainerId);
+      const formatsToUse = isIOS ? FAST_SCANNER_FORMATS : STANDARD_SCANNER_FORMATS;
+      const targetFps = isIOS ? 15 : 25;
+
+      const html5QrCode = new Html5Qrcode(qrContainerId, {
+        formatsToSupport: formatsToUse,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: !isIOS },
+        verbose: false,
+      });
       html5QrCodeRef.current = html5QrCode;
 
       const onScanSuccessCallback = (decodedText: string) => {
@@ -249,49 +260,57 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
         stopCamera();
       };
 
-      // 3. Optimized Scan Configuration
-      const videoConstraints = getOptimizedVideoConstraints(targetCamId);
+      // 3. Determine camera source configuration
+      let cameraConfigToUse: any;
+      if (targetCamId) {
+        cameraConfigToUse = targetCamId;
+      } else if (isIOS) {
+        cameraConfigToUse = { facingMode: 'environment' };
+      } else {
+        cameraConfigToUse = { facingMode: 'environment' };
+      }
+
+      // 4. Optimized Scan Configuration
+      const videoConstraints = getOptimizedVideoConstraints(
+        typeof cameraConfigToUse === 'string' ? cameraConfigToUse : undefined
+      );
 
       const qrConfig = {
-        fps: 30,
+        fps: targetFps,
         qrbox: (w: number, h: number) => {
           const minEdge = Math.min(w, h);
-          const boxSize = Math.max(Math.floor(minEdge * 0.82), 220);
+          const boxSize = Math.max(Math.floor(minEdge * 0.85), 240);
           return { width: boxSize, height: boxSize };
         },
         videoConstraints,
         disableFlip: false,
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        formatsToSupport: STANDARD_SCANNER_FORMATS,
       };
 
-      if (targetCamId) {
-        try {
-          await html5QrCode.start(
-            targetCamId,
-            qrConfig,
-            onScanSuccessCallback,
-            () => {}
-          );
-        } catch (startErr) {
-          console.warn('Start with specific camera ID failed, trying environment facing:', startErr);
-          await html5QrCode.start(
-            { facingMode: 'environment' },
-            qrConfig,
-            onScanSuccessCallback,
-            () => {}
-          );
-        }
-      } else {
+      try {
+        await html5QrCode.start(
+          cameraConfigToUse,
+          qrConfig,
+          onScanSuccessCallback,
+          () => {}
+        );
+      } catch (startErr) {
+        console.warn('Start with primary config failed, trying fallback facingMode:', startErr);
         await html5QrCode.start(
           { facingMode: 'environment' },
-          qrConfig,
+          {
+            fps: 12,
+            qrbox: (w, h) => {
+              const m = Math.min(w, h);
+              return { width: Math.max(Math.floor(m * 0.85), 240), height: Math.max(Math.floor(m * 0.85), 240) };
+            },
+            disableFlip: false,
+          },
           onScanSuccessCallback,
           () => {}
         );
       }
 
-      // 4. Apply continuous focus & exposure to active video track
+      // 5. Apply continuous focus & exposure to active video track
       const activeStream = (html5QrCode as any).mediaStream as MediaStream;
       if (activeStream) {
         await applyTrackFocusAndCapabilities(activeStream);
@@ -303,7 +322,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
         }
       }
 
-      // 5. Hardware BarcodeDetector acceleration loop for Android Chrome
+      // 6. Video element setup and Hardware BarcodeDetector acceleration loop
       const pollForVideoEl = () => {
         const videoEl = document.querySelector(`#${qrContainerId} video`) as HTMLVideoElement;
         if (!videoEl || videoEl.readyState < 2) {
@@ -313,13 +332,17 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
           return;
         }
 
-        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
-          videoEl,
-          (decoded) => {
-            onScanSuccessCallback(decoded);
-          },
-          () => isScanningRef.current
-        );
+        setupVideoElementAttributes(videoEl);
+
+        if (!isIOS) {
+          stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+            videoEl,
+            (decoded) => {
+              onScanSuccessCallback(decoded);
+            },
+            () => isScanningRef.current
+          );
+        }
       };
       pollForVideoEl();
 

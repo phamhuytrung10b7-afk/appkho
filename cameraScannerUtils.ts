@@ -64,12 +64,47 @@ export function sortAndFilterCameras(devices: Array<{ id: string; label: string 
 }
 
 /**
- * Returns optimized video track constraints for high-resolution & continuous autofocus
+ * Detects iOS devices (iPhone, iPad, iPod) and iPadOS on Safari/WebKit
+ */
+export function isIOSDevice(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return (
+    /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ||
+    Boolean((window as any).MSStream)
+  );
+}
+
+/**
+ * Returns optimized video track constraints for high-resolution & continuous autofocus.
+ * Tailored specifically for iOS WebKit vs Android Chrome.
  */
 export function getOptimizedVideoConstraints(deviceId?: string): MediaTrackConstraints {
+  const isIOS = isIOSDevice();
+
+  if (isIOS) {
+    // Ultra-compatible iOS WebKit constraints
+    // NEVER use 'min' bounds on iOS Safari in portrait mode (triggers OverconstrainedError)
+    // NEVER use advanced focus constraints inside getUserMedia on iOS WebKit
+    const iosConstraints: MediaTrackConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30 },
+    };
+
+    if (deviceId) {
+      iosConstraints.deviceId = { ideal: deviceId };
+    } else {
+      iosConstraints.facingMode = { ideal: 'environment' };
+    }
+    return iosConstraints;
+  }
+
+  // Android & Desktop constraints
   const baseConstraints: MediaTrackConstraints = {
-    width: { min: 720, ideal: 1920, max: 2560 },
-    height: { min: 720, ideal: 1080, max: 1440 },
+    width: { ideal: 1920, max: 2560 },
+    height: { ideal: 1080, max: 1440 },
     frameRate: { ideal: 30, max: 60 },
   };
 
@@ -156,6 +191,37 @@ export const STANDARD_SCANNER_FORMATS = [
   Html5QrcodeSupportedFormats.ITF,
   Html5QrcodeSupportedFormats.PDF_417,
 ];
+
+/**
+ * Fast scanner formats for mobile WebKit (iOS) to prevent CPU thread choking
+ */
+export const FAST_SCANNER_FORMATS = [
+  Html5QrcodeSupportedFormats.QR_CODE,
+  Html5QrcodeSupportedFormats.CODE_128,
+  Html5QrcodeSupportedFormats.DATA_MATRIX,
+];
+
+/**
+ * Configure video element attributes critical for iOS Safari video playback and canvas frame grabbing
+ */
+export function setupVideoElementAttributes(videoEl: HTMLVideoElement | null) {
+  if (!videoEl) return;
+  try {
+    videoEl.setAttribute('playsinline', 'true');
+    videoEl.setAttribute('webkit-playsinline', 'true');
+    videoEl.setAttribute('x5-playsinline', 'true');
+    videoEl.muted = true;
+    videoEl.autoplay = true;
+    videoEl.style.width = '100%';
+    videoEl.style.height = '100%';
+    videoEl.style.objectFit = 'cover';
+    if (videoEl.paused) {
+      videoEl.play().catch(() => {});
+    }
+  } catch (e) {
+    // Ignore video attribute setup errors
+  }
+}
 
 /**
  * BarcodeDetector hardware scanner instance for Android Chrome / Chromium

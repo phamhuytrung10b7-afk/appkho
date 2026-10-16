@@ -7,6 +7,7 @@ import { SmoothCameraScanner } from './SmoothCameraScanner';
 import { parseScannedQrPayload } from './QrScannerModal';
 import { ContainerTagManagerModal } from './ContainerTagManagerModal';
 import { MasterKittingTag } from './masterExcelParser';
+import { getPartGroupConfig } from './partGroupColors';
 import {
   Bell,
   BellRing,
@@ -158,11 +159,42 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   // Handle parsing QR code from Phiếu Thông Tin / Thẻ Thùng for Andon Call
   const handleParseAndonQrPayload = (payloadStr: string) => {
     if (!payloadStr) return;
-    const rawClean = payloadStr.trim();
+    const rawClean = payloadStr.replace(/^\uFEFF/, '').replace(/^["']|["']$/g, '').trim();
     if (!rawClean) return;
 
+    setAndonQrInputText(rawClean);
+
     // STRICT VALIDATION: Only accept codes from Master Data (539 Tags) or Custom Generated Tags
-    const validation = storageService.findAndValidateContainerTag(rawClean);
+    let validation = storageService.findAndValidateContainerTag(rawClean);
+
+    // Fallback if rawClean is a direct Part Code from Parts Inventory
+    if (!validation.isValid || !validation.matchedTag) {
+      const allParts = storageService.getParts();
+      const matchedDirectPart = allParts.find(
+        (p) => p.code.trim().toLowerCase() === rawClean.toLowerCase()
+      );
+      if (matchedDirectPart) {
+        const fallbackTag: MasterKittingTag = {
+          id: `TAG_${matchedDirectPart.code}`,
+          stt: 'Số 1',
+          partCode: matchedDirectPart.code,
+          partName: matchedDirectPart.name,
+          standardQty: 10,
+          unit: matchedDirectPart.unit || 'Cái',
+          groupName: 'Nhóm linh kiện',
+          ccdcSpec: 'TIÊU CHUẨN',
+          groupConfig: getPartGroupConfig('Nhóm linh kiện'),
+          qrPayload: matchedDirectPart.code,
+        };
+        validation = {
+          isValid: true,
+          matchedTag: fallbackTag,
+          source: 'CUSTOM_GENERATED',
+          extractedPartCode: matchedDirectPart.code,
+          extractedQty: fallbackTag.standardQty,
+        };
+      }
+    }
 
     if (!validation.isValid || !validation.matchedTag) {
       setAndonErrorModal({
@@ -1246,6 +1278,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   <SmoothCameraScanner
                     onScanSuccess={(code) => {
                       setIsAndonCameraScanning(false);
+                      setAndonQrInputText(code);
                       handleParseAndonQrPayload(code);
                     }}
                     onClose={() => setIsAndonCameraScanning(false)}
