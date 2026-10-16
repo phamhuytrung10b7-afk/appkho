@@ -1,7 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { WarehouseLocation } from './types';
-import { QrCode, X, Camera, Zap, CheckCircle2, AlertCircle, MapPin, Flashlight, SwitchCamera } from 'lucide-react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import {
+  QrCode,
+  X,
+  Camera,
+  Zap,
+  CheckCircle2,
+  AlertCircle,
+  MapPin,
+  Flashlight,
+  SwitchCamera,
+  Focus,
+} from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
+import {
+  sortAndFilterCameras,
+  getOptimizedVideoConstraints,
+  applyTrackFocusAndCapabilities,
+  triggerManualFocus,
+  startNativeBarcodeDetectorLoop,
+  parseCameraError,
+  STANDARD_SCANNER_FORMATS,
+  CameraDeviceInfo,
+} from './cameraScannerUtils';
+import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
 
 interface LocationQrScannerModalProps {
   isOpen: boolean;
@@ -9,7 +31,7 @@ interface LocationQrScannerModalProps {
   onSelectLocation: (locationName: string) => void;
   locations?: WarehouseLocation[];
   title?: string;
-  excludeLocation?: string; // e.g. cannot transfer to the same shelf
+  excludeLocation?: string;
 }
 
 export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
@@ -21,25 +43,33 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
   excludeLocation,
 }) => {
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraErrorDetails, setCameraErrorDetails] = useState<{
+    title: string;
+    message: string;
+    isPermissionDenied: boolean;
+  } | null>(null);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
-  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [focusSupported, setFocusSupported] = useState(false);
+  const [isRefocusing, setIsRefocusing] = useState(false);
+  const [cameras, setCameras] = useState<CameraDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [scannedResult, setScannedResult] = useState<string | null>(null);
   const [matchedLoc, setMatchedLoc] = useState<WarehouseLocation | null>(null);
 
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
+  const stopNativeDetectorRef = useRef<(() => void) | null>(null);
+  const isScanningActiveRef = useRef<boolean>(false);
   const qrContainerId = 'location-qr-scanner-viewport';
 
   useEffect(() => {
     if (isOpen) {
       setScannedResult(null);
       setMatchedLoc(null);
-      setCameraError(null);
+      setCameraErrorDetails(null);
       setTimeout(() => {
         initCamera();
-      }, 300);
+      }, 200);
     } else {
       stopCamera();
     }
@@ -50,6 +80,12 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
   }, [isOpen]);
 
   const stopCamera = async () => {
+    isScanningActiveRef.current = false;
+    if (stopNativeDetectorRef.current) {
+      stopNativeDetectorRef.current();
+      stopNativeDetectorRef.current = null;
+    }
+
     if (html5QrcodeRef.current) {
       try {
         const stream = (html5QrcodeRef.current as any).mediaStream as MediaStream;
@@ -72,6 +108,7 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
     setIsCameraActive(false);
     setIsTorchOn(false);
     setTorchSupported(false);
+    setFocusSupported(false);
   };
 
   const playBeepSound = () => {
@@ -89,16 +126,14 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.15);
-    } catch {
-      // Audio ignore
-    }
+    } catch {}
   };
 
   const handleScanSuccess = (decodedText: string) => {
+    if (!isScanningActiveRef.current) return;
     const raw = decodedText.trim();
     if (!raw) return;
 
-    // Parse raw shelf name
     let shelfName = raw;
     if (raw.startsWith('LOC:')) {
       shelfName = raw.replace('LOC:', '').trim();
@@ -110,11 +145,21 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
     }
 
     if (excludeLocation && shelfName.toLowerCase() === excludeLocation.toLowerCase()) {
-      setCameraError(`Vị trí "${shelfName}" trùng với vị trí xuất phát hiện tại. Vui lòng quét vị trí khác!`);
+      setCameraErrorDetails({
+        title: 'Vị trí trùng lặp',
+        message: `Vị trí "${shelfName}" trùng với vị trí xuất phát hiện tại. Vui lòng quét vị trí khác!`,
+        isPermissionDenied: false,
+      });
       return;
     }
 
     playBeepSound();
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try {
+        navigator.vibrate([100, 50, 100]);
+      } catch (e) {}
+    }
+
     setScannedResult(shelfName);
 
     const found = locations.find((l) => l.name.toLowerCase() === shelfName.toLowerCase());
@@ -122,110 +167,143 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
       setMatchedLoc(found);
     }
 
-    // Auto accept after a brief visual confirmation
+    stopCamera();
+
     setTimeout(() => {
       onSelectLocation(shelfName);
       onClose();
-    }, 600);
+    }, 500);
   };
 
   const initCamera = async () => {
-    setCameraError(null);
+    setCameraErrorDetails(null);
     try {
-      const devices = await Html5Qrcode.getCameras();
-      if (!devices || devices.length === 0) {
-        setCameraError('Không tìm thấy Camera trên thiết bị này.');
-        return;
+      // 1. Probe permission with rear camera
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+          });
+          testStream.getTracks().forEach((t) => t.stop());
+        } catch (permErr: any) {
+          const parsed = parseCameraError(permErr);
+          setCameraErrorDetails(parsed);
+          return;
+        }
       }
 
-      setCameras(devices);
-      let backCam = devices.find(
-        (d) =>
-          d.label.toLowerCase().includes('back') ||
-          d.label.toLowerCase().includes('rear') ||
-          d.label.toLowerCase().includes('sau') ||
-          d.label.toLowerCase().includes('environment')
-      );
-      const chosenId = backCam ? backCam.id : devices[0].id;
-      setSelectedCameraId(chosenId);
+      const rawDevices = await Html5Qrcode.getCameras().catch(() => []);
+      const sorted = sortAndFilterCameras(rawDevices);
+      setCameras(sorted);
+
+      const chosenId = sorted.length > 0 ? sorted[0].id : undefined;
+      if (chosenId) {
+        setSelectedCameraId(chosenId);
+      }
 
       await startScanner(chosenId);
     } catch (err: any) {
       console.error('Camera init error:', err);
-      setCameraError('Không thể truy cập camera. Vui lòng cấp quyền camera trong trình duyệt.');
+      const parsed = parseCameraError(err);
+      setCameraErrorDetails(parsed);
     }
   };
 
-  const startScanner = async (cameraId: string) => {
+  const startScanner = async (cameraId?: string) => {
     try {
-      if (html5QrcodeRef.current) {
-        await stopCamera();
-      }
+      await stopCamera();
+      setIsCameraActive(true);
+      isScanningActiveRef.current = true;
 
-      const html5QrCode = new Html5Qrcode(qrContainerId, {
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-        ],
-        verbose: false,
-      });
-
+      const html5QrCode = new Html5Qrcode(qrContainerId);
       html5QrcodeRef.current = html5QrCode;
 
-      await html5QrCode.start(
-        cameraId,
-        {
-          fps: 15,
-          qrbox: { width: 250, height: 250 },
-          aspectRatio: 1.0,
-        },
-        (decodedText) => {
-          handleScanSuccess(decodedText);
-        },
-        () => {
-          // ignore scan frame misses
-        }
-      );
+      const videoConstraints = getOptimizedVideoConstraints(cameraId);
 
-      setIsCameraActive(true);
+      const qrConfig = {
+        fps: 30,
+        qrbox: (w: number, h: number) => {
+          const minDim = Math.min(w, h);
+          const size = Math.max(Math.floor(minDim * 0.82), 220);
+          return { width: size, height: size };
+        },
+        videoConstraints,
+        disableFlip: false,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+        formatsToSupport: STANDARD_SCANNER_FORMATS,
+      };
 
-      // Check flashlight support
-      try {
-        const stream = (html5QrCode as any).mediaStream as MediaStream;
-        if (stream) {
-          const track = stream.getVideoTracks()[0];
-          const caps = (track.getCapabilities && track.getCapabilities()) as any;
-          if (caps && caps.torch) {
-            setTorchSupported(true);
-          }
+      if (cameraId) {
+        try {
+          await html5QrCode.start(cameraId, qrConfig, handleScanSuccess, () => {});
+        } catch (camErr) {
+          await html5QrCode.start({ facingMode: 'environment' }, qrConfig, handleScanSuccess, () => {});
         }
-      } catch (e) {
-        setTorchSupported(false);
+      } else {
+        await html5QrCode.start({ facingMode: 'environment' }, qrConfig, handleScanSuccess, () => {});
       }
+
+      // Apply focus & torch capabilities
+      const activeStream = (html5QrCode as any).mediaStream as MediaStream;
+      if (activeStream) {
+        await applyTrackFocusAndCapabilities(activeStream);
+        const track = activeStream.getVideoTracks()[0];
+        if (track && track.getCapabilities) {
+          const caps = track.getCapabilities() as any;
+          if (caps?.torch) setTorchSupported(true);
+          if (caps?.focusMode) setFocusSupported(true);
+        }
+      }
+
+      // Native hardware BarcodeDetector loop for Android Chrome
+      const pollForVideoEl = () => {
+        const videoEl = document.querySelector(`#${qrContainerId} video`) as HTMLVideoElement;
+        if (!videoEl || videoEl.readyState < 2) {
+          if (isScanningActiveRef.current) {
+            requestAnimationFrame(pollForVideoEl);
+          }
+          return;
+        }
+
+        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+          videoEl,
+          (decoded) => {
+            handleScanSuccess(decoded);
+          },
+          () => isScanningActiveRef.current
+        );
+      };
+      pollForVideoEl();
+
     } catch (err: any) {
       console.error('Start scanner error:', err);
-      setCameraError('Lỗi khởi động camera: ' + (err.message || 'Vui lòng kiểm tra quyền thiết bị'));
+      const parsed = parseCameraError(err);
+      setCameraErrorDetails(parsed);
       setIsCameraActive(false);
     }
   };
 
   const toggleTorch = async () => {
     if (!html5QrcodeRef.current || !torchSupported) return;
+    const nextState = !isTorchOn;
     try {
-      const stream = (html5QrcodeRef.current as any).mediaStream as MediaStream;
-      if (stream) {
-        const track = stream.getVideoTracks()[0];
-        const nextState = !isTorchOn;
-        await track.applyConstraints({
-          advanced: [{ torch: nextState } as any],
-        });
-        setIsTorchOn(nextState);
-      }
+      await html5QrcodeRef.current.applyVideoConstraints({
+        advanced: [{ torch: nextState } as any],
+      });
+      setIsTorchOn(nextState);
     } catch (e) {
       console.error('Torch toggle error:', e);
     }
+  };
+
+  const handleManualRefocus = async () => {
+    if (!html5QrcodeRef.current) return;
+    setIsRefocusing(true);
+    const stream = (html5QrcodeRef.current as any).mediaStream as MediaStream;
+    await triggerManualFocus(stream);
+    setTimeout(() => {
+      setIsRefocusing(false);
+    }, 400);
   };
 
   const switchCamera = async () => {
@@ -266,46 +344,84 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
 
         {/* Viewport Area */}
         <div className="p-4 bg-slate-950 flex flex-col items-center justify-center relative min-h-[300px]">
-          {/* Camera Viewport Element */}
-          <div
-            id={qrContainerId}
-            className="w-full max-w-[280px] aspect-square rounded-2xl overflow-hidden bg-slate-900 border-2 border-emerald-500/50 relative shadow-inner"
-          />
-
-          {/* Flashlight & Camera Controls */}
-          {isCameraActive && (
-            <div className="absolute top-6 right-6 flex items-center space-x-2 z-10">
-              {torchSupported && (
-                <button
-                  onClick={toggleTorch}
-                  className={`p-2.5 rounded-xl border backdrop-blur-md transition-all cursor-pointer ${
-                    isTorchOn
-                      ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-lg shadow-amber-400/30'
-                      : 'bg-slate-800/80 text-slate-200 border-slate-700'
-                  }`}
-                  title="Bật/Tắt Đèn Flash"
-                >
-                  <Flashlight className="w-4 h-4" />
-                </button>
-              )}
-              {cameras.length > 1 && (
-                <button
-                  onClick={switchCamera}
-                  className="p-2.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 backdrop-blur-md transition-all cursor-pointer"
-                  title="Đổi Camera"
-                >
-                  <SwitchCamera className="w-4 h-4" />
-                </button>
-              )}
+          {/* Permission or hardware error */}
+          {cameraErrorDetails ? (
+            <div className="w-full">
+              <CameraPermissionErrorCard
+                errorTitle={cameraErrorDetails.title}
+                errorMessage={cameraErrorDetails.message}
+                isPermissionDenied={cameraErrorDetails.isPermissionDenied}
+                onRetry={() => {
+                  setCameraErrorDetails(null);
+                  initCamera();
+                }}
+              />
             </div>
-          )}
+          ) : (
+            <>
+              {/* Camera Viewport Element with Tap-To-Focus */}
+              <div
+                onClick={handleManualRefocus}
+                className="w-full max-w-[320px] aspect-square rounded-2xl overflow-hidden bg-slate-900 border-2 border-emerald-500/60 relative shadow-inner cursor-crosshair group flex items-center justify-center"
+                title="Chạm màn hình để lấy lại nét"
+              >
+                <div id={qrContainerId} className="w-full h-full" />
 
-          {/* Camera Error */}
-          {cameraError && (
-            <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-300 text-xs flex items-center space-x-2 w-full max-w-sm">
-              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span>{cameraError}</span>
-            </div>
+                {/* Reticle Target Frame */}
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
+                  <div className="w-56 h-56 border-2 border-emerald-400/60 rounded-2xl relative shadow-2xl flex items-center justify-center">
+                    <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-xl"></div>
+                    <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-xl"></div>
+                    <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-emerald-400 rounded-bl-xl"></div>
+                    <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-emerald-400 rounded-br-xl"></div>
+                    <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-pulse shadow-lg shadow-emerald-400/50"></div>
+                  </div>
+                </div>
+
+                {/* Tap to focus hint badge */}
+                <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-[10px] text-slate-300 px-2 py-0.5 rounded-md border border-slate-700 pointer-events-none">
+                  💡 Chạm màn hình để lấy nét
+                </div>
+              </div>
+
+              {/* Flashlight & Camera Controls */}
+              {isCameraActive && (
+                <div className="absolute top-6 right-6 flex items-center space-x-2 z-10">
+                  {focusSupported && (
+                    <button
+                      onClick={handleManualRefocus}
+                      disabled={isRefocusing}
+                      className="p-2.5 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-emerald-300 backdrop-blur-md transition-all cursor-pointer"
+                      title="Lấy lại nét"
+                    >
+                      <Focus className={`w-4 h-4 ${isRefocusing ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+                  {torchSupported && (
+                    <button
+                      onClick={toggleTorch}
+                      className={`p-2.5 rounded-xl border backdrop-blur-md transition-all cursor-pointer ${
+                        isTorchOn
+                          ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-lg shadow-amber-400/30'
+                          : 'bg-slate-800/80 text-slate-200 border-slate-700'
+                      }`}
+                      title="Bật/Tắt Đèn Flash"
+                    >
+                      <Flashlight className="w-4 h-4" />
+                    </button>
+                  )}
+                  {cameras.length > 1 && (
+                    <button
+                      onClick={switchCamera}
+                      className="p-2.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 backdrop-blur-md transition-all cursor-pointer"
+                      title="Đổi Camera Sau / Trước"
+                    >
+                      <SwitchCamera className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
           )}
 
           {/* Scanned Result Banner */}
@@ -328,10 +444,10 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
           )}
         </div>
 
-        {/* Modal Footer: Manual Selection Fallback */}
+        {/* Modal Footer */}
         <div className="p-4 bg-slate-900 border-t border-slate-800 text-xs flex items-center justify-between text-slate-400">
           <span className="text-[11px]">
-            💡 Hướng camera vào tem nhãn QR dán trên khoang/kệ kho.
+            💡 Hướng camera sau vào mã QR dán trên kệ kho.
           </span>
           <button
             onClick={onClose}

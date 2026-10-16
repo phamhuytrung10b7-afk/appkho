@@ -1,8 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part } from './types';
 import { storageService } from './storage';
-import { QrCode, X, Camera, Zap, CheckCircle2, AlertCircle, Package, Search, ShieldAlert, Flashlight, SwitchCamera } from 'lucide-react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import {
+  QrCode,
+  X,
+  Camera,
+  Zap,
+  CheckCircle2,
+  AlertCircle,
+  Package,
+  Search,
+  ShieldAlert,
+  Flashlight,
+  SwitchCamera,
+  Focus,
+  RotateCcw,
+} from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
+import {
+  sortAndFilterCameras,
+  getOptimizedVideoConstraints,
+  applyTrackFocusAndCapabilities,
+  triggerManualFocus,
+  startNativeBarcodeDetectorLoop,
+  parseCameraError,
+  STANDARD_SCANNER_FORMATS,
+  CameraDeviceInfo,
+} from './cameraScannerUtils';
+import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
 
 interface QrScannerModalProps {
   isOpen: boolean;
@@ -71,13 +96,21 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   const [manualCode, setManualCode] = useState('');
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [matchedPart, setMatchedPart] = useState<Part | null>(null);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraErrorDetails, setCameraErrorDetails] = useState<{
+    title: string;
+    message: string;
+    isPermissionDenied: boolean;
+  } | null>(null);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
-  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [focusSupported, setFocusSupported] = useState(false);
+  const [isRefocusing, setIsRefocusing] = useState(false);
+  const [cameras, setCameras] = useState<CameraDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
 
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
+  const stopNativeDetectorRef = useRef<(() => void) | null>(null);
+  const isScanningRef = useRef<boolean>(false);
   const manualInputRef = useRef<HTMLInputElement>(null);
 
   const [scannedQty, setScannedQty] = useState<number | undefined>(undefined);
@@ -99,7 +132,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       setScannedCont(undefined);
       setScannedTagId(undefined);
       setUsedInfo(null);
-      setCameraError(null);
+      setCameraErrorDetails(null);
     }
   }, [isOpen]);
 
@@ -121,11 +154,15 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     if (mode === 'in' && manualCode.trim()) {
       const validCheck = storageService.validateContainerQrTag(manualCode, parsed);
       if (!validCheck.isValid) {
-        setCameraError(`⛔ ${validCheck.reason}`);
+        setCameraErrorDetails({
+          title: 'Mã QR không hợp lệ',
+          message: `⛔ ${validCheck.reason}`,
+          isPermissionDenied: false,
+        });
         setMatchedPart(null);
         return;
       } else {
-        setCameraError(null);
+        setCameraErrorDetails(null);
       }
     }
 
@@ -171,18 +208,24 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.12);
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   };
 
   const stopCamera = async () => {
+    isScanningRef.current = false;
+    if (stopNativeDetectorRef.current) {
+      stopNativeDetectorRef.current();
+      stopNativeDetectorRef.current = null;
+    }
+
     if (html5QrcodeRef.current) {
       try {
         const stream = (html5QrcodeRef.current as any).mediaStream as MediaStream;
         if (stream) {
           stream.getTracks().forEach((track) => {
-            try { track.stop(); } catch (e) {}
+            try {
+              track.stop();
+            } catch (e) {}
           });
         }
         if (html5QrcodeRef.current.isScanning) {
@@ -197,77 +240,88 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     setIsCameraActive(false);
     setIsTorchOn(false);
     setTorchSupported(false);
+    setFocusSupported(false);
   };
 
   const startCamera = async (camId?: string) => {
-    setCameraError(null);
+    setCameraErrorDetails(null);
     setIsTorchOn(false);
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setCameraError(
-        'Trình duyệt không hỗ trợ truy cập Camera trực tiếp. Vui lòng gõ mã ở trên.'
-      );
-      return;
-    }
 
     try {
       await stopCamera();
       setIsCameraActive(true);
+      isScanningRef.current = true;
 
-      const devices = await Html5Qrcode.getCameras().catch(() => []);
-      if (devices && devices.length > 0) {
-        setCameras(devices.map((d, i) => ({ id: d.id, label: d.label || `Camera ${i + 1}` })));
-        if (!camId && !selectedCameraId) {
-          const back = devices.find((d) => {
-            const l = d.label.toLowerCase();
-            return (l.includes('back') || l.includes('rear') || l.includes('sau') || l.includes('environment')) &&
-              !l.includes('wide') && !l.includes('0.5');
-          }) || devices[devices.length - 1];
-          setSelectedCameraId(back.id);
-          camId = back.id;
+      // 1. Probe permission with rear camera preference
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+          });
+          testStream.getTracks().forEach((t) => t.stop());
+        } catch (permErr: any) {
+          const parsed = parseCameraError(permErr);
+          setCameraErrorDetails(parsed);
+          setIsCameraActive(false);
+          return;
         }
+      }
+
+      // 2. Enumerate cameras and prioritize rear cameras
+      const rawDevices = await Html5Qrcode.getCameras().catch(() => []);
+      const sorted = sortAndFilterCameras(rawDevices);
+      setCameras(sorted);
+
+      let targetCamId = camId;
+      if (!targetCamId && !selectedCameraId && sorted.length > 0) {
+        targetCamId = sorted[0].id;
+        setSelectedCameraId(targetCamId);
+      } else if (!targetCamId && selectedCameraId) {
+        targetCamId = selectedCameraId;
       }
 
       const html5QrCode = new Html5Qrcode('qr-reader');
       html5QrcodeRef.current = html5QrCode;
 
       const onScanSuccess = (decodedText: string) => {
+        if (!isScanningRef.current) return;
         playBeepSound();
         if (typeof navigator !== 'undefined' && navigator.vibrate) {
-          try { navigator.vibrate([100, 50, 100]); } catch(e){}
+          try {
+            navigator.vibrate([100, 50, 100]);
+          } catch (e) {}
         }
         setManualCode(decodedText);
         stopCamera();
       };
 
+      const videoConstraints = getOptimizedVideoConstraints(targetCamId);
+
       const qrConfig = {
         fps: 30,
         qrbox: (w: number, h: number) => {
           const minEdge = Math.min(w, h);
-          return { width: Math.max(Math.floor(minEdge * 0.85), 220), height: Math.max(Math.floor(minEdge * 0.70), 180) };
+          const boxSize = Math.max(Math.floor(minEdge * 0.82), 220);
+          return { width: boxSize, height: boxSize };
         },
-        aspectRatio: 1.0,
+        videoConstraints,
+        disableFlip: false,
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.DATA_MATRIX,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.PDF_417,
-        ],
+        formatsToSupport: STANDARD_SCANNER_FORMATS,
       };
 
-      const activeCam = camId || selectedCameraId;
-      if (activeCam) {
-        await html5QrCode.start(
-          activeCam,
-          qrConfig,
-          onScanSuccess,
-          () => {}
-        );
+      if (targetCamId) {
+        try {
+          await html5QrCode.start(targetCamId, qrConfig, onScanSuccess, () => {});
+        } catch (startErr) {
+          console.warn('Start with specific camera ID failed, trying environment facing:', startErr);
+          await html5QrCode.start(
+            { facingMode: 'environment' },
+            qrConfig,
+            onScanSuccess,
+            () => {}
+          );
+        }
       } else {
         await html5QrCode.start(
           { facingMode: 'environment' },
@@ -277,17 +331,42 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
         );
       }
 
-      try {
-        const stream = (html5QrCode as any).mediaStream as MediaStream;
-        if (stream && stream.getVideoTracks()[0]?.getCapabilities) {
-          const caps = stream.getVideoTracks()[0].getCapabilities() as any;
+      // 4. Apply continuous focus & capabilities
+      const activeStream = (html5QrCode as any).mediaStream as MediaStream;
+      if (activeStream) {
+        await applyTrackFocusAndCapabilities(activeStream);
+        const track = activeStream.getVideoTracks()[0];
+        if (track && track.getCapabilities) {
+          const caps = track.getCapabilities() as any;
           if (caps?.torch) setTorchSupported(true);
+          if (caps?.focusMode) setFocusSupported(true);
         }
-      } catch (e) {}
+      }
+
+      // 5. Hardware BarcodeDetector acceleration loop for Android Chrome
+      const pollForVideoEl = () => {
+        const videoEl = document.querySelector('#qr-reader video') as HTMLVideoElement;
+        if (!videoEl || videoEl.readyState < 2) {
+          if (isScanningRef.current) {
+            requestAnimationFrame(pollForVideoEl);
+          }
+          return;
+        }
+
+        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+          videoEl,
+          (decoded) => {
+            onScanSuccess(decoded);
+          },
+          () => isScanningRef.current
+        );
+      };
+      pollForVideoEl();
 
     } catch (err: any) {
       console.warn('Camera start issue:', err);
-      setCameraError('Không thể mở Camera. Vui lòng cấp quyền sử dụng camera.');
+      const parsed = parseCameraError(err);
+      setCameraErrorDetails(parsed);
       setIsCameraActive(false);
     }
   };
@@ -311,6 +390,35 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     }
   };
 
+  const handleManualRefocus = async () => {
+    if (!html5QrcodeRef.current) return;
+    setIsRefocusing(true);
+    const stream = (html5QrcodeRef.current as any).mediaStream as MediaStream;
+    await triggerManualFocus(stream);
+    setTimeout(() => {
+      setIsRefocusing(false);
+    }, 400);
+  };
+
+  const handleScanImageFile = async (file: File) => {
+    try {
+      if (!html5QrcodeRef.current) {
+        html5QrcodeRef.current = new Html5Qrcode('qr-reader');
+      }
+      const decodedText = await html5QrcodeRef.current.scanFile(file, true);
+      if (decodedText) {
+        setManualCode(decodedText);
+        stopCamera();
+      }
+    } catch (err) {
+      setCameraErrorDetails({
+        title: 'Không nhận diện được ảnh',
+        message: 'Không phát hiện được mã QR trong ảnh vừa chọn. Vui lòng thử lại với ảnh rõ nét hơn.',
+        isPermissionDenied: false,
+      });
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -324,7 +432,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-base">QUÉT MÃ QR / BARCODE LINH KIỆN</h3>
-              <p className="text-[11px] text-blue-100">Dùng súng quét barcode hoặc Camera nét cao</p>
+              <p className="text-[11px] text-blue-100">Ưu tiên camera sau nét cao &amp; súng quét Barcode</p>
             </div>
           </div>
           <button
@@ -337,7 +445,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
 
         {/* Body */}
         <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
-          {/* Camera Scanner Toggle & Live View Container (At top for fast scanning) */}
+          {/* Camera Scanner Toggle & Live View Container */}
           <div className="space-y-3">
             <button
               type="button"
@@ -349,12 +457,26 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
               }`}
             >
               <Camera className="w-4 h-4" />
-              <span>{isCameraActive ? 'Tắt Camera Quét' : 'Bật Camera Quét Nét Cao'}</span>
+              <span>{isCameraActive ? 'Tắt Camera Quét' : 'Bật Camera Quét Nét Cao (Cam Sau)'}</span>
             </button>
+
+            {/* Permission or hardware error */}
+            {cameraErrorDetails && !isCameraActive && (
+              <CameraPermissionErrorCard
+                errorTitle={cameraErrorDetails.title}
+                errorMessage={cameraErrorDetails.message}
+                isPermissionDenied={cameraErrorDetails.isPermissionDenied}
+                onRetry={() => {
+                  setCameraErrorDetails(null);
+                  startCamera();
+                }}
+                onImageSelected={handleScanImageFile}
+              />
+            )}
 
             {isCameraActive && (
               <div className="bg-slate-950 text-white p-3 rounded-2xl border-2 border-emerald-500 space-y-2 animate-in zoom-in-95 duration-200">
-                <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
                   {cameras.length > 1 && (
                     <div className="flex items-center space-x-1 flex-1">
                       <SwitchCamera className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -368,39 +490,65 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
                       >
                         {cameras.map((c) => (
                           <option key={c.id} value={c.id}>
-                            {c.label}
+                            {c.isRear ? `📷 [Camera sau] ${c.label}` : c.label}
                           </option>
                         ))}
                       </select>
                     </div>
                   )}
 
-                  {torchSupported && (
-                    <button
-                      type="button"
-                      onClick={toggleTorch}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all ${
-                        isTorchOn ? 'bg-amber-400 text-slate-950 font-black' : 'bg-slate-800 text-amber-300 border border-amber-500/30'
-                      }`}
-                    >
-                      <Flashlight className="w-3.5 h-3.5" />
-                      <span>{isTorchOn ? 'TẮT FLASH' : 'FLASH'}</span>
-                    </button>
-                  )}
+                  <div className="flex items-center space-x-1.5 ml-auto">
+                    {focusSupported && (
+                      <button
+                        type="button"
+                        onClick={handleManualRefocus}
+                        disabled={isRefocusing}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30"
+                        title="Nhấn để lấy lại nét (Re-focus)"
+                      >
+                        <Focus className={`w-3.5 h-3.5 ${isRefocusing ? 'animate-spin' : ''}`} />
+                        <span>{isRefocusing ? 'Đang lấy nét...' : 'Lấy nét'}</span>
+                      </button>
+                    )}
+
+                    {torchSupported && (
+                      <button
+                        type="button"
+                        onClick={toggleTorch}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all ${
+                          isTorchOn
+                            ? 'bg-amber-400 text-slate-950 font-black'
+                            : 'bg-slate-800 text-amber-300 border border-amber-500/30'
+                        }`}
+                      >
+                        <Flashlight className="w-3.5 h-3.5" />
+                        <span>{isTorchOn ? 'TẮT FLASH' : 'FLASH'}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                <div className="relative w-full rounded-xl overflow-hidden border border-slate-800 bg-black min-h-[250px] max-h-[350px] flex items-center justify-center">
-                  <div id="qr-reader" className="w-full h-full min-h-[250px]"></div>
+                <div
+                  onClick={handleManualRefocus}
+                  className="relative w-full rounded-xl overflow-hidden border border-slate-800 bg-black min-h-[260px] sm:min-h-[320px] max-h-[420px] flex items-center justify-center cursor-crosshair group"
+                  title="Chạm vào màn hình để tự động lấy nét lại"
+                >
+                  <div id="qr-reader" className="w-full h-full min-h-[260px] sm:min-h-[320px]"></div>
 
                   {/* Target Frame Overlay */}
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
-                    <div className="w-52 h-44 border-2 border-emerald-400/60 rounded-2xl relative shadow-2xl flex items-center justify-center">
-                      <div className="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-emerald-400 rounded-tl-lg"></div>
-                      <div className="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-emerald-400 rounded-tr-lg"></div>
-                      <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-emerald-400 rounded-bl-lg"></div>
-                      <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-emerald-400 rounded-br-lg"></div>
+                    <div className="w-60 h-60 border-2 border-emerald-400/60 rounded-2xl relative shadow-2xl flex items-center justify-center">
+                      <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-xl"></div>
+                      <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-xl"></div>
+                      <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-emerald-400 rounded-bl-xl"></div>
+                      <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-emerald-400 rounded-br-xl"></div>
                       <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-pulse shadow-lg shadow-emerald-400/50"></div>
                     </div>
+                  </div>
+
+                  {/* Click to focus hint badge */}
+                  <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-[10px] text-slate-300 px-2 py-0.5 rounded-md border border-slate-700 pointer-events-none">
+                    💡 Chạm màn hình để lấy lại nét
                   </div>
                 </div>
 
@@ -408,10 +556,6 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
                   Căn mã QR / Barcode vào khung xanh để hệ thống tự động quét
                 </p>
               </div>
-            )}
-
-            {cameraError && (
-              <p className="text-xs text-red-600 mt-2 font-medium">{cameraError}</p>
             )}
           </div>
 
@@ -448,74 +592,44 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
                 <ShieldAlert className="w-5 h-5 shrink-0 text-red-600 animate-bounce" />
                 <span className="text-sm uppercase tracking-tight">⚠️ TEM QR NÀY ĐÃ ĐƯỢC NHẬP KHO TRƯỚC ĐÓ!</span>
               </div>
-              <p className="text-slate-700 text-xs font-medium pl-7">
-                Quét nhập kho lúc: <strong className="text-red-900 font-bold">{usedInfo.scannedAt}</strong>
-                {usedInfo.scannedBy && <span> bởi <strong className="text-red-900">{usedInfo.scannedBy}</strong></span>}
+              <p className="text-slate-800 text-xs font-medium pl-7">
+                Đã nhập kho lúc: <strong className="text-red-950 font-bold">{usedInfo.scannedAt}</strong>
+                {usedInfo.scannedBy && <span> bởi <strong className="text-red-950">{usedInfo.scannedBy}</strong></span>}
               </p>
-              <div className="pl-7 text-[11px] text-red-600 font-semibold italic">
-                ⛔ QUY ĐỊNH KHO: Mỗi tem Cont chỉ được quét nhập kho ĐÚNG 1 LẦN DUY NHẤT để tránh nhập trùng làm sai lệch tồn kho.
+              <div className="pl-7 text-[11px] text-red-700 font-semibold italic">
+                ⛔ QUY ĐỊNH KHO: Mỗi tem Cont chỉ được quét nhập kho ĐÚNG 1 LẦN DUY NHẤT. Lần quét này bị khóa để chống trùng lặp.
               </div>
             </div>
           )}
 
-          {/* Matched Part Card Preview */}
-          {matchedPart ? (
-            <div className={`p-4 rounded-2xl flex flex-col space-y-2.5 animate-in zoom-in-95 duration-150 border-2 ${
-              usedInfo?.isUsed ? 'bg-slate-100 border-slate-300 opacity-75' : 'bg-emerald-50 border-emerald-300'
-            }`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className={`p-2.5 rounded-xl text-white ${usedInfo?.isUsed ? 'bg-slate-500' : 'bg-emerald-600'}`}>
-                    <Package className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="font-extrabold text-xs text-slate-900">{matchedPart.name}</p>
-                    <p className="text-[11px] font-mono font-bold text-slate-600">
-                      [{matchedPart.code}] • Vị trí: {matchedPart.location}
-                    </p>
-                  </div>
+          {/* Matched Part Preview Card */}
+          {matchedPart && !usedInfo?.isUsed && (
+            <div className="p-4 bg-emerald-50/70 border-2 border-emerald-300 rounded-2xl space-y-2 animate-in fade-in duration-200 shadow-xs">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-emerald-100 text-emerald-800 rounded-xl">
+                  <Package className="w-5 h-5" />
                 </div>
-
-                <div className="text-right shrink-0">
-                  <span className="text-[11px] text-slate-600 font-medium">Tồn kho hiện tại:</span>
-                  <p className="text-sm font-black text-slate-900">
-                    {matchedPart.currentStock} {matchedPart.unit}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-200 text-emerald-900 rounded-md uppercase">
+                      Khớp Linh Kiện
+                    </span>
+                    <span className="text-xs font-mono font-bold text-emerald-800">
+                      {matchedPart.code}
+                    </span>
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 truncate mt-0.5">
+                    {matchedPart.name}
+                  </h4>
+                  <p className="text-xs text-slate-600">
+                    Vị trí: <strong>{matchedPart.location || 'Chưa phân vị trí'}</strong> • Tồn: <strong>{matchedPart.currentStock} {matchedPart.unit}</strong>
                   </p>
                 </div>
               </div>
-
-              {(scannedQty !== undefined || scannedCont) && (
-                <div className={`pt-2 border-t flex items-center justify-between text-xs font-bold px-3 py-1.5 rounded-xl ${
-                  usedInfo?.isUsed ? 'bg-red-100/80 border-red-200 text-red-900' : 'bg-amber-100/80 border-amber-200 text-amber-900'
-                }`}>
-                  <span>Thông Tin Tem Cont:</span>
-                  <span>
-                    {scannedCont && `Cont: ${scannedCont} • `}
-                    {scannedQty !== undefined && `SL Cont: ${scannedQty} ${matchedPart.unit}`}
-                  </span>
-                </div>
-              )}
             </div>
-          ) : manualCode.trim() ? (
-            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs flex items-center space-x-2">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>Chưa tìm thấy mã linh kiện khớp với <strong>"{manualCode}"</strong></span>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Footer */}
-        <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-          <span>* Súng quét mã tự động kích hoạt khi quét.</span>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold cursor-pointer transition-colors"
-          >
-            Đóng
-          </button>
+          )}
         </div>
       </div>
     </div>
   );
 };
-

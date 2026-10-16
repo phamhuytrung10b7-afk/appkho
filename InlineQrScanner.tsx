@@ -2,9 +2,34 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Part } from './types';
 import { storageService } from './storage';
 import { parseScannedQrPayload } from './QrScannerModal';
-import { QrCode, Zap, Camera, ShieldAlert, CheckCircle2, AlertCircle, X, RotateCcw, Package, Flashlight, SwitchCamera } from 'lucide-react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import {
+  QrCode,
+  Zap,
+  Camera,
+  ShieldAlert,
+  CheckCircle2,
+  AlertCircle,
+  X,
+  RotateCcw,
+  Package,
+  Flashlight,
+  SwitchCamera,
+  Focus,
+  Sparkles,
+} from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
 import { soundEffects } from './soundEffects';
+import {
+  sortAndFilterCameras,
+  getOptimizedVideoConstraints,
+  applyTrackFocusAndCapabilities,
+  triggerManualFocus,
+  startNativeBarcodeDetectorLoop,
+  parseCameraError,
+  STANDARD_SCANNER_FORMATS,
+  CameraDeviceInfo,
+} from './cameraScannerUtils';
+import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
 
 interface InlineQrScannerProps {
   mode: 'in' | 'out';
@@ -27,10 +52,16 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
 }) => {
   const [scanInput, setScanInput] = useState('');
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraErrorDetails, setCameraErrorDetails] = useState<{
+    title: string;
+    message: string;
+    isPermissionDenied: boolean;
+  } | null>(null);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
-  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [focusSupported, setFocusSupported] = useState(false);
+  const [isRefocusing, setIsRefocusing] = useState(false);
+  const [cameras, setCameras] = useState<CameraDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
 
   const [lastScannedPart, setLastScannedPart] = useState<Part | null>(null);
@@ -50,6 +81,8 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraContainerRef = useRef<HTMLDivElement>(null);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const stopNativeDetectorRef = useRef<(() => void) | null>(null);
+  const isScanningRef = useRef<boolean>(false);
   const qrContainerId = `inline-qr-reader-${mode}`;
 
   // Auto focus input on mount
@@ -65,12 +98,20 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
   }, []);
 
   const stopCamera = async () => {
+    isScanningRef.current = false;
+    if (stopNativeDetectorRef.current) {
+      stopNativeDetectorRef.current();
+      stopNativeDetectorRef.current = null;
+    }
+
     if (html5QrCodeRef.current) {
       try {
         const stream = (html5QrCodeRef.current as any).mediaStream as MediaStream;
         if (stream) {
           stream.getTracks().forEach((track) => {
-            try { track.stop(); } catch (e) {}
+            try {
+              track.stop();
+            } catch (e) {}
           });
         }
         if (html5QrCodeRef.current.isScanning) {
@@ -85,32 +126,18 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     setIsCameraActive(false);
     setIsTorchOn(false);
     setTorchSupported(false);
-  };
-
-  const playBeepSound = () => {
-    try {
-      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioContext) return;
-      const ctx = new AudioContext();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(987.77, ctx.currentTime);
-      gain.gain.setValueAtTime(0.4, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.12);
-    } catch (e) {
-      // ignore
-    }
+    setFocusSupported(false);
   };
 
   const handleProcessScan = (rawText: string) => {
     if (!rawText.trim()) return;
 
     soundEffects.playScanBeep();
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try {
+        navigator.vibrate([100, 50, 100]);
+      } catch (e) {}
+    }
 
     setErrorMsg(null);
     setUsedInfo(null);
@@ -174,65 +201,87 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
   };
 
   const startCameraInstance = async (camId?: string) => {
-    setCameraError(null);
+    setCameraErrorDetails(null);
     setIsTorchOn(false);
 
     try {
       await stopCamera();
       setIsCameraActive(true);
+      isScanningRef.current = true;
 
-      // Enumerate cameras
-      const devices = await Html5Qrcode.getCameras().catch(() => []);
-      if (devices && devices.length > 0) {
-        setCameras(devices.map((d, i) => ({ id: d.id, label: d.label || `Camera ${i + 1}` })));
-        if (!camId && !selectedCameraId) {
-          const back = devices.find((d) => {
-            const l = d.label.toLowerCase();
-            return (l.includes('back') || l.includes('rear') || l.includes('sau') || l.includes('environment')) &&
-              !l.includes('wide') && !l.includes('0.5');
-          }) || devices[devices.length - 1];
-          setSelectedCameraId(back.id);
-          camId = back.id;
+      // 1. Explicitly request permission first with back camera preference
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+          });
+          // Close probe tracks
+          testStream.getTracks().forEach((t) => t.stop());
+        } catch (permErr: any) {
+          const parsed = parseCameraError(permErr);
+          setCameraErrorDetails(parsed);
+          setIsCameraActive(false);
+          return;
         }
+      }
+
+      // 2. Enumerate cameras and prioritize rear cameras
+      const rawDevices = await Html5Qrcode.getCameras().catch(() => []);
+      const sorted = sortAndFilterCameras(rawDevices);
+      setCameras(sorted);
+
+      let targetCamId = camId;
+      if (!targetCamId && !selectedCameraId && sorted.length > 0) {
+        // First camera in sorted list is the primary rear camera
+        targetCamId = sorted[0].id;
+        setSelectedCameraId(targetCamId);
+      } else if (!targetCamId && selectedCameraId) {
+        targetCamId = selectedCameraId;
       }
 
       const html5QrCode = new Html5Qrcode(qrContainerId);
       html5QrCodeRef.current = html5QrCode;
 
       const onScanSuccessCallback = (decodedText: string) => {
+        if (!isScanningRef.current) return;
         setScanInput(decodedText);
         handleProcessScan(decodedText);
         stopCamera();
       };
 
+      // 3. Optimized Scan Configuration
+      const videoConstraints = getOptimizedVideoConstraints(targetCamId);
+
       const qrConfig = {
         fps: 30,
         qrbox: (w: number, h: number) => {
           const minEdge = Math.min(w, h);
-          return { width: Math.max(Math.floor(minEdge * 0.85), 220), height: Math.max(Math.floor(minEdge * 0.70), 180) };
+          const boxSize = Math.max(Math.floor(minEdge * 0.82), 220);
+          return { width: boxSize, height: boxSize };
         },
-        aspectRatio: 1.0,
+        videoConstraints,
+        disableFlip: false,
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.DATA_MATRIX,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.PDF_417,
-        ],
+        formatsToSupport: STANDARD_SCANNER_FORMATS,
       };
 
-      const activeCamId = camId || selectedCameraId;
-      if (activeCamId) {
-        await html5QrCode.start(
-          activeCamId,
-          qrConfig,
-          onScanSuccessCallback,
-          () => {}
-        );
+      if (targetCamId) {
+        try {
+          await html5QrCode.start(
+            targetCamId,
+            qrConfig,
+            onScanSuccessCallback,
+            () => {}
+          );
+        } catch (startErr) {
+          console.warn('Start with specific camera ID failed, trying environment facing:', startErr);
+          await html5QrCode.start(
+            { facingMode: 'environment' },
+            qrConfig,
+            onScanSuccessCallback,
+            () => {}
+          );
+        }
       } else {
         await html5QrCode.start(
           { facingMode: 'environment' },
@@ -242,35 +291,42 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
         );
       }
 
-      // Check flashlight
-      try {
-        const stream = (html5QrCode as any).mediaStream as MediaStream;
-        if (stream && stream.getVideoTracks()[0]?.getCapabilities) {
-          const caps = stream.getVideoTracks()[0].getCapabilities() as any;
+      // 4. Apply continuous focus & exposure to active video track
+      const activeStream = (html5QrCode as any).mediaStream as MediaStream;
+      if (activeStream) {
+        await applyTrackFocusAndCapabilities(activeStream);
+        const track = activeStream.getVideoTracks()[0];
+        if (track && track.getCapabilities) {
+          const caps = track.getCapabilities() as any;
           if (caps?.torch) setTorchSupported(true);
+          if (caps?.focusMode) setFocusSupported(true);
         }
-      } catch (e) {}
+      }
+
+      // 5. Hardware BarcodeDetector acceleration loop for Android Chrome
+      const pollForVideoEl = () => {
+        const videoEl = document.querySelector(`#${qrContainerId} video`) as HTMLVideoElement;
+        if (!videoEl || videoEl.readyState < 2) {
+          if (isScanningRef.current) {
+            requestAnimationFrame(pollForVideoEl);
+          }
+          return;
+        }
+
+        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+          videoEl,
+          (decoded) => {
+            onScanSuccessCallback(decoded);
+          },
+          () => isScanningRef.current
+        );
+      };
+      pollForVideoEl();
 
     } catch (err: any) {
       console.error('Inline camera error:', err);
-      // Fallback
-      try {
-        if (html5QrCodeRef.current) {
-          await html5QrCodeRef.current.start(
-            { facingMode: 'environment' },
-            { fps: 25 },
-            (text) => {
-              setScanInput(text);
-              handleProcessScan(text);
-              stopCamera();
-            },
-            () => {}
-          );
-          return;
-        }
-      } catch (e2) {}
-
-      setCameraError('Không thể mở Camera. Vui lòng cấp quyền Camera cho trình duyệt.');
+      const parsed = parseCameraError(err);
+      setCameraErrorDetails(parsed);
       setIsCameraActive(false);
     }
   };
@@ -279,6 +335,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     if (isCameraActive) {
       stopCamera();
     } else {
+      setCameraErrorDetails(null);
       setIsCameraActive(true);
       setTimeout(() => {
         startCameraInstance();
@@ -306,6 +363,32 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     }
   };
 
+  const handleManualRefocus = async () => {
+    if (!html5QrCodeRef.current) return;
+    setIsRefocusing(true);
+    const stream = (html5QrCodeRef.current as any).mediaStream as MediaStream;
+    await triggerManualFocus(stream);
+    setTimeout(() => {
+      setIsRefocusing(false);
+    }, 400);
+  };
+
+  const handleScanImageFile = async (file: File) => {
+    try {
+      if (!html5QrCodeRef.current) {
+        html5QrCodeRef.current = new Html5Qrcode(qrContainerId);
+      }
+      const decodedText = await html5QrCodeRef.current.scanFile(file, true);
+      if (decodedText) {
+        setScanInput(decodedText);
+        handleProcessScan(decodedText);
+        stopCamera();
+      }
+    } catch (err) {
+      setErrorMsg('Không phát hiện được mã QR trong ảnh. Vui lòng thử ảnh chụp rõ nét hơn.');
+    }
+  };
+
   const handleReset = () => {
     setScanInput('');
     setLastScannedPart(null);
@@ -319,11 +402,13 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
   };
 
   return (
-    <div className={`p-4 sm:p-5 rounded-2xl shadow-xs space-y-4 border-2 transition-all ${
-      mode === 'in' 
-        ? 'bg-emerald-50/60 border-emerald-300 text-slate-900'
-        : 'bg-blue-50/60 border-blue-300 text-slate-900'
-    }`}>
+    <div
+      className={`p-4 sm:p-5 rounded-2xl shadow-xs space-y-4 border-2 transition-all ${
+        mode === 'in'
+          ? 'bg-emerald-50/60 border-emerald-300 text-slate-900'
+          : 'bg-blue-50/60 border-blue-300 text-slate-900'
+      }`}
+    >
       {/* Header Banner */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
@@ -335,7 +420,9 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
               <span className="px-2 py-0.5 bg-amber-100 text-amber-900 font-extrabold text-[10px] rounded-md uppercase tracking-wider border border-amber-200">
                 QUÉT MÃ TỰ ĐỘNG
               </span>
-              <span className="text-[11px] text-slate-600 font-medium">Súng quét USB / Bluetooth / Camera Siêu Nét</span>
+              <span className="text-[11px] text-slate-600 font-medium">
+                Súng quét USB / Bluetooth / Camera Sau Siêu Nét
+              </span>
             </div>
             <h3 className="font-extrabold text-sm sm:text-base text-slate-900 mt-0.5">
               {mode === 'in' ? 'QUÉT MÃ MẶC ĐỊNH NHẬP KHO' : 'QUÉT MÃ MẶC ĐỊNH XUẤT KHO'}
@@ -348,13 +435,13 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
             type="button"
             onClick={toggleCamera}
             className={`px-3 py-2 rounded-xl font-extrabold text-xs transition-all flex items-center space-x-1.5 cursor-pointer shadow-md ${
-              isCameraActive 
-                ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse' 
+              isCameraActive
+                ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse'
                 : 'bg-emerald-600 hover:bg-emerald-700 text-white'
             }`}
           >
             <Camera className="w-4 h-4 text-white" />
-            <span>{isCameraActive ? 'Tắt Camera' : 'Bật Camera Scannner'}</span>
+            <span>{isCameraActive ? 'Tắt Camera' : 'Bật Camera Scanner'}</span>
           </button>
 
           {(scanInput || lastScannedPart || errorMsg) && (
@@ -370,6 +457,20 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
         </div>
       </div>
 
+      {/* Permission or Hardware Error Card */}
+      {cameraErrorDetails && !isCameraActive && (
+        <CameraPermissionErrorCard
+          errorTitle={cameraErrorDetails.title}
+          errorMessage={cameraErrorDetails.message}
+          isPermissionDenied={cameraErrorDetails.isPermissionDenied}
+          onRetry={() => {
+            setCameraErrorDetails(null);
+            startCameraInstance();
+          }}
+          onImageSelected={handleScanImageFile}
+        />
+      )}
+
       {/* Camera Live View element - RENDERED AT TOP WHEN ACTIVE */}
       {isCameraActive && (
         <div
@@ -377,22 +478,38 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
           className="bg-slate-950 text-white p-3.5 sm:p-4 rounded-2xl border-2 border-emerald-500 shadow-xl space-y-3 animate-in zoom-in-95 duration-200"
         >
           {/* Camera Header & Controls Toolbar */}
-          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
             <div className="flex items-center space-x-2">
               <div className="p-1.5 bg-emerald-500/20 text-emerald-400 rounded-lg animate-pulse">
                 <Camera className="w-4 h-4" />
               </div>
               <div>
-                <h4 className="font-extrabold text-xs text-white uppercase tracking-wide">
-                  ĐANG MỞ CAMERA QUÉT MÃ
+                <h4 className="font-extrabold text-xs text-white uppercase tracking-wide flex items-center space-x-1.5">
+                  <span>CAMERA QUÉT MÃ (ƯU TIÊN CAMERA SAU)</span>
+                  <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/30 text-emerald-300 rounded font-mono">
+                    HD/FHD
+                  </span>
                 </h4>
                 <p className="text-[10px] text-emerald-300 font-medium">
-                  Căn mã QR / Barcode vào khung xanh bên dưới
+                  Căn mã QR / Barcode vào giữa khung hình bên dưới
                 </p>
               </div>
             </div>
 
             <div className="flex items-center space-x-2">
+              {focusSupported && (
+                <button
+                  type="button"
+                  onClick={handleManualRefocus}
+                  disabled={isRefocusing}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30"
+                  title="Nhấn để lấy lại nét (Re-focus)"
+                >
+                  <Focus className={`w-3.5 h-3.5 ${isRefocusing ? 'animate-spin' : ''}`} />
+                  <span>{isRefocusing ? 'Đang lấy nét...' : 'Lấy nét'}</span>
+                </button>
+              )}
+
               {torchSupported && (
                 <button
                   type="button"
@@ -434,35 +551,44 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
               >
                 {cameras.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.label}
+                    {c.isRear ? `📷 [Camera sau] ${c.label}` : c.label}
                   </option>
                 ))}
               </select>
             </div>
           )}
 
-          {/* Video Container with Target Scanning Frame */}
-          <div className="relative w-full rounded-xl overflow-hidden bg-black min-h-[260px] max-h-[380px] flex items-center justify-center border border-slate-800">
-            <div id={qrContainerId} className="w-full h-full min-h-[260px]"></div>
+          {/* Video Container with Tap-To-Focus & Target Scanning Frame */}
+          <div
+            onClick={handleManualRefocus}
+            className="relative w-full rounded-xl overflow-hidden bg-black min-h-[280px] sm:min-h-[340px] max-h-[440px] flex items-center justify-center border border-slate-800 cursor-crosshair group"
+            title="Chạm vào màn hình để tự động lấy nét lại"
+          >
+            <div id={qrContainerId} className="w-full h-full min-h-[280px] sm:min-h-[340px]"></div>
 
             {/* Target Reticle Frame Overlay */}
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
-              <div className="w-56 h-48 border-2 border-emerald-400/60 rounded-2xl relative shadow-2xl flex items-center justify-center">
+              <div className="w-60 h-60 sm:w-72 sm:h-72 border-2 border-emerald-400/50 rounded-2xl relative shadow-2xl flex items-center justify-center">
                 {/* Corner Brackets */}
-                <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-emerald-400 rounded-tl-lg"></div>
-                <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-emerald-400 rounded-tr-lg"></div>
-                <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-emerald-400 rounded-bl-lg"></div>
-                <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-emerald-400 rounded-br-lg"></div>
-                
+                <div className="absolute -top-1 -left-1 w-7 h-7 border-t-4 border-l-4 border-emerald-400 rounded-tl-xl"></div>
+                <div className="absolute -top-1 -right-1 w-7 h-7 border-t-4 border-r-4 border-emerald-400 rounded-tr-xl"></div>
+                <div className="absolute -bottom-1 -left-1 w-7 h-7 border-b-4 border-l-4 border-emerald-400 rounded-bl-xl"></div>
+                <div className="absolute -bottom-1 -right-1 w-7 h-7 border-b-4 border-r-4 border-emerald-400 rounded-br-xl"></div>
+
                 {/* Laser Scanning Line */}
-                <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-pulse shadow-lg shadow-emerald-400/50"></div>
+                <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-pulse shadow-lg shadow-emerald-400/70"></div>
               </div>
+            </div>
+
+            {/* Click to focus hint badge */}
+            <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-[10px] text-slate-300 px-2 py-0.5 rounded-md border border-slate-700 pointer-events-none">
+              💡 Chạm màn hình để lấy lại nét
             </div>
           </div>
 
           <p className="text-[11px] text-center text-emerald-300 font-bold flex items-center justify-center space-x-1 pt-0.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block mr-1"></span>
-            <span>Tự động quét QR Code & Barcode 1D/2D Siêu Nét</span>
+            <span>Tự động quét QR Code & Barcode siêu tốc (Tối ưu iPhone & Android)</span>
           </p>
         </div>
       )}
@@ -501,13 +627,6 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
           <span>Súng quét USB/Bluetooth tự động điền & nhấn Enter. Không cần thao tác chuột.</span>
         </p>
       </div>
-
-      {cameraError && (
-        <div className="p-3 bg-red-50 border border-red-300 text-red-800 text-xs rounded-xl flex items-center space-x-2 font-medium">
-          <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-          <span>{cameraError}</span>
-        </div>
-      )}
 
       {/* ERROR MSG */}
       {errorMsg && (
@@ -592,4 +711,3 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     </div>
   );
 };
-

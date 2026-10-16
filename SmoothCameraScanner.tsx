@@ -10,8 +10,20 @@ import {
   AlertCircle,
   UploadCloud,
   Image as ImageIcon,
+  Focus,
 } from 'lucide-react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { Html5Qrcode } from 'html5-qrcode';
+import {
+  sortAndFilterCameras,
+  getOptimizedVideoConstraints,
+  applyTrackFocusAndCapabilities,
+  triggerManualFocus,
+  startNativeBarcodeDetectorLoop,
+  parseCameraError,
+  STANDARD_SCANNER_FORMATS,
+  CameraDeviceInfo,
+} from './cameraScannerUtils';
+import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
 
 interface SmoothCameraScannerProps {
   onScanSuccess: (scannedText: string) => void;
@@ -28,10 +40,16 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 }) => {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraErrorDetails, setCameraErrorDetails] = useState<{
+    title: string;
+    message: string;
+    isPermissionDenied: boolean;
+  } | null>(null);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
-  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [focusSupported, setFocusSupported] = useState(false);
+  const [isRefocusing, setIsRefocusing] = useState(false);
+  const [cameras, setCameras] = useState<CameraDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [currentFacingMode, setCurrentFacingMode] = useState<'environment' | 'user'>('environment');
   const [lastScannedCode, setLastScannedCode] = useState<string | null>(null);
@@ -40,9 +58,10 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 
   const containerIdRef = useRef<string>(`smooth-qr-reader-${Math.random().toString(36).substring(2, 9)}`);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const stopNativeDetectorRef = useRef<(() => void) | null>(null);
+  const isScanningActiveRef = useRef<boolean>(false);
   const lastScanTimeRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
 
   const playBeepSound = () => {
     try {
@@ -52,30 +71,29 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(1046.5, ctx.currentTime); // C6 pitch
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      osc.frequency.setValueAtTime(1046.5, ctx.currentTime);
+      gain.gain.setValueAtTime(0.35, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.15);
-    } catch (e) {
-      // AudioContext might be muted or restricted
-    }
+    } catch (e) {}
   };
 
   const triggerVibration = () => {
     if (typeof navigator !== 'undefined' && navigator.vibrate) {
       try {
-        navigator.vibrate([120, 60, 120]);
+        navigator.vibrate([100, 50, 100]);
       } catch (e) {}
     }
   };
 
   const stopCamera = async () => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+    isScanningActiveRef.current = false;
+    if (stopNativeDetectorRef.current) {
+      stopNativeDetectorRef.current();
+      stopNativeDetectorRef.current = null;
     }
 
     if (html5QrCodeRef.current) {
@@ -100,14 +118,15 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
     setIsCameraActive(false);
     setIsTorchOn(false);
     setTorchSupported(false);
+    setFocusSupported(false);
   };
 
   const handleDecodedSuccess = (decodedText: string) => {
-    if (!decodedText || !decodedText.trim()) return;
+    if (!decodedText || !decodedText.trim() || !isScanningActiveRef.current) return;
 
     const now = Date.now();
     if (now - lastScanTimeRef.current < 600) {
-      return; // Throttle repeat scans
+      return;
     }
     lastScanTimeRef.current = now;
 
@@ -117,10 +136,8 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
     setLastScannedCode(decodedText.trim());
     setShowSuccessBadge(true);
 
-    // Stop camera media tracks immediately so mobile resources are freed
     stopCamera();
 
-    // Trigger success callback
     onScanSuccess(decodedText.trim());
 
     if (autoCloseOnScan && onClose) {
@@ -130,153 +147,135 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 
   const startCamera = async (targetCamId?: string, forceFacingMode?: 'environment' | 'user') => {
     setIsInitializing(true);
-    setCameraError(null);
+    setCameraErrorDetails(null);
     setIsTorchOn(false);
     setTorchSupported(false);
+    setFocusSupported(false);
 
     try {
       await stopCamera();
 
       // Ensure DOM element is mounted
-      const element = document.getElementById(containerIdRef.current);
+      let element = document.getElementById(containerIdRef.current);
       if (!element) {
-        // Wait 100ms for DOM ready
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        element = document.getElementById(containerIdRef.current);
       }
 
       setIsCameraActive(true);
+      isScanningActiveRef.current = true;
 
-      // Check available cameras
-      let devices: Array<{ id: string; label: string }> = [];
-      try {
-        const detected = await Html5Qrcode.getCameras();
-        if (detected && detected.length > 0) {
-          devices = detected.map((d, i) => ({
-            id: d.id,
-            label: d.label || `Camera ${i + 1}`,
-          }));
-          setCameras(devices);
+      // 1. Explicitly probe permission first
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: forceFacingMode || 'environment' } },
+          });
+          testStream.getTracks().forEach((t) => t.stop());
+        } catch (permErr: any) {
+          const parsed = parseCameraError(permErr);
+          setCameraErrorDetails(parsed);
+          setIsInitializing(false);
+          setIsCameraActive(false);
+          return;
         }
-      } catch (e) {
-        console.warn('Could not enumerate cameras, falling back to facingMode:', e);
+      }
+
+      // 2. Enumerate cameras and prioritize rear cameras
+      const rawDevices = await Html5Qrcode.getCameras().catch(() => []);
+      const sorted = sortAndFilterCameras(rawDevices);
+      setCameras(sorted);
+
+      let camIdToUse = targetCamId;
+      if (!camIdToUse && !selectedCameraId && sorted.length > 0) {
+        camIdToUse = sorted[0].id;
+        setSelectedCameraId(camIdToUse);
+      } else if (!camIdToUse && selectedCameraId) {
+        camIdToUse = selectedCameraId;
       }
 
       const html5QrCode = new Html5Qrcode(containerIdRef.current);
       html5QrCodeRef.current = html5QrCode;
 
+      const videoConstraints = getOptimizedVideoConstraints(camIdToUse);
+      if (forceFacingMode) {
+        (videoConstraints as any).facingMode = { ideal: forceFacingMode };
+      }
+
       const qrConfig = {
-        fps: 25,
+        fps: 30,
         qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
           const minDim = Math.min(viewfinderWidth, viewfinderHeight);
-          const size = Math.max(Math.floor(minDim * 0.76), 180);
+          const size = Math.max(Math.floor(minDim * 0.82), 220);
           return { width: size, height: size };
         },
-        aspectRatio: 1.0,
+        videoConstraints,
         disableFlip: false,
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.DATA_MATRIX,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-        ],
+        formatsToSupport: STANDARD_SCANNER_FORMATS,
       };
 
-      const facingToUse = forceFacingMode || currentFacingMode;
-
-      // Start strategy:
-      // 1. If targetCamId specified, try it.
-      // 2. Otherwise start with { facingMode: { ideal: facingToUse } } (most robust across all mobile browsers)
-      if (targetCamId) {
+      if (camIdToUse) {
         try {
-          await html5QrCode.start(targetCamId, qrConfig, handleDecodedSuccess, () => {});
-          setSelectedCameraId(targetCamId);
+          await html5QrCode.start(camIdToUse, qrConfig, handleDecodedSuccess, () => {});
         } catch (camErr) {
-          console.warn('Specific camera ID failed, trying facingMode:', camErr);
-          await html5QrCode.start({ facingMode: { ideal: facingToUse } }, qrConfig, handleDecodedSuccess, () => {});
+          console.warn('Specific camera ID failed, trying environment facing:', camErr);
+          await html5QrCode.start(
+            { facingMode: { ideal: forceFacingMode || currentFacingMode } },
+            qrConfig,
+            handleDecodedSuccess,
+            () => {}
+          );
         }
       } else {
-        try {
-          await html5QrCode.start({ facingMode: { ideal: facingToUse } }, qrConfig, handleDecodedSuccess, () => {});
-        } catch (idealErr) {
-          console.warn('FacingMode ideal failed, trying direct environment string:', idealErr);
-          try {
-            await html5QrCode.start({ facingMode: 'environment' }, qrConfig, handleDecodedSuccess, () => {});
-          } catch (envErr) {
-            // If rear camera fails, try any available device ID or user camera
-            if (devices.length > 0) {
-              await html5QrCode.start(devices[0].id, qrConfig, handleDecodedSuccess, () => {});
-              setSelectedCameraId(devices[0].id);
-            } else {
-              throw envErr;
-            }
-          }
-        }
+        await html5QrCode.start(
+          { facingMode: { ideal: forceFacingMode || currentFacingMode } },
+          qrConfig,
+          handleDecodedSuccess,
+          () => {}
+        );
       }
 
       setIsInitializing(false);
 
-      // Check flashlight support on media stream
-      try {
-        const stream = (html5QrCode as any).mediaStream as MediaStream;
-        if (stream && stream.getVideoTracks()[0]?.getCapabilities) {
-          const caps = stream.getVideoTracks()[0].getCapabilities() as any;
-          if (caps?.torch) {
-            setTorchSupported(true);
+      // 4. Apply continuous focus & exposure to active video track
+      const activeStream = (html5QrCode as any).mediaStream as MediaStream;
+      if (activeStream) {
+        await applyTrackFocusAndCapabilities(activeStream);
+        const track = activeStream.getVideoTracks()[0];
+        if (track && track.getCapabilities) {
+          const caps = track.getCapabilities() as any;
+          if (caps?.torch) setTorchSupported(true);
+          if (caps?.focusMode) setFocusSupported(true);
+        }
+      }
+
+      // 5. Hardware BarcodeDetector acceleration loop for Android Chrome
+      const pollForVideoEl = () => {
+        const videoEl = document.querySelector(`#${containerIdRef.current} video`) as HTMLVideoElement;
+        if (!videoEl || videoEl.readyState < 2) {
+          if (isScanningActiveRef.current) {
+            requestAnimationFrame(pollForVideoEl);
           }
+          return;
         }
-      } catch (e) {}
 
-      // Hardware BarcodeDetector acceleration for high-speed scanning on mobile Chrome
-      try {
-        if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
-          const detector = new (window as any).BarcodeDetector({
-            formats: ['qr_code', 'code_128', 'data_matrix', 'code_39', 'ean_13'],
-          });
+        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+          videoEl,
+          (decoded) => {
+            handleDecodedSuccess(decoded);
+          },
+          () => isScanningActiveRef.current
+        );
+      };
+      pollForVideoEl();
 
-          const pollForVideo = () => {
-            const videoEl = document.querySelector(`#${containerIdRef.current} video`) as HTMLVideoElement;
-            if (!videoEl || videoEl.readyState < 2) {
-              if (html5QrCodeRef.current) {
-                animationFrameRef.current = requestAnimationFrame(pollForVideo);
-              }
-              return;
-            }
-
-            const checkFrame = async () => {
-              if (!html5QrCodeRef.current || videoEl.paused || videoEl.ended) return;
-              try {
-                const detected = await detector.detect(videoEl);
-                if (detected && detected.length > 0 && detected[0].rawValue) {
-                  handleDecodedSuccess(detected[0].rawValue);
-                  return;
-                }
-              } catch (e) {}
-              if (html5QrCodeRef.current) {
-                animationFrameRef.current = requestAnimationFrame(checkFrame);
-              }
-            };
-            animationFrameRef.current = requestAnimationFrame(checkFrame);
-          };
-
-          pollForVideo();
-        }
-      } catch (e) {}
     } catch (err: any) {
       console.error('SmoothCameraScanner start error:', err);
       setIsInitializing(false);
       setIsCameraActive(false);
-
-      let msg = 'Không thể mở Camera. Vui lòng cấp quyền truy cập Camera trong Cài Đặt Trình Duyệt / Điện Thoại.';
-      if (err?.name === 'NotAllowedError' || err?.message?.includes('Permission denied')) {
-        msg = '⛔ Bạn đã từ chối quyền truy cập Camera. Vui lòng cho phép quyền Camera trên trình duyệt để quét.';
-      } else if (err?.name === 'NotFoundError' || err?.message?.includes('DevicesNotFoundError')) {
-        msg = 'Không tìm thấy camera trên thiết bị này. Bạn có thể sử dụng nút "Tải ảnh / Chụp ảnh" bên dưới.';
-      } else if (err?.name === 'NotReadableError') {
-        msg = 'Camera đang bị ứng dụng khác sử dụng hoặc bị khóa. Vui lòng đóng các tab camera khác và thử lại.';
-      }
-      setCameraError(msg);
+      const parsed = parseCameraError(err);
+      setCameraErrorDetails(parsed);
     }
   };
 
@@ -309,6 +308,16 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
     } catch (err) {
       console.warn('Torch failed:', err);
     }
+  };
+
+  const handleManualRefocus = async () => {
+    if (!html5QrCodeRef.current) return;
+    setIsRefocusing(true);
+    const stream = (html5QrCodeRef.current as any).mediaStream as MediaStream;
+    await triggerManualFocus(stream);
+    setTimeout(() => {
+      setIsRefocusing(false);
+    }, 400);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -352,20 +361,36 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       />
 
       {/* Header Bar */}
-      <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
         <div className="flex items-center space-x-2">
           <div className="p-1.5 bg-blue-500/20 text-blue-400 rounded-lg animate-pulse">
             <Camera className="w-4 h-4" />
           </div>
           <div>
             <h4 className="font-extrabold text-xs text-white uppercase tracking-wide flex items-center space-x-1.5">
-              <span>CAMERA QUÉT QR THẺ THÙNG</span>
+              <span>CAMERA QUÉT QR THẺ THÙNG (ƯU TIÊN CAM SAU)</span>
+              <span className="text-[10px] px-1.5 py-0.2 bg-blue-500/30 text-blue-300 rounded font-mono">
+                HD/FHD
+              </span>
             </h4>
             <p className="text-[11px] text-blue-300 font-medium">{placeholderText}</p>
           </div>
         </div>
 
         <div className="flex items-center space-x-1.5">
+          {focusSupported && (
+            <button
+              type="button"
+              onClick={handleManualRefocus}
+              disabled={isRefocusing}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer transition-all bg-slate-800 hover:bg-slate-700 text-blue-300 border border-blue-500/30"
+              title="Nhấn để lấy lại nét (Re-focus)"
+            >
+              <Focus className={`w-3.5 h-3.5 ${isRefocusing ? 'animate-spin' : ''}`} />
+              <span>{isRefocusing ? 'Đang lấy nét...' : 'Lấy nét'}</span>
+            </button>
+          )}
+
           {torchSupported && (
             <button
               type="button"
@@ -421,10 +446,9 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
             }}
             className="bg-slate-800 text-blue-300 font-bold text-xs py-1 px-2 rounded-lg border border-slate-700 outline-none w-full cursor-pointer"
           >
-            <option value="">Tự động (Camera Sau Tốt Nhất)</option>
             {cameras.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.label}
+                {c.isRear ? `📷 [Camera sau] ${c.label}` : c.label}
               </option>
             ))}
           </select>
@@ -441,52 +465,51 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
         </div>
       )}
 
-      {/* Camera Error or Viewfinder Box */}
-      {cameraError ? (
-        <div className="p-5 bg-rose-950/80 border border-rose-600 rounded-xl text-center space-y-3">
-          <AlertCircle className="w-9 h-9 text-rose-400 mx-auto" />
-          <p className="text-xs font-bold text-rose-200 leading-relaxed">{cameraError}</p>
-          <div className="flex flex-wrap justify-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={() => startCamera()}
-              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold rounded-xl flex items-center space-x-1.5 cursor-pointer shadow-md"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Thử lại Mở Camera</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold rounded-xl flex items-center space-x-1.5 cursor-pointer shadow-md"
-            >
-              <UploadCloud className="w-4 h-4" />
-              <span>📸 Chụp Ảnh / Chọn Ảnh Thẻ Thùng</span>
-            </button>
-          </div>
-        </div>
+      {/* Camera Error Display with Step-by-Step Instructions */}
+      {cameraErrorDetails ? (
+        <CameraPermissionErrorCard
+          errorTitle={cameraErrorDetails.title}
+          errorMessage={cameraErrorDetails.message}
+          isPermissionDenied={cameraErrorDetails.isPermissionDenied}
+          onRetry={() => {
+            setCameraErrorDetails(null);
+            startCamera();
+          }}
+          onImageSelected={(file) => {
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            if (fileInputRef.current) {
+              fileInputRef.current.files = dt.files;
+              handleFileUpload({ target: fileInputRef.current } as any);
+            }
+          }}
+        />
       ) : (
-        /* Video Container */
-        <div className="relative w-full rounded-xl overflow-hidden bg-black min-h-[260px] max-h-[360px] flex items-center justify-center border border-slate-800 shadow-inner">
-          <div id={containerIdRef.current} className="w-full h-full min-h-[260px]"></div>
+        /* Video Container with Tap-To-Focus */
+        <div
+          onClick={handleManualRefocus}
+          className="relative w-full rounded-xl overflow-hidden bg-black min-h-[280px] sm:min-h-[340px] max-h-[440px] flex items-center justify-center border border-slate-800 shadow-inner cursor-crosshair group"
+          title="Chạm vào màn hình để tự động lấy nét lại"
+        >
+          <div id={containerIdRef.current} className="w-full h-full min-h-[280px] sm:min-h-[340px]"></div>
 
           {/* Initializing Spinner */}
           {isInitializing && (
             <div className="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center space-y-2 z-10">
               <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-              <span className="text-xs font-bold text-blue-300">Đang khởi động Camera...</span>
+              <span className="text-xs font-bold text-blue-300">Đang khởi động Camera Sau Siêu Nét...</span>
             </div>
           )}
 
           {/* Reticle Target Frame Overlay */}
           {!isInitializing && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
-              <div className="w-56 h-56 border-2 border-blue-400/60 rounded-2xl relative shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]">
+              <div className="w-60 h-60 sm:w-72 sm:h-72 border-2 border-blue-400/60 rounded-2xl relative shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]">
                 {/* 4 Corner Markers */}
-                <div className="absolute top-0 left-0 w-7 h-7 border-t-4 border-l-4 border-blue-400 -mt-1 -ml-1 rounded-tl-lg"></div>
-                <div className="absolute top-0 right-0 w-7 h-7 border-t-4 border-r-4 border-blue-400 -mt-1 -mr-1 rounded-tr-lg"></div>
-                <div className="absolute bottom-0 left-0 w-7 h-7 border-b-4 border-l-4 border-blue-400 -mb-1 -ml-1 rounded-bl-lg"></div>
-                <div className="absolute bottom-0 right-0 w-7 h-7 border-b-4 border-r-4 border-blue-400 -mb-1 -mr-1 rounded-br-lg"></div>
+                <div className="absolute top-0 left-0 w-7 h-7 border-t-4 border-l-4 border-blue-400 -mt-1 -ml-1 rounded-tl-xl"></div>
+                <div className="absolute top-0 right-0 w-7 h-7 border-t-4 border-r-4 border-blue-400 -mt-1 -mr-1 rounded-tr-xl"></div>
+                <div className="absolute bottom-0 left-0 w-7 h-7 border-b-4 border-l-4 border-blue-400 -mb-1 -ml-1 rounded-bl-xl"></div>
+                <div className="absolute bottom-0 right-0 w-7 h-7 border-b-4 border-r-4 border-blue-400 -mb-1 -mr-1 rounded-br-xl"></div>
 
                 {/* Animated Laser Scan Line */}
                 <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-cyan-300 to-transparent absolute top-1/2 -translate-y-1/2 shadow-[0_0_10px_#22d3ee] animate-pulse"></div>
@@ -499,6 +522,11 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
               </div>
             </div>
           )}
+
+          {/* Tap to focus hint badge */}
+          <div className="absolute bottom-2 left-2 bg-slate-900/80 backdrop-blur-xs text-[10px] text-slate-300 px-2 py-0.5 rounded-md border border-slate-700 pointer-events-none">
+            💡 Chạm màn hình để lấy lại nét
+          </div>
         </div>
       )}
 
