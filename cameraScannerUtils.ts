@@ -210,11 +210,26 @@ export function setupVideoElementAttributes(videoEl: HTMLVideoElement | null) {
     videoEl.setAttribute('playsinline', 'true');
     videoEl.setAttribute('webkit-playsinline', 'true');
     videoEl.setAttribute('x5-playsinline', 'true');
+    videoEl.setAttribute('muted', 'true');
+    videoEl.setAttribute('autoplay', 'true');
+    videoEl.setAttribute('disablePictureInPicture', 'true');
+    videoEl.setAttribute('controlslist', 'nodownload nofullscreen noremoteplayback');
+    videoEl.playsInline = true;
+    (videoEl as any).webkitPlaysInline = true;
     videoEl.muted = true;
     videoEl.autoplay = true;
+    videoEl.controls = false;
+    videoEl.removeAttribute('controls');
+    videoEl.style.pointerEvents = 'none';
     videoEl.style.width = '100%';
     videoEl.style.height = '100%';
     videoEl.style.objectFit = 'cover';
+
+    videoEl.addEventListener('webkitbeginfullscreen', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
     if (videoEl.paused) {
       videoEl.play().catch(() => {});
     }
@@ -222,6 +237,54 @@ export function setupVideoElementAttributes(videoEl: HTMLVideoElement | null) {
     // Ignore video attribute setup errors
   }
 }
+
+/**
+ * Monkey-patches document.createElement to ensure all video elements are created
+ * with strict iOS WebKit inline playback attributes BEFORE srcObject is assigned.
+ * This completely prevents iOS Safari from opening the native AVPlayer fullscreen overlay.
+ */
+export function ensureIosVideoInlinePatch() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  if ((window as any).__ios_video_inline_patched) return;
+  (window as any).__ios_video_inline_patched = true;
+
+  try {
+    const originalCreateElement = document.createElement.bind(document);
+    document.createElement = function (tagName: string, options?: any) {
+      const el = originalCreateElement(tagName, options);
+      if (tagName && tagName.toLowerCase() === 'video') {
+        const v = el as HTMLVideoElement;
+        v.setAttribute('playsinline', 'true');
+        v.setAttribute('webkit-playsinline', 'true');
+        v.setAttribute('x5-playsinline', 'true');
+        v.setAttribute('muted', 'true');
+        v.setAttribute('autoplay', 'true');
+        v.setAttribute('disablePictureInPicture', 'true');
+        v.setAttribute('controlslist', 'nodownload nofullscreen noremoteplayback');
+        v.playsInline = true;
+        (v as any).webkitPlaysInline = true;
+        v.muted = true;
+        v.autoplay = true;
+        v.controls = false;
+        v.style.pointerEvents = 'none';
+
+        v.addEventListener('webkitbeginfullscreen', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        v.addEventListener('pause', () => {
+          if (v.paused && v.srcObject) {
+            v.play().catch(() => {});
+          }
+        });
+      }
+      return el;
+    };
+  } catch (e) {}
+}
+
+// Auto-run immediately when cameraScannerUtils is loaded
+ensureIosVideoInlinePatch();
 
 /**
  * BarcodeDetector hardware scanner instance for Android Chrome / Chromium

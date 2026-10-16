@@ -587,7 +587,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
             className="relative w-full rounded-xl overflow-hidden bg-black min-h-[280px] sm:min-h-[340px] max-h-[440px] flex items-center justify-center border border-slate-800 cursor-crosshair group"
             title="Chạm vào màn hình để tự động lấy nét lại"
           >
-            <div id={qrContainerId} className="w-full h-full min-h-[280px] sm:min-h-[340px]"></div>
+            <div id={qrContainerId} className="w-full h-full min-h-[280px] sm:min-h-[340px] pointer-events-none select-none"></div>
 
             {/* Target Reticle Frame Overlay */}
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">

@@ -232,16 +232,22 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
         (videoConstraints as any).facingMode = { ideal: forceFacingMode };
       }
 
-      const qrConfig = {
+      const qrConfig: any = {
         fps: targetFps,
-        qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-          const minDim = Math.min(viewfinderWidth, viewfinderHeight);
-          const size = Math.max(Math.floor(minDim * 0.85), 240);
-          return { width: size, height: size };
-        },
         videoConstraints,
         disableFlip: false,
       };
+
+      // On Android/desktop, qrbox frames the target area.
+      // On iOS Safari, omitting qrbox allows scanning the FULL VIDEO FRAME without cropping,
+      // which is critical for dense multi-line container QR tags!
+      if (!isIOS) {
+        qrConfig.qrbox = (viewfinderWidth: number, viewfinderHeight: number) => {
+          const minDim = Math.min(viewfinderWidth, viewfinderHeight);
+          const size = Math.max(Math.floor(minDim * 0.85), 240);
+          return { width: size, height: size };
+        };
+      }
 
       try {
         await html5QrCode.start(cameraConfigToUse, qrConfig, handleDecodedSuccess, () => {});
@@ -251,10 +257,6 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
           { facingMode: forceFacingMode || 'environment' },
           {
             fps: 12,
-            qrbox: (w, h) => {
-              const m = Math.min(w, h);
-              return { width: Math.max(Math.floor(m * 0.85), 240), height: Math.max(Math.floor(m * 0.85), 240) };
-            },
             disableFlip: false,
           },
           handleDecodedSuccess,
@@ -279,15 +281,22 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       // 5. Video Element setup and Hardware BarcodeDetector acceleration loop
       const pollForVideoEl = () => {
         const videoEl = document.querySelector(`#${containerIdRef.current} video`) as HTMLVideoElement;
-        if (!videoEl || videoEl.readyState < 2) {
+        if (!videoEl) {
           if (isScanningActiveRef.current) {
             requestAnimationFrame(pollForVideoEl);
           }
           return;
         }
 
-        // Configure iOS Safari inline video playback
+        // Configure iOS Safari inline video playback immediately
         setupVideoElementAttributes(videoEl);
+
+        if (videoEl.readyState < 2) {
+          if (isScanningActiveRef.current) {
+            requestAnimationFrame(pollForVideoEl);
+          }
+          return;
+        }
 
         // Hardware BarcodeDetector acceleration for Android Chrome
         if (!isIOS) {
@@ -312,11 +321,26 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
   };
 
   useEffect(() => {
+    let observer: MutationObserver | null = null;
+    const container = document.getElementById(containerIdRef.current);
+    if (container) {
+      observer = new MutationObserver(() => {
+        const v = container.querySelector('video') as HTMLVideoElement;
+        if (v) {
+          setupVideoElementAttributes(v);
+        }
+      });
+      observer.observe(container, { childList: true, subtree: true });
+    }
+
     const timer = setTimeout(() => {
       startCamera();
-    }, 100);
+    }, 60);
 
     return () => {
+      if (observer) {
+        observer.disconnect();
+      }
       clearTimeout(timer);
       stopCamera();
     };
@@ -345,6 +369,15 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
   const handleManualRefocus = async () => {
     if (!html5QrCodeRef.current) return;
     setIsRefocusing(true);
+
+    const videoEl = document.querySelector(`#${containerIdRef.current} video`) as HTMLVideoElement;
+    if (videoEl) {
+      setupVideoElementAttributes(videoEl);
+      if (videoEl.paused) {
+        videoEl.play().catch(() => {});
+      }
+    }
+
     const stream = (html5QrCodeRef.current as any).mediaStream as MediaStream;
     await triggerManualFocus(stream);
     setTimeout(() => {
@@ -523,7 +556,7 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
           className="relative w-full rounded-xl overflow-hidden bg-black min-h-[280px] sm:min-h-[340px] max-h-[440px] flex items-center justify-center border border-slate-800 shadow-inner cursor-crosshair group"
           title="Chạm vào màn hình để tự động lấy nét lại"
         >
-          <div id={containerIdRef.current} className="w-full h-full min-h-[280px] sm:min-h-[340px]"></div>
+          <div id={containerIdRef.current} className="w-full h-full min-h-[280px] sm:min-h-[340px] pointer-events-none select-none"></div>
 
           {/* Initializing Spinner */}
           {isInitializing && (
