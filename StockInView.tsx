@@ -521,14 +521,18 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
 
       // storageService.addStockIn already updates part location and stock breakdown automatically
 
-      // If imported via Cont QR Code, mark this tag as USED
+      // If imported via Cont QR Code, mark this tag as USED safely
       if (tagId) {
-        storageService.markQrTokenAsUsed(tagId, {
-          partCode: part.code,
-          quantity: actualQty,
-          contNumber: contNumber || '',
-          person: staffPerson,
-        });
+        try {
+          storageService.markQrTokenAsUsed(tagId, {
+            partCode: part.code,
+            quantity: actualQty,
+            contNumber: contNumber || '',
+            person: staffPerson,
+          });
+        } catch (e) {
+          console.warn('Mark token warning:', e);
+        }
       }
 
       // Close modal

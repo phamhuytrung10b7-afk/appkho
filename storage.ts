@@ -644,7 +644,11 @@ export const storageService = {
     notes?: string;
     locationId?: string;
   }): Transaction {
-    const part = this.getPartById(params.partId);
+    let part = this.getPartById(params.partId);
+    if (!part) {
+      const allParts = this.getParts();
+      part = allParts.find((p) => p.id === params.partId || p.code === params.partId || p.code.toLowerCase() === params.partId.toLowerCase());
+    }
     if (!part) throw new Error('Linh kiện không tồn tại');
 
     const stockBefore = part.currentStock;
