@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, ChevronDown, Check, Plus, X } from 'lucide-react';
+import { smartFuzzySearch } from './fuzzySearch';
 
 export interface SelectOption {
   value: string;
@@ -33,8 +34,17 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Debounce search term (250ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
   // Normalize options to SelectOption[]
   const normalizedOptions: SelectOption[] = options.map((opt) => {
@@ -48,15 +58,12 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   const selectedOpt = normalizedOptions.find((o) => o.value === value);
   const displayLabel = selectedOpt ? selectedOpt.label : value || placeholder;
 
-  // Filtered options based on search term
-  const filteredOptions = normalizedOptions.filter((opt) => {
-    const term = searchTerm.toLowerCase();
-    return (
-      opt.label.toLowerCase().includes(term) ||
-      opt.value.toLowerCase().includes(term) ||
-      (opt.sublabel && opt.sublabel.toLowerCase().includes(term))
-    );
-  });
+  // Filtered options based on smart fuzzy search
+  const filteredOptions = smartFuzzySearch(
+    normalizedOptions,
+    (opt) => [opt.label, opt.value, opt.sublabel || '', opt.badge || ''],
+    debouncedSearch
+  );
 
   const isExactMatch = normalizedOptions.some(
     (o) => o.value.toLowerCase() === searchTerm.trim().toLowerCase() || o.label.toLowerCase() === searchTerm.trim().toLowerCase()

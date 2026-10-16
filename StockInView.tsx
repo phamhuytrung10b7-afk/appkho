@@ -519,8 +519,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         locationId: targetLocName,
       });
 
-      // Update part's shelf location
-      storageService.updatePart(part.id, { location: targetLocName });
+      // storageService.addStockIn already updates part location and stock breakdown automatically
 
       // If imported via Cont QR Code, mark this tag as USED
       if (tagId) {
