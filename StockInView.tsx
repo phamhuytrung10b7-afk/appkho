@@ -69,6 +69,18 @@ export function findLocationMatch(
   if (!scannedText || !scannedText.trim()) return undefined;
 
   let raw = scannedText.trim();
+
+  // Parse JSON QR codes if any
+  if (raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(raw);
+      raw = String(parsed.location || parsed.name || parsed.shelf || parsed.code || parsed.id || raw).trim();
+    } catch {}
+  }
+
+  // Strip common label prefixes like "LOC: A01", "LOCATION: A01", "KỆ: A01"
+  raw = raw.replace(/^(loc|location|shelf|rack|ke|kệ|kho|vitri|vị trí|khoang):\s*/i, '').trim();
+
   if (raw.includes('|')) {
     const parts = raw.split('|');
     raw = parts[parts.length - 1].trim();
@@ -85,8 +97,8 @@ export function findLocationMatch(
   const normScanned = normalizeLocationStr(raw);
   if (!normScanned) return undefined;
 
-  // Normalized version without prefixes (e.g. 'kea01' -> 'a01')
-  const cleanNormScanned = normScanned.replace(/^(ke|kho|rack|shelf|vitri|khoang)/i, '');
+  // Normalized version without prefixes (e.g. 'kea01' -> 'a01', 'loca01' -> 'a01')
+  const cleanNormScanned = normScanned.replace(/^(ke|kho|rack|shelf|vitri|khoang|loc|location|tu|o)/i, '');
 
   // 2. Exact match on prefix/short name (e.g. "A01" matching "A01 (Khoang 01 - Tầng 1 - Vị trí 1)")
   found = locations.find((l) => {
@@ -419,8 +431,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
           }
         };
         pollForLocVideo();
-      } catch (err: any) {
-        console.warn('Loc camera error:', err);
+      } catch {
         setLocScannerError('Không mở được camera trực tiếp. Vui lòng dùng súng quét USB/Bluetooth hoặc chọn vị trí kệ trong danh sách.');
       }
     }, 120);
@@ -573,9 +584,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
             contNumber: contNumber || '',
             person: person?.trim() || currentUserName || defaultPerson || 'Nhân sự kho',
           });
-        } catch (e) {
-          console.warn('Mark token warning:', e);
-        }
+        } catch (_) {}
       }
 
       // 2. Safely stop camera & close modal
@@ -621,11 +630,9 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       // 6. Safely notify parent to refresh state
       try {
         onSuccess();
-      } catch (onSuccessErr) {
-        console.warn('onSuccess callback non-blocking warning:', onSuccessErr);
-      }
-    } catch (uiErr) {
-      console.warn('Non-critical UI update error:', uiErr);
+      } catch (_) {}
+    } catch (_) {
+      // Non-critical UI state handling
     } finally {
       setTimeout(() => {
         isManualStockInProcessingRef.current = false;
@@ -649,6 +656,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
             // Guard against multiple frames firing before stop() resolves
             if (hasHandledShelfFrame || isManualStockInProcessingRef.current) return;
             hasHandledShelfFrame = true;
+            isManualStockInProcessingRef.current = true;
 
             // Stop camera first safely
             stopManualModalShelfCamera();
@@ -669,8 +677,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
           }
         };
         pollForShelfVideo();
-      } catch (err: any) {
-        console.warn('Manual modal shelf camera error:', err);
+      } catch (_) {
         setIsManualModalShelfCamActive(false);
       }
     }, 120);
@@ -696,8 +703,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
           } catch {}
         }
       }
-    } catch (e) {
-      console.warn('Manual modal shelf camera stop error:', e);
+    } catch (_) {
     } finally {
       setIsManualModalShelfCamActive(false);
     }

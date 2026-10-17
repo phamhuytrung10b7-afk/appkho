@@ -86,8 +86,7 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
         if (isMounted && cloudCfg) {
           setPersonnelConfig(cloudCfg);
         }
-      } catch (err) {
-        console.warn('Lỗi đồng bộ cấu hình năng suất từ Supabase Cloud:', err);
+      } catch (_) {
       } finally {
         if (isMounted) setIsCloudSyncing(false);
       }

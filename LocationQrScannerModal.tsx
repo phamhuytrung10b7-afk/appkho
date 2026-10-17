@@ -28,7 +28,8 @@ import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
 interface LocationQrScannerModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelectLocation: (locationName: string) => void;
+  onSelectLocation?: (locationName: string) => void;
+  onLocationDetected?: (location: WarehouseLocation) => void;
   locations?: WarehouseLocation[];
   title?: string;
   excludeLocation?: string;
@@ -38,6 +39,7 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
   isOpen,
   onClose,
   onSelectLocation,
+  onLocationDetected,
   locations = [],
   title = 'Quét Mã QR Vị Trí / Kệ Kho',
   excludeLocation,
@@ -100,9 +102,7 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
           await html5QrcodeRef.current.stop();
         }
         html5QrcodeRef.current.clear();
-      } catch (e) {
-        console.warn('Error stopping scanner:', e);
-      }
+      } catch (_) {}
       html5QrcodeRef.current = null;
     }
     setIsCameraActive(false);
@@ -170,7 +170,14 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
     stopCamera();
 
     setTimeout(() => {
-      onSelectLocation(shelfName);
+      try {
+        if (onSelectLocation) {
+          onSelectLocation(shelfName);
+        }
+        if (onLocationDetected) {
+          onLocationDetected(found || { id: shelfName, name: shelfName });
+        }
+      } catch (_) {}
       onClose();
     }, 500);
   };
@@ -203,7 +210,6 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
 
       await startScanner(chosenId);
     } catch (err: any) {
-      console.error('Camera init error:', err);
       const parsed = parseCameraError(err);
       setCameraErrorDetails(parsed);
     }
@@ -276,7 +282,6 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
       pollForVideoEl();
 
     } catch (err: any) {
-      console.error('Start scanner error:', err);
       const parsed = parseCameraError(err);
       setCameraErrorDetails(parsed);
       setIsCameraActive(false);
@@ -291,9 +296,7 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
         advanced: [{ torch: nextState } as any],
       });
       setIsTorchOn(nextState);
-    } catch (e) {
-      console.error('Torch toggle error:', e);
-    }
+    } catch (_) {}
   };
 
   const handleManualRefocus = async () => {

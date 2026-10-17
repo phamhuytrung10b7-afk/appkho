@@ -121,9 +121,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
           await html5QrCodeRef.current.stop();
         }
         html5QrCodeRef.current.clear();
-      } catch (e) {
-        console.warn('Error stopping scanner:', e);
-      }
+      } catch (_) {}
       html5QrCodeRef.current = null;
     }
     setIsCameraActive(false);
@@ -293,8 +291,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
           onScanSuccessCallback,
           () => {}
         );
-      } catch (startErr) {
-        console.warn('Start with primary config failed, trying fallback facingMode:', startErr);
+      } catch {
         await html5QrCode.start(
           { facingMode: 'environment' },
           {
@@ -347,7 +344,6 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
       pollForVideoEl();
 
     } catch (err: any) {
-      console.error('Inline camera error:', err);
       const parsed = parseCameraError(err);
       setCameraErrorDetails(parsed);
       setIsCameraActive(false);

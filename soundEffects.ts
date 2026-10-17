@@ -93,9 +93,7 @@ class SoundEffectsService {
       harmGain2.connect(ctx.destination);
       harm2.start(now + delay);
       harm2.stop(now + delay + 0.26);
-    } catch (e) {
-      console.warn('Audio play error:', e);
-    }
+    } catch (_) {}
   }
 
   /**
@@ -139,9 +137,7 @@ class SoundEffectsService {
         osc.start(start);
         osc.stop(start + beepDuration);
       }
-    } catch (e) {
-      console.warn('Audio play error:', e);
-    }
+    } catch (_) {}
   }
 
   /**
@@ -172,9 +168,7 @@ class SoundEffectsService {
 
       osc.start(now);
       osc.stop(now + 0.09);
-    } catch (e) {
-      console.warn('Audio play error:', e);
-    }
+    } catch (_) {}
   }
 }
 

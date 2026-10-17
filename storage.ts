@@ -3637,9 +3637,7 @@ export const storageService = {
         localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(cloudVal));
         return cloudVal;
       }
-    } catch (err) {
-      console.warn('Không thể tải cấu hình nhân sự từ Supabase Cloud:', err);
-    }
+    } catch (_) {}
     return this.getProductivityPersonnelConfig();
   },
 
@@ -3792,7 +3790,6 @@ export const storageService = {
         }
       }
     } catch (err: any) {
-      console.warn('Lỗi khi tải dữ liệu từ Supabase Cloud:', err);
       parts = this.getParts();
       transactions = this.getTransactions();
       throw new Error(`[Supabase Connection Failure] ${err?.message || 'Failed to fetch from cloud'}`);

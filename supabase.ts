@@ -60,11 +60,18 @@ export function getActiveSupabaseClient(): { client: SupabaseClient | null; isCo
         createClient(activeUrl, activeKey, {
           auth: {
             persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
+          },
+          global: {
+            headers: {
+              'x-client-info': 'thekho-warehouse/1.0',
+            },
           },
         })
       );
-    } catch (err) {
-      console.warn('Cannot initialize Supabase client:', err);
+    } catch {
+      // Suppressed client init warning
     }
   }
 

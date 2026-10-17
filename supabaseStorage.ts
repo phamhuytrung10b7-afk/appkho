@@ -150,12 +150,24 @@ export function mapSupabaseRowToTransaction(row: any): Transaction {
   };
 }
 
+const loggedErrorKeys = new Set<string>();
+
 function logSupabaseError(context: string, error: any) {
+  // Suppress spammy log outputs in client console
+  if (!error) return;
   const errMsg =
     typeof error === 'object' && error !== null
-      ? error.message || error.details || JSON.stringify(error)
+      ? error.message || error.details || error.code || ''
       : String(error);
-  console.warn(`[Supabase Connection Warning] ${context}:`, errMsg);
+  const key = `${context}::${errMsg}`;
+  if (loggedErrorKeys.has(key)) return;
+  loggedErrorKeys.add(key);
+  if (loggedErrorKeys.size > 20) loggedErrorKeys.clear();
+
+  // Only emit single debug notice if not in production
+  if (typeof window !== 'undefined' && (window as any).__SUPABASE_DEBUG__) {
+    console.debug(`[Supabase Connection Notice] ${context}:`, errMsg);
+  }
 }
 
 // Helper for localStorage cached data
@@ -176,8 +188,8 @@ function setLocalCacheData<T>(key: string, data: T, timestamp: string): void {
   try {
     localStorage.setItem(key, JSON.stringify(data));
     localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, timestamp);
-  } catch (err) {
-    console.warn(`[Cache Warning] Failed to write localStorage for key ${key}:`, err);
+  } catch {
+    // QuotaExceeded or private browsing mode safe fallback
   }
 }
 

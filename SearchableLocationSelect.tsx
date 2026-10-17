@@ -532,6 +532,10 @@ export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> =
           isOpen={isInternalScannerOpen}
           onClose={() => setIsInternalScannerOpen(false)}
           locations={locations}
+          onSelectLocation={(locName) => {
+            handleSelect(locName);
+            setIsInternalScannerOpen(false);
+          }}
           onLocationDetected={(matchedLoc) => {
             handleSelect(matchedLoc.name);
             setIsInternalScannerOpen(false);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Part, Transaction, AppSettings, ViewTab, KittingQueueItem, BufferLocationMap, MaterialCallRequest, UserAccount } from './types';
 import { storageService } from './storage';
 import { Menu, Boxes, LogOut, AlertTriangle, RefreshCw } from 'lucide-react';
@@ -78,6 +78,8 @@ export default function App() {
     setSettings(storageService.getSettings());
   }, []);
 
+  const lastCloudSyncTimestamp = useRef<number>(0);
+
   // Fetch fresh data from Supabase Cloud via pure REST API (Zero Realtime WebSocket Egress)
   const syncCloudAndState = useCallback(
     async (forceFetch: boolean = false, isInitial: boolean = false) => {
@@ -85,6 +87,7 @@ export default function App() {
         // Trước khi gọi tải toàn bộ data từ Supabase Cloud, kiểm tra xem Cloud có dữ liệu mới không
         if (!forceFetch && !isInitial) {
           const hasUpdates = await storageService.checkCloudHasUpdates();
+          lastCloudSyncTimestamp.current = Date.now();
           if (!hasUpdates) {
             // Dữ liệu Cloud không thay đổi và forceFetch = false, tiếp tục dùng dữ liệu Local State/LocalStorage mà không tải mới
             return;
@@ -92,6 +95,7 @@ export default function App() {
         }
 
         const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud(forceFetch);
+        lastCloudSyncTimestamp.current = Date.now();
         setParts(cloudParts);
         setTransactions(cloudTxs);
         setKittingQueue(storageService.getKittingQueue());
@@ -104,7 +108,6 @@ export default function App() {
           setCurrentUser(activeUser);
         }
       } catch (err: any) {
-        console.warn('Lỗi khi tải/đồng bộ dữ liệu từ Supabase REST:', err);
         if (isInitial) {
           setCloudConnectionError(
             '⚠️ MẤT KẾT NỐI SUPABASE CLOUD: Không thể kết nối máy chủ Supabase. Dữ liệu chưa thể đồng bộ Cloud. Vui lòng kiểm tra lại mạng hoặc cấu hình kết nối trong Cài Đặt!'
@@ -131,8 +134,8 @@ export default function App() {
       try {
         setIsLoadingCloud(true);
         await syncCloudAndState(true, true);
-      } catch (err) {
-        console.warn('Lỗi khởi tạo dữ liệu Supabase:', err);
+      } catch {
+        // Handled in syncCloudAndState
       } finally {
         if (isMounted) {
           setIsLoadingCloud(false);
@@ -147,13 +150,15 @@ export default function App() {
     };
   }, [syncCloudAndState]);
 
-  // ⏱️ Pure REST Polling: Định kỳ 15 giây (15000ms) lấy dữ liệu mới ngầm từ Supabase REST API
-  // Tối ưu Egress: Chỉ check sync khi tab trình duyệt đang hiển thị (visible). Khi ẩn tab, dừng kiểm tra để tiết kiệm Egress.
-  // Bổ sung sự kiện visibilitychange: Ngay khi người dùng quay lại tab ứng dụng, kích hoạt 1 lượt check sync ngầm ngay lập tức.
+  // ⏱️ Giãn cách Polling ngầm: 90 giây (90000ms) thay vì 15 giây, giúp giảm ~85% lượng Log Query thừa thãi trên Supabase
+  // Chỉ kiểm tra khi tab đang hiển thị (visible). Khi người dùng quay lại tab, chỉ sync nếu đã qua hơn 45 giây.
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        syncCloudAndState(false, false);
+        const elapsed = Date.now() - lastCloudSyncTimestamp.current;
+        if (elapsed > 45000) {
+          syncCloudAndState(false, false);
+        }
       }
     };
 
@@ -163,7 +168,7 @@ export default function App() {
       if (document.visibilityState === 'visible') {
         syncCloudAndState(false, false);
       }
-    }, 15000);
+    }, 90000); // 90 seconds (tối ưu hóa triệt để tài nguyên Supabase)
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -171,9 +176,12 @@ export default function App() {
     };
   }, [syncCloudAndState]);
 
-  // 🔄 Auto-fetch fresh data from Supabase Cloud whenever user switches tab/menu (No Realtime required)
+  // 🔄 Giãn cách kiểm tra khi chuyển tab: Chỉ sync nếu đã qua hơn 45 giây kể từ lần sync gần nhất
   useEffect(() => {
-    syncCloudAndState(false, false);
+    const elapsed = Date.now() - lastCloudSyncTimestamp.current;
+    if (elapsed > 45000) {
+      syncCloudAndState(false, false);
+    }
   }, [currentTab, syncCloudAndState]);
 
   // Open Electronic Bin Card for a part

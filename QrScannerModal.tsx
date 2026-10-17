@@ -274,9 +274,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
           await html5QrcodeRef.current.stop();
         }
         html5QrcodeRef.current.clear();
-      } catch (err) {
-        console.error('Stop camera error', err);
-      }
+      } catch (_) {}
       html5QrcodeRef.current = null;
     }
     setIsCameraActive(false);
@@ -417,8 +415,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
 
       try {
         await html5QrCode.start(cameraConfigToUse, qrConfig, onScanSuccess, () => {});
-      } catch (startErr) {
-        console.warn('Start with specific camera ID failed, trying environment facing:', startErr);
+      } catch {
         await html5QrCode.start(
           { facingMode: 'environment' },
           {
@@ -471,7 +468,6 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       pollForVideoEl();
 
     } catch (err: any) {
-      console.warn('Camera start issue:', err);
       const parsed = parseCameraError(err);
       setCameraErrorDetails(parsed);
       setIsCameraActive(false);

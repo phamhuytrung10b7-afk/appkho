@@ -113,9 +113,7 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
           await html5QrCodeRef.current.stop().catch(() => {});
         }
         html5QrCodeRef.current.clear();
-      } catch (e) {
-        console.warn('Error stopping scanner:', e);
-      }
+      } catch (_) {}
       html5QrCodeRef.current = null;
     }
     setIsCameraActive(false);
@@ -251,8 +249,7 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
 
       try {
         await html5QrCode.start(cameraConfigToUse, qrConfig, handleDecodedSuccess, () => {});
-      } catch (firstErr) {
-        console.warn('Initial camera start failed, retrying with fallback facingMode:', firstErr);
+      } catch {
         await html5QrCode.start(
           { facingMode: forceFacingMode || 'environment' },
           {
@@ -312,7 +309,6 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
       pollForVideoEl();
 
     } catch (err: any) {
-      console.error('SmoothCameraScanner start error:', err);
       setIsInitializing(false);
       setIsCameraActive(false);
       const parsed = parseCameraError(err);
@@ -361,9 +357,7 @@ export const SmoothCameraScanner: React.FC<SmoothCameraScannerProps> = ({
         advanced: [{ torch: nextState } as any],
       });
       setIsTorchOn(nextState);
-    } catch (err) {
-      console.warn('Torch failed:', err);
-    }
+    } catch (_) {}
   };
 
   const handleManualRefocus = async () => {

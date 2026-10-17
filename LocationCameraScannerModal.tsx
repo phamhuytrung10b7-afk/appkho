@@ -57,9 +57,7 @@ export const LocationCameraScannerModal: React.FC<LocationCameraScannerModalProp
             setSelectedCameraId(backCam.id);
           }
         })
-        .catch((err) => {
-          console.warn('Could not enumerate cameras:', err);
-        });
+        .catch(() => {});
 
       const timer = setTimeout(() => {
         startCamera();
@@ -77,9 +75,7 @@ export const LocationCameraScannerModal: React.FC<LocationCameraScannerModalProp
           await html5QrCodeRef.current.stop();
         }
         html5QrCodeRef.current.clear();
-      } catch (e) {
-        console.warn('Error stopping camera:', e);
-      }
+      } catch (_) {}
       html5QrCodeRef.current = null;
     }
     setIsTorchOn(false);
@@ -197,11 +193,10 @@ export const LocationCameraScannerModal: React.FC<LocationCameraScannerModalProp
             }
           }
         }
-      } catch (e) {
+      } catch (_) {
         setTorchSupported(false);
       }
-    } catch (err: any) {
-      console.error('Camera start error:', err);
+    } catch (_) {
       // Retry with simple constraints if initial high-res failed
       try {
         if (html5QrCodeRef.current) {
@@ -218,9 +213,7 @@ export const LocationCameraScannerModal: React.FC<LocationCameraScannerModalProp
           setIsInitializing(false);
           return;
         }
-      } catch (retryErr) {
-        console.error('Retry failed:', retryErr);
-      }
+      } catch (_) {}
 
       setIsInitializing(false);
       setErrorMsg('Không thể mở Camera. Vui lòng cho phép quyền sử dụng Camera trên trình duyệt.');
@@ -241,7 +234,7 @@ export const LocationCameraScannerModal: React.FC<LocationCameraScannerModalProp
         advanced: [{ torch: nextState } as any],
       });
       setIsTorchOn(nextState);
-    } catch (err) {
+    } catch (_) {
       try {
         const stream = (html5QrCodeRef.current as any).mediaStream as MediaStream;
         if (stream) {
@@ -253,9 +246,7 @@ export const LocationCameraScannerModal: React.FC<LocationCameraScannerModalProp
             setIsTorchOn(nextState);
           }
         }
-      } catch (e) {
-        console.warn('Torch toggle failed:', e);
-      }
+      } catch (_) {}
     }
   };
 
