@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#grad)" />
+  <!-- Warehouse Package Box Icon -->
+  <path d="M32 14L49 23.5V43.5L32 53L15 43.5V23.5L32 14Z" fill="#10B981" stroke="#ECFDF5" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M32 14V53" stroke="#ECFDF5" stroke-width="2" stroke-linecap="round"/>
+  <path d="M49 23.5L32 33.5L15 23.5" stroke="#ECFDF5" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M23.5 19L40.5 28.5" stroke="#FDE047" stroke-width="2" stroke-linecap="round"/>
+</svg>
