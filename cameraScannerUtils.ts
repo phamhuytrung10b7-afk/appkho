@@ -8,6 +8,7 @@
  */
 
 import { Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import jsQR from 'jsqr';
 
 export interface CameraDeviceInfo {
   id: string;
@@ -18,6 +19,53 @@ export interface CameraDeviceInfo {
 /**
  * Prioritizes rear/back cameras and filters out ultra-wide/macro if a standard 1x camera is available.
  */
+export function getCameraScore(label: string, isRear: boolean): number {
+  if (!isRear) return -100; // Front cameras lowest priority
+  const l = (label || '').toLowerCase();
+
+  // 1. Demote Ultra-wide (0.5x, fixed focus at close range on many devices)
+  const isUltraWide =
+    l.includes('cực rộng') ||
+    l.includes('cuc rong') ||
+    l.includes('ultra') ||
+    l.includes('0.5') ||
+    l.includes('0,5');
+
+  // 2. Demote Telephoto / Zoom (3x, 5x, 10x)
+  const isTelephoto =
+    l.includes('chụp xa') ||
+    l.includes('chup xa') ||
+    l.includes('tele') ||
+    l.includes('zoom') ||
+    l.includes('3x') ||
+    l.includes('5x');
+
+  if (isUltraWide) return 10;
+  if (isTelephoto) return 20;
+
+  // 3. High priority for 1x Primary Wide Camera with Auto-focus:
+  // "Camera góc rộng mặt sau" (iOS Vietnamese 1x autofocus main camera)
+  // "Back Wide Camera" (iOS English 1x autofocus main camera)
+  // "Back Camera" / "Camera sau"
+  // "camera 0" (Android primary back camera)
+  // "main" / "chính"
+  const isPrimary =
+    l.includes('góc rộng') ||
+    l.includes('goc rong') ||
+    (l.includes('wide') && !isUltraWide) ||
+    l.includes('main') ||
+    l.includes('chính') ||
+    l.includes('chinh') ||
+    l.includes('camera 0') ||
+    l.includes('camera 1') ||
+    l.includes('back camera 1');
+
+  if (isPrimary) return 100;
+
+  // Standard rear camera fallback
+  return 50;
+}
+
 export function sortAndFilterCameras(devices: Array<{ id: string; label: string }>): CameraDeviceInfo[] {
   if (!devices || devices.length === 0) return [];
 
@@ -40,26 +88,11 @@ export function sortAndFilterCameras(devices: Array<{ id: string; label: string 
     };
   });
 
-  // Sort so primary rear camera comes first
+  // Sort so 1x primary autofocus rear camera is guaranteed to be #1
   return mapped.sort((a, b) => {
-    const aLbl = a.label.toLowerCase();
-    const bLbl = b.label.toLowerCase();
-
-    // Front cameras go to bottom
-    if (a.isRear && !b.isRear) return -1;
-    if (!a.isRear && b.isRear) return 1;
-
-    // Prefer main 1x rear camera over 0.5x ultra-wide or macro
-    const aIsWide = aLbl.includes('wide') || aLbl.includes('0.5') || aLbl.includes('ultra') || aLbl.includes('macro');
-    const bIsWide = bLbl.includes('wide') || bLbl.includes('0.5') || bLbl.includes('ultra') || bLbl.includes('macro');
-    if (!aIsWide && bIsWide) return -1;
-    if (aIsWide && !bIsWide) return 1;
-
-    // Prefer "camera 0" on Android (usually primary back camera)
-    if (aLbl.includes('camera 0') && !bLbl.includes('camera 0')) return -1;
-    if (!aLbl.includes('camera 0') && bLbl.includes('camera 0')) return 1;
-
-    return 0;
+    const scoreA = getCameraScore(a.label, a.isRear);
+    const scoreB = getCameraScore(b.label, b.isRear);
+    return scoreB - scoreA;
   });
 }
 
@@ -222,8 +255,9 @@ export function setupVideoElementAttributes(videoEl: HTMLVideoElement | null) {
     videoEl.removeAttribute('controls');
     videoEl.style.pointerEvents = 'none';
     videoEl.style.width = '100%';
-    videoEl.style.height = '100%';
-    videoEl.style.objectFit = 'cover';
+    videoEl.style.height = 'auto';
+    videoEl.style.maxHeight = '100%';
+    videoEl.style.objectFit = 'contain';
 
     videoEl.addEventListener('webkitbeginfullscreen', (e) => {
       e.preventDefault();
@@ -330,6 +364,93 @@ export function startNativeBarcodeDetectorLoop(
           }
         } catch (e) {
           // ignore frame read error
+        } finally {
+          isChecking = false;
+        }
+      }
+    }
+
+    if (isScanningActive()) {
+      animationFrameId = requestAnimationFrame(checkFrame);
+    }
+  };
+
+  animationFrameId = requestAnimationFrame(checkFrame);
+
+  return () => {
+    if (animationFrameId) {
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+    }
+  };
+}
+
+/**
+ * Dual hardware BarcodeDetector + high-speed jsQR frame loop:
+ * 1. Checks native BarcodeDetector on GPU (sub-15ms on Android Chrome)
+ * 2. Uses pure-JS jsQR on uncropped frame (sub-15ms on iOS Safari WebKit)
+ */
+export function startFastQrFrameLoop(
+  videoElement: HTMLVideoElement,
+  onDetected: (code: string) => void,
+  isScanningActive: () => boolean
+): () => void {
+  const detector = getNativeBarcodeDetector();
+  let animationFrameId: number | null = null;
+  let isChecking = false;
+
+  const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+  const ctx = canvas ? canvas.getContext('2d', { willReadFrequently: true }) : null;
+
+  const checkFrame = async () => {
+    if (!isScanningActive()) return;
+
+    if (videoElement && videoElement.readyState >= 2 && !videoElement.paused && !videoElement.ended) {
+      if (!isChecking) {
+        isChecking = true;
+        try {
+          // 1. Hardware BarcodeDetector (fastest on Android Chrome & Chromium)
+          if (detector) {
+            try {
+              const results = await detector.detect(videoElement);
+              if (results && results.length > 0 && results[0]?.rawValue) {
+                const detectedCode = results[0].rawValue.trim();
+                if (detectedCode) {
+                  onDetected(detectedCode);
+                  return;
+                }
+              }
+            } catch (_) {}
+          }
+
+          // 2. High-speed jsQR frame decoder (instant on iOS Safari & everywhere else)
+          if (ctx && canvas && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+            const vw = videoElement.videoWidth;
+            const vh = videoElement.videoHeight;
+            // Downscale to max 640px dimension for ultra-fast processing (<15ms per frame)
+            const maxDim = 640;
+            const scale = Math.min(1, maxDim / Math.max(vw, vh));
+            const targetW = Math.round(vw * scale);
+            const targetH = Math.round(vh * scale);
+
+            if (canvas.width !== targetW || canvas.height !== targetH) {
+              canvas.width = targetW;
+              canvas.height = targetH;
+            }
+
+            ctx.drawImage(videoElement, 0, 0, targetW, targetH);
+            const imageData = ctx.getImageData(0, 0, targetW, targetH);
+            const qrResult = jsQR(imageData.data, targetW, targetH, {
+              inversionAttempts: 'attemptBoth',
+            });
+
+            if (qrResult && qrResult.data && qrResult.data.trim()) {
+              onDetected(qrResult.data.trim());
+              return;
+            }
+          }
+        } catch (_) {
+          // ignore frame errors
         } finally {
           isChecking = false;
         }

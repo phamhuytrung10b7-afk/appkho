@@ -20,7 +20,7 @@ import {
   getOptimizedVideoConstraints,
   applyTrackFocusAndCapabilities,
   triggerManualFocus,
-  startNativeBarcodeDetectorLoop,
+  startFastQrFrameLoop,
   parseCameraError,
   STANDARD_SCANNER_FORMATS,
   FAST_SCANNER_FORMATS,
@@ -261,7 +261,7 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
       hasTriggeredResultRef.current = false;
 
       // 1. Permission probe on Android / Desktop to populate camera device labels
-      // Note: Skip track probe on iOS Safari to avoid locking camera or triggering prompt errors
+      // Note: Skip track probe on iOS Safari to avoid locking camera or wiping labels
       if (!isIOS && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           const testStream = await navigator.mediaDevices.getUserMedia({
@@ -276,22 +276,23 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
         }
       }
 
-      // 2. Query available cameras and prioritize rear autofocus lens
+      // 2. Query available cameras and prioritize 1x main autofocus lens
       const rawDevices = await Html5Qrcode.getCameras().catch(() => []);
       const sorted = sortAndFilterCameras(rawDevices);
       setCameras(sorted);
 
+      // Prioritize 1x main camera (rank #1 in sorted cameras, NOT ultra-wide 0.5x)
       let targetCamId = camId;
       if (!targetCamId && selectedCameraId) {
         targetCamId = selectedCameraId;
-      } else if (!targetCamId && !isIOS && sorted.length > 0) {
+      } else if (!targetCamId && sorted.length > 0) {
         targetCamId = sorted[0].id;
         setSelectedCameraId(targetCamId);
       }
 
       // Fast formats for ultra-responsive scanning: QR_CODE and industrial barcodes
       const formatsToUse = isIOS ? FAST_SCANNER_FORMATS : STANDARD_SCANNER_FORMATS;
-      const targetFps = isIOS ? 18 : 30;
+      const targetFps = isIOS ? 20 : 30;
 
       const html5QrCode = new Html5Qrcode(qrContainerIdRef.current, {
         formatsToSupport: formatsToUse,
@@ -300,9 +301,9 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
       });
       html5QrcodeRef.current = html5QrCode;
 
-      // Determine camera config: On iOS ALWAYS prefer facingMode: 'environment'
+      // Determine camera config: Use selected 1x autofocus camera ID
       let cameraConfigToUse: any;
-      if (targetCamId && !isIOS) {
+      if (targetCamId) {
         cameraConfigToUse = targetCamId;
       } else {
         cameraConfigToUse = { facingMode: 'environment' };
@@ -368,8 +369,10 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
           videoEl.play().catch(() => {});
         }
 
-        // 4. Hardware BarcodeDetector acceleration loop (instant sub-30ms decoding)
-        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+        // 4. Dual Engine Acceleration Loop:
+        // - Hardware BarcodeDetector on GPU (Android/Chromium)
+        // - High-speed jsQR frame decoder (iOS WebKit / Safari)
+        stopNativeDetectorRef.current = startFastQrFrameLoop(
           videoEl,
           (decoded) => {
             handleScanSuccess(decoded);
@@ -432,9 +435,9 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-slate-950/85 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[92vh] animate-in zoom-in-95">
+      <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[94vh] animate-in zoom-in-95">
         {/* Header */}
-        <div className="px-4 py-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-900 text-white shrink-0">
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900 text-white shrink-0">
           <div className="flex items-center space-x-2.5">
             <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
               <MapPin className="w-4 h-4" />
@@ -524,7 +527,7 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
                 ) : (
                   <span className="text-[11px] font-bold text-emerald-400 flex items-center space-x-1">
                     <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Camera nhạy tức thì</span>
+                    <span>Camera 1x nét căng</span>
                   </span>
                 )}
 
@@ -571,13 +574,13 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
                 </div>
               </div>
 
-              {/* Viewport Frame */}
+              {/* Viewport Frame with Natural Aspect Ratio (No Squishing Distortion) */}
               <div
                 onClick={handleManualRefocus}
-                className="w-full max-w-[340px] aspect-square rounded-2xl overflow-hidden bg-black border-2 border-emerald-500/60 relative shadow-inner cursor-crosshair group flex items-center justify-center min-h-[260px] sm:min-h-[280px]"
+                className="w-full max-w-[340px] rounded-2xl overflow-hidden bg-black border-2 border-emerald-500/60 relative shadow-inner cursor-crosshair group flex items-center justify-center min-h-[280px] sm:min-h-[320px]"
                 title="Chạm màn hình để lấy lại nét"
               >
-                <div id={qrContainerIdRef.current} className="w-full h-full min-h-[260px] sm:min-h-[280px]" />
+                <div id={qrContainerIdRef.current} className="w-full min-h-[280px] sm:min-h-[320px] flex items-center justify-center" />
 
                 {/* Reticle Target Frame */}
                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
