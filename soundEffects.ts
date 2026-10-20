@@ -97,6 +97,13 @@ class SoundEffectsService {
   }
 
   /**
+   * Chuông êm dịu khi nhận diện thành công mã QR kệ
+   */
+  public playSuccessChime(): void {
+    this.playSuccessTingTing();
+  }
+
+  /**
    * È - è - è! (Âm thanh cảnh báo lỗi 3 tiếng tút trầm, dứt khoát)
    */
   public playErrorBuzzer(): void {

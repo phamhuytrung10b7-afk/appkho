@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { SearchableLocationSelect } from './SearchableLocationSelect';
+import { LocationQrScannerModal } from './LocationQrScannerModal';
 import { QrScannerModal, parseScannedQrPayload } from './QrScannerModal';
 import { ContainerImportPrintModal } from './ContainerImportPrintModal';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -225,11 +226,11 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
   } | null>(null);
   const [manualModalQtyInput, setManualModalQtyInput] = useState<number | ''>('');
   const [manualModalShelfInput, setManualModalShelfInput] = useState('');
-  const [isManualModalShelfCamActive, setIsManualModalShelfCamActive] = useState(false);
+  const [isManualModalShelfScannerOpen, setIsManualModalShelfScannerOpen] = useState(false);
+  const [isPartialLocScannerModalOpen, setIsPartialLocScannerModalOpen] = useState(false);
   const [manualPartScanInput, setManualPartScanInput] = useState('');
   const manualModalQtyInputRef = useRef<HTMLInputElement>(null);
   const manualModalShelfInputRef = useRef<HTMLInputElement>(null);
-  const manualModalShelfHtml5QrRef = useRef<Html5Qrcode | null>(null);
   const isManualStockInProcessingRef = useRef(false);
 
   const selectedPart = parts.find((p) => p.id === selectedPartId);
@@ -248,7 +249,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         qtyInputRef.current?.focus();
       }, 150);
     } else {
-      stopLocCamera();
+      setIsPartialLocScannerModalOpen(false);
       setLocScanGunInput('');
     }
   }, [partialImportModal?.isOpen]);
@@ -260,12 +261,12 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       setManualModalShelfInput('');
       setSelectedLocation('');
       setCustomLocation('');
-      setIsManualModalShelfCamActive(false);
+      setIsManualModalShelfScannerOpen(false);
       setTimeout(() => {
         manualModalQtyInputRef.current?.focus();
       }, 150);
     } else {
-      stopManualModalShelfCamera();
+      setIsManualModalShelfScannerOpen(false);
       setManualModalShelfInput('');
     }
   }, [manualStockInModal?.isOpen]);
@@ -370,12 +371,10 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       const remaining = partialImportModal.originalQty - partialImportModal.alreadyImported;
 
       if (!actualQty || actualQty <= 0) {
-        soundEffects.playErrorBuzzer();
-        setErrorModal({
-          isOpen: true,
-          title: '⚠️ THIẾU SỐ LƯỢNG NHẬP KHO',
-          message: 'Vui lòng nhập Số Lượng thực tế cần nhập trước khi quét mã QR Kệ!',
-        });
+        soundEffects.playSuccessChime();
+        setTimeout(() => {
+          qtyInputRef.current?.focus();
+        }, 100);
         return;
       }
 
@@ -394,54 +393,12 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     }
   };
 
-  const startLocCamera = async () => {
-    setIsLocScannerActive(true);
-    setLocScannerError(null);
-
-    setTimeout(async () => {
-      try {
-        const html5QrCode = new Html5Qrcode('loc-qr-reader-container');
-        locHtml5QrRef.current = html5QrCode;
-
-        let hasHandledLocFrame = false;
-
-        await html5QrCode.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 220, height: 220 } },
-          (decodedText) => {
-            if (hasHandledLocFrame) return;
-            hasHandledLocFrame = true;
-
-            if (html5QrCode.isScanning) {
-              html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
-            }
-            setIsLocScannerActive(false);
-            handleLocScanResult(decodedText);
-          },
-          () => {}
-        );
-
-        // Ensure iOS Safari plays inline and doesn't freeze
-        const pollForLocVideo = () => {
-          const videoEl = document.querySelector('#loc-qr-reader-container video') as HTMLVideoElement;
-          if (videoEl) {
-            setupVideoElementAttributes(videoEl);
-          } else if (html5QrCode.isScanning) {
-            requestAnimationFrame(pollForLocVideo);
-          }
-        };
-        pollForLocVideo();
-      } catch {
-        setLocScannerError('Không mở được camera trực tiếp. Vui lòng dùng súng quét USB/Bluetooth hoặc chọn vị trí kệ trong danh sách.');
-      }
-    }, 120);
+  const startLocCamera = () => {
+    setIsPartialLocScannerModalOpen(true);
   };
 
   const stopLocCamera = () => {
-    if (locHtml5QrRef.current && locHtml5QrRef.current.isScanning) {
-      locHtml5QrRef.current.stop().then(() => locHtml5QrRef.current?.clear()).catch(() => {});
-    }
-    setIsLocScannerActive(false);
+    setIsPartialLocScannerModalOpen(false);
   };
 
   const openManualStockInModal = (part: Part, contNumber?: string, tagId?: string) => {
@@ -515,22 +472,21 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
       return;
     }
 
+    // Immediately record the valid shelf
+    setSelectedLocation(foundLoc.name);
+    setManualModalShelfInput(foundLoc.name);
+
     const numQty = typeof manualModalQtyInput === 'number' ? manualModalQtyInput : parseInt(String(manualModalQtyInput), 10);
     if (!numQty || numQty <= 0) {
       isManualStockInProcessingRef.current = false;
-      soundEffects.playErrorBuzzer();
-      setErrorModal({
-        isOpen: true,
-        title: '⚠️ BẮT BUỘC ĐIỀN SỐ LƯỢNG',
-        message: 'Vui lòng nhập Số Lượng thực tế cần nhập trước khi quét mã kệ để hoàn tất!',
-      });
+      soundEffects.playSuccessChime();
       setTimeout(() => {
         manualModalQtyInputRef.current?.focus();
       }, 100);
       return;
     }
 
-    // Lock to prevent subsequent video frames from double submitting
+    // Lock to prevent subsequent triggers from double submitting
     isManualStockInProcessingRef.current = true;
 
     // Auto complete stock in immediately!
@@ -640,73 +596,12 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
     }
   };
 
-  const startManualModalShelfCamera = async () => {
-    setIsManualModalShelfCamActive(true);
-    setTimeout(async () => {
-      try {
-        const html5QrCode = new Html5Qrcode('manual-modal-shelf-qr-reader');
-        manualModalShelfHtml5QrRef.current = html5QrCode;
-
-        let hasHandledShelfFrame = false;
-
-        await html5QrCode.start(
-          { facingMode: 'environment' },
-          { fps: 15, qrbox: { width: 220, height: 220 } },
-          (decodedText) => {
-            // Guard against multiple frames firing before stop() resolves
-            if (hasHandledShelfFrame || isManualStockInProcessingRef.current) return;
-            hasHandledShelfFrame = true;
-            isManualStockInProcessingRef.current = true;
-
-            // Stop camera first safely
-            stopManualModalShelfCamera();
-
-            // Execute shelf scan processing
-            handleManualModalShelfScan(decodedText);
-          },
-          () => {}
-        );
-
-        // Ensure iOS Safari plays inline and doesn't freeze
-        const pollForShelfVideo = () => {
-          const videoEl = document.querySelector('#manual-modal-shelf-qr-reader video') as HTMLVideoElement;
-          if (videoEl) {
-            setupVideoElementAttributes(videoEl);
-          } else if (html5QrCode.isScanning) {
-            requestAnimationFrame(pollForShelfVideo);
-          }
-        };
-        pollForShelfVideo();
-      } catch (_) {
-        setIsManualModalShelfCamActive(false);
-      }
-    }, 120);
+  const startManualModalShelfCamera = () => {
+    setIsManualModalShelfScannerOpen(true);
   };
 
   const stopManualModalShelfCamera = () => {
-    try {
-      const qrInstance = manualModalShelfHtml5QrRef.current;
-      manualModalShelfHtml5QrRef.current = null;
-      if (qrInstance) {
-        if (qrInstance.isScanning) {
-          qrInstance
-            .stop()
-            .then(() => {
-              try {
-                qrInstance.clear();
-              } catch {}
-            })
-            .catch(() => {});
-        } else {
-          try {
-            qrInstance.clear();
-          } catch {}
-        }
-      }
-    } catch (_) {
-    } finally {
-      setIsManualModalShelfCamActive(false);
-    }
+    setIsManualModalShelfScannerOpen(false);
   };
 
   // Submit handler for partial / batch import popup modal
@@ -1288,42 +1183,14 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                   
                   <button
                     type="button"
-                    onClick={() => (isLocScannerActive ? stopLocCamera() : startLocCamera())}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center space-x-1 cursor-pointer ${
-                      isLocScannerActive
-                        ? 'bg-red-500 text-white hover:bg-red-600'
-                        : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs'
-                    }`}
+                    onClick={() => setIsPartialLocScannerModalOpen(true)}
+                    className="px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer bg-emerald-700 hover:bg-emerald-800 text-white shadow-xs"
+                    title="Mở camera điện thoại quét mã QR vị trí kệ"
                   >
                     <Camera className="w-3.5 h-3.5" />
-                    <span>{isLocScannerActive ? 'Tắt Camera Kệ' : 'Quét Camera Kệ'}</span>
+                    <span>Quét Camera Kệ</span>
                   </button>
                 </div>
-
-                {/* Inline Camera for Shelf QR Scanning */}
-                {isLocScannerActive && (
-                  <div className="p-3 bg-slate-900 rounded-xl space-y-2 text-white animate-in zoom-in-95">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold flex items-center text-emerald-400">
-                        <MapPin className="w-3.5 h-3.5 mr-1 animate-bounce" />
-                        Đưa mã QR trên Kệ vào ô vuông bên dưới
-                      </span>
-                      <button
-                        type="button"
-                        onClick={stopLocCamera}
-                        className="text-slate-400 hover:text-white"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <div id="loc-qr-reader-container" className="overflow-hidden rounded-lg min-h-[180px] bg-black" />
-
-                    {locScannerError && (
-                      <p className="text-[11px] text-red-400 font-medium">{locScannerError}</p>
-                    )}
-                  </div>
-                )}
 
                 {/* PRIMARY: Handheld barcode gun input for Rack QR */}
                 <div className="space-y-1">
@@ -1400,6 +1267,8 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                     customValue={customLocation}
                     onCustomChange={(val) => setCustomLocation(val)}
                     theme="emerald"
+                    hideScanButton={true}
+                    hideQuickChips={true}
                   />
                 </div>
               </div>
@@ -1581,40 +1450,17 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                     <span>2. Vị trí / Kệ cất giữ linh kiện *</span>
                   </label>
                   
+                  {/* Single dedicated shelf QR camera button (Tối ưu cực nhạy cho iOS & Android) */}
                   <button
                     type="button"
-                    onClick={() => (isManualModalShelfCamActive ? stopManualModalShelfCamera() : startManualModalShelfCamera())}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center space-x-1.5 cursor-pointer shadow-xs ${
-                      isManualModalShelfCamActive
-                        ? 'bg-rose-600 text-white hover:bg-rose-700'
-                        : 'bg-emerald-700 text-white hover:bg-emerald-800'
-                    }`}
+                    onClick={() => setIsManualModalShelfScannerOpen(true)}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-black bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white transition-all flex items-center space-x-1.5 cursor-pointer shadow-xs"
+                    title="Mở camera điện thoại quét mã QR vị trí kệ kho"
                   >
                     <Camera className="w-3.5 h-3.5" />
-                    <span>{isManualModalShelfCamActive ? 'Tắt Camera Kệ' : 'Quét Camera Kệ'}</span>
+                    <span>Quét Camera Kệ</span>
                   </button>
                 </div>
-
-                {/* Inline Camera for Shelf QR Scanning */}
-                {isManualModalShelfCamActive && (
-                  <div className="p-3 bg-slate-900 rounded-xl space-y-2 text-white animate-in zoom-in-95 border-2 border-emerald-400">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold flex items-center text-emerald-400">
-                        <MapPin className="w-3.5 h-3.5 mr-1 animate-bounce" />
-                        Đưa mã QR trên Kệ vào ô vuông bên dưới
-                      </span>
-                      <button
-                        type="button"
-                        onClick={stopManualModalShelfCamera}
-                        className="text-slate-400 hover:text-white p-1 cursor-pointer"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <div id="manual-modal-shelf-qr-reader" className="overflow-hidden rounded-lg min-h-[180px] bg-black" />
-                  </div>
-                )}
 
                 {/* PRIMARY: Handheld barcode gun input for Rack QR */}
                 <div className="space-y-1">
@@ -1660,6 +1506,7 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                       type="button"
                       onClick={() => {
                         setSelectedLocation('');
+                        setManualModalShelfInput('');
                         manualModalShelfInputRef.current?.focus();
                       }}
                       className="text-[11px] text-slate-500 hover:text-slate-800 underline font-normal shrink-0 ml-2 cursor-pointer"
@@ -1679,36 +1526,44 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
                     value={selectedLocation}
                     onChange={(val) => {
                       setSelectedLocation(val);
+                      setManualModalShelfInput(val);
                     }}
                     placeholder="-- Chọn kệ trong sơ đồ kho (A01, A02, A03...) --"
                     allowCustom={false}
                     theme="emerald"
+                    hideScanButton={true}
+                    hideQuickChips={true}
                   />
                 </div>
 
-                {/* Quick Shelf Chips */}
+                {/* Quick Shelf Chips (Duy nhất 1 hàng kệ nhanh tiện lợi) */}
                 <div className="flex items-center gap-1.5 flex-wrap pt-1">
-                  <span className="text-[10px] text-slate-400 font-medium">Kệ nhanh:</span>
-                  {(settings.locations || []).slice(0, 8).map((loc) => (
-                    <button
-                      key={loc.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedLocation(loc.name);
-                        const numQty = typeof manualModalQtyInput === 'number' ? manualModalQtyInput : parseInt(String(manualModalQtyInput), 10);
-                        if (numQty && numQty > 0) {
-                          handleManualModalShelfScan(loc.name);
-                        }
-                      }}
-                      className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-all cursor-pointer ${
-                        selectedLocation === loc.name
-                          ? 'bg-emerald-600 text-white border-emerald-700'
-                          : 'bg-white text-slate-700 hover:bg-emerald-50 border-slate-200'
-                      }`}
-                    >
-                      {loc.name.split('(')[0].trim()}
-                    </button>
-                  ))}
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Kệ nhanh:</span>
+                  {(settings.locations || []).slice(0, 10).map((loc) => {
+                    const shortName = loc.name.split('(')[0].trim();
+                    const isSelected = selectedLocation === loc.name || selectedLocation === shortName;
+                    return (
+                      <button
+                        key={loc.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedLocation(loc.name);
+                          setManualModalShelfInput(loc.name);
+                          const numQty = typeof manualModalQtyInput === 'number' ? manualModalQtyInput : parseInt(String(manualModalQtyInput), 10);
+                          if (numQty && numQty > 0) {
+                            handleManualModalShelfScan(loc.name);
+                          }
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                            : 'bg-white text-slate-700 hover:bg-emerald-50 border-slate-200 shadow-2xs'
+                        }`}
+                      >
+                        {shortName}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2126,6 +1981,42 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
         settings={settings}
         onRefreshParts={onSuccess}
       />
+
+      {/* Location QR Scanner Modal for Tab 2 Manual Stock In Modal (iOS & Android Optimized) */}
+      {isManualModalShelfScannerOpen && (
+        <LocationQrScannerModal
+          isOpen={isManualModalShelfScannerOpen}
+          onClose={() => setIsManualModalShelfScannerOpen(false)}
+          locations={settings.locations || []}
+          onSelectLocation={(locName) => {
+            setIsManualModalShelfScannerOpen(false);
+            handleManualModalShelfScan(locName);
+          }}
+          onLocationDetected={(matchedLoc) => {
+            setIsManualModalShelfScannerOpen(false);
+            handleManualModalShelfScan(matchedLoc.name);
+          }}
+          title="Quét Mã QR Vị Trí Kệ Kho"
+        />
+      )}
+
+      {/* Location QR Scanner Modal for Tab 1 Partial Import Modal */}
+      {isPartialLocScannerModalOpen && (
+        <LocationQrScannerModal
+          isOpen={isPartialLocScannerModalOpen}
+          onClose={() => setIsPartialLocScannerModalOpen(false)}
+          locations={settings.locations || []}
+          onSelectLocation={(locName) => {
+            setIsPartialLocScannerModalOpen(false);
+            handleLocScanResult(locName);
+          }}
+          onLocationDetected={(matchedLoc) => {
+            setIsPartialLocScannerModalOpen(false);
+            handleLocScanResult(matchedLoc.name);
+          }}
+          title="Quét Mã QR Vị Trí Kệ (Nhập Hàng)"
+        />
+      )}
 
       {/* ERROR POPUP MODAL */}
       {errorModal && errorModal.isOpen && (

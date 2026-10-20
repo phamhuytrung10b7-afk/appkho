@@ -21,6 +21,9 @@ import {
   startNativeBarcodeDetectorLoop,
   parseCameraError,
   STANDARD_SCANNER_FORMATS,
+  FAST_SCANNER_FORMATS,
+  isIOSDevice,
+  setupVideoElementAttributes,
   CameraDeviceInfo,
 } from './cameraScannerUtils';
 import { CameraPermissionErrorCard } from './CameraPermissionErrorCard';
@@ -131,18 +134,22 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
 
   const handleScanSuccess = (decodedText: string) => {
     if (!isScanningActiveRef.current) return;
-    const raw = decodedText.trim();
+    const raw = (decodedText || '').trim();
     if (!raw) return;
 
     let shelfName = raw;
-    if (raw.startsWith('LOC:')) {
-      shelfName = raw.replace('LOC:', '').trim();
-    } else if (raw.startsWith('{') && raw.endsWith('}')) {
+    if (raw.startsWith('{') && raw.endsWith('}')) {
       try {
         const parsed = JSON.parse(raw);
-        shelfName = parsed.location || parsed.name || parsed.shelf || raw;
+        shelfName = String(parsed.location || parsed.name || parsed.shelf || parsed.code || raw).trim();
       } catch {}
+    } else if (raw.includes('|')) {
+      const parts = raw.split('|');
+      shelfName = parts[parts.length - 1].trim();
     }
+
+    // Strip common shelf prefixes
+    shelfName = shelfName.replace(/^(loc|location|shelf|rack|ke|kệ|kho|vitri|vị trí|khoang):\s*/i, '').trim();
 
     if (excludeLocation && shelfName.toLowerCase() === excludeLocation.toLowerCase()) {
       setCameraErrorDetails({
@@ -179,14 +186,17 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
         }
       } catch (_) {}
       onClose();
-    }, 500);
+    }, 400);
   };
 
   const initCamera = async () => {
     setCameraErrorDetails(null);
+    const isIOS = isIOSDevice();
+
     try {
-      // 1. Probe permission with rear camera
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // 1. Probe permission on Android/Desktop to avoid device id wipe.
+      // SKIP on iOS Safari to prevent media stream locking and permission failures!
+      if (!isIOS && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           const testStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: { ideal: 'environment' } },
@@ -199,12 +209,17 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
         }
       }
 
+      // 2. Query available cameras
       const rawDevices = await Html5Qrcode.getCameras().catch(() => []);
       const sorted = sortAndFilterCameras(rawDevices);
       setCameras(sorted);
 
-      const chosenId = sorted.length > 0 ? sorted[0].id : undefined;
-      if (chosenId) {
+      // On iOS: DO NOT select a specific camera deviceId!
+      // iOS Safari will default to ultra-wide (0.5x) or telephoto with fixed focus if deviceId is given.
+      // Always let iOS AVFoundation pick primary autofocus rear camera via { facingMode: 'environment' }.
+      let chosenId: string | undefined = undefined;
+      if (!isIOS && sorted.length > 0) {
+        chosenId = sorted[0].id;
         setSelectedCameraId(chosenId);
       }
 
@@ -216,37 +231,53 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
   };
 
   const startScanner = async (cameraId?: string) => {
+    const isIOS = isIOSDevice();
+
     try {
       await stopCamera();
       setIsCameraActive(true);
       isScanningActiveRef.current = true;
 
-      const html5QrCode = new Html5Qrcode(qrContainerId);
+      // Ensure DOM element is mounted
+      let el = document.getElementById(qrContainerId);
+      if (!el) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        el = document.getElementById(qrContainerId);
+      }
+
+      // Formats: Fast 3 formats on iOS to avoid CPU choking ZXing; Full formats on Android
+      const formatsToUse = isIOS ? FAST_SCANNER_FORMATS : STANDARD_SCANNER_FORMATS;
+      const targetFps = isIOS ? 15 : 30;
+
+      const html5QrCode = new Html5Qrcode(qrContainerId, {
+        formatsToSupport: formatsToUse,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: !isIOS },
+        verbose: false,
+      });
       html5QrcodeRef.current = html5QrCode;
 
-      const videoConstraints = getOptimizedVideoConstraints(cameraId);
+      const videoConstraints = getOptimizedVideoConstraints(isIOS ? undefined : cameraId);
 
       const qrConfig = {
-        fps: 30,
+        fps: targetFps,
         qrbox: (w: number, h: number) => {
           const minDim = Math.min(w, h);
-          const size = Math.max(Math.floor(minDim * 0.82), 220);
+          const size = Math.max(Math.floor(minDim * 0.85), 220);
           return { width: size, height: size };
         },
         videoConstraints,
         disableFlip: false,
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        formatsToSupport: STANDARD_SCANNER_FORMATS,
       };
 
-      if (cameraId) {
-        try {
-          await html5QrCode.start(cameraId, qrConfig, handleScanSuccess, () => {});
-        } catch (camErr) {
-          await html5QrCode.start({ facingMode: 'environment' }, qrConfig, handleScanSuccess, () => {});
-        }
-      } else {
-        await html5QrCode.start({ facingMode: 'environment' }, qrConfig, handleScanSuccess, () => {});
+      // Camera config: Always facingMode: 'environment' on iOS
+      const cameraConfig = (!isIOS && cameraId) ? cameraId : { facingMode: 'environment' };
+
+      await html5QrCode.start(cameraConfig, qrConfig, handleScanSuccess, () => {});
+
+      // Setup iOS video element inline attributes
+      const videoEl = document.querySelector(`#${qrContainerId} video`) as HTMLVideoElement;
+      if (videoEl) {
+        setupVideoElementAttributes(videoEl);
       }
 
       // Apply focus & torch capabilities
@@ -261,25 +292,27 @@ export const LocationQrScannerModal: React.FC<LocationQrScannerModalProps> = ({
         }
       }
 
-      // Native hardware BarcodeDetector loop for Android Chrome
-      const pollForVideoEl = () => {
-        const videoEl = document.querySelector(`#${qrContainerId} video`) as HTMLVideoElement;
-        if (!videoEl || videoEl.readyState < 2) {
-          if (isScanningActiveRef.current) {
-            requestAnimationFrame(pollForVideoEl);
+      // Native hardware BarcodeDetector loop for Android Chrome (instant GPU decode)
+      if (!isIOS) {
+        const pollForVideoEl = () => {
+          const vEl = document.querySelector(`#${qrContainerId} video`) as HTMLVideoElement;
+          if (!vEl || vEl.readyState < 2) {
+            if (isScanningActiveRef.current) {
+              requestAnimationFrame(pollForVideoEl);
+            }
+            return;
           }
-          return;
-        }
 
-        stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
-          videoEl,
-          (decoded) => {
-            handleScanSuccess(decoded);
-          },
-          () => isScanningActiveRef.current
-        );
-      };
-      pollForVideoEl();
+          stopNativeDetectorRef.current = startNativeBarcodeDetectorLoop(
+            vEl,
+            (decoded) => {
+              handleScanSuccess(decoded);
+            },
+            () => isScanningActiveRef.current
+          );
+        };
+        pollForVideoEl();
+      }
 
     } catch (err: any) {
       const parsed = parseCameraError(err);

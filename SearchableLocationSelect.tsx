@@ -23,6 +23,8 @@ interface SearchableLocationSelectProps {
   id?: string;
   theme?: 'emerald' | 'blue' | 'indigo';
   disabled?: boolean;
+  hideScanButton?: boolean;
+  hideQuickChips?: boolean;
 }
 
 export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> = ({
@@ -38,6 +40,8 @@ export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> =
   id,
   theme = 'emerald',
   disabled = false,
+  hideScanButton = false,
+  hideQuickChips = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -280,7 +284,7 @@ export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> =
                 <X className="w-4 h-4" />
               </button>
             </>
-          ) : (
+          ) : !hideScanButton ? (
             <button
               type="button"
               onClick={(e) => {
@@ -293,7 +297,7 @@ export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> =
               <QrCode className="w-3.5 h-3.5" />
               <span>Quét QR Kệ</span>
             </button>
-          )}
+          ) : null}
 
           <ChevronDown
             className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${
@@ -304,7 +308,7 @@ export const SearchableLocationSelect: React.FC<SearchableLocationSelectProps> =
       </div>
 
       {/* Quick Shelf Pills (Fast 1-tap select when not expanded) */}
-      {!isOpen && quickChips.length > 0 && !value && (
+      {!isOpen && !hideQuickChips && quickChips.length > 0 && !value && (
         <div className="mt-1.5 flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
           <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 shrink-0 flex items-center space-x-1">
             <Sparkles className="w-3 h-3 text-amber-500" />
