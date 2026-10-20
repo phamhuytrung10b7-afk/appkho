@@ -67,9 +67,14 @@ export function findLocationMatch(
   scannedText: string,
   locations: WarehouseLocation[] = []
 ): WarehouseLocation | undefined {
-  if (!scannedText || !scannedText.trim()) return undefined;
+  const cleanText = (scannedText || '').trim();
+  if (!cleanText) return undefined;
+  let raw = cleanText;
 
-  let raw = scannedText.trim();
+  // Strip surrounding quotes if any
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    raw = raw.slice(1, -1).trim();
+  }
 
   // Parse JSON QR codes if any
   if (raw.startsWith('{') && raw.endsWith('}')) {
@@ -79,13 +84,14 @@ export function findLocationMatch(
     } catch {}
   }
 
-  // Strip common label prefixes like "LOC: A01", "LOCATION: A01", "KỆ: A01"
-  raw = raw.replace(/^(loc|location|shelf|rack|ke|kệ|kho|vitri|vị trí|khoang):\s*/i, '').trim();
-
+  // Strip pipe formats
   if (raw.includes('|')) {
     const parts = raw.split('|');
     raw = parts[parts.length - 1].trim();
   }
+
+  // Strip common label prefixes like "LOC: A01", "LOCATION: A01", "KỆ A01", "LOC-A01", "SHELF: A01"
+  raw = raw.replace(/^(?:loc|location|shelf|rack|ke|kệ|kho|vitri|vị\s*trí|khoang|khu|dãy|day|tủ|tu)[\s:\-_.]+\s*/i, '').trim();
 
   // 1. Exact case-insensitive match on name or id
   let found = locations.find(
@@ -1992,10 +1998,6 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
             setIsManualModalShelfScannerOpen(false);
             handleManualModalShelfScan(locName);
           }}
-          onLocationDetected={(matchedLoc) => {
-            setIsManualModalShelfScannerOpen(false);
-            handleManualModalShelfScan(matchedLoc.name);
-          }}
           title="Quét Mã QR Vị Trí Kệ Kho"
         />
       )}
@@ -2009,10 +2011,6 @@ export const StockInView: React.FC<StockInViewProps> = ({ parts, settings, onSuc
           onSelectLocation={(locName) => {
             setIsPartialLocScannerModalOpen(false);
             handleLocScanResult(locName);
-          }}
-          onLocationDetected={(matchedLoc) => {
-            setIsPartialLocScannerModalOpen(false);
-            handleLocScanResult(matchedLoc.name);
           }}
           title="Quét Mã QR Vị Trí Kệ (Nhập Hàng)"
         />
