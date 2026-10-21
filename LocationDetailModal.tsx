@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Part, WarehouseLocation, AppSettings } from './types';
 import { storageService } from './storage';
 import { LocationTransferModal } from './LocationTransferModal';
+import { smartFuzzySearch } from './fuzzySearch';
 import {
   MapPin,
   X,
@@ -14,6 +15,7 @@ import {
   AlertCircle,
   Info,
   Boxes,
+  Search,
 } from 'lucide-react';
 
 interface LocationDetailModalProps {
@@ -43,12 +45,46 @@ export const LocationDetailModal: React.FC<LocationDetailModalProps> = ({
   } | null>(null);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  if (!isOpen || !location) return null;
+  // Reset search filter when location changes or modal re-opens
+  useEffect(() => {
+    if (isOpen) {
+      setSearchQuery('');
+    }
+  }, [isOpen, location?.name]);
 
-  const partsAtLocation = storageService.getPartsAtLocation(parts, location.name);
-  const totalUnitsOnShelf = partsAtLocation.reduce((sum, item) => sum + item.locationQty, 0);
+  // Calculate parts at location unconditionally before any early return
+  const partsAtLocation = useMemo<{ part: Part; locationQty: number }[]>(() => {
+    if (!location) return [];
+    return storageService.getPartsAtLocation(parts, location.name);
+  }, [parts, location?.name]);
+
+  const totalUnitsOnShelf = useMemo(() => {
+    return partsAtLocation.reduce((sum, item) => sum + item.locationQty, 0);
+  }, [partsAtLocation]);
+
   const isOccupied = partsAtLocation.length > 0;
+
+  // Filtered parts using Smart Fuzzy Search
+  const filteredParts = useMemo(() => {
+    if (!searchQuery.trim()) return partsAtLocation;
+    return smartFuzzySearch<{ part: Part; locationQty: number }>(
+      partsAtLocation,
+      (entry: { part: Part; locationQty: number }) => [
+        entry.part.code,
+        entry.part.name,
+        entry.part.description || '',
+        entry.part.barcode || '',
+        entry.part.unit || '',
+        entry.part.note || '',
+      ],
+      searchQuery
+    );
+  }, [partsAtLocation, searchQuery]);
+
+  // Early return after all Hooks are called
+  if (!isOpen || !location) return null;
 
   const handleTransferComplete = (updatedPart: Part) => {
     setToastMessage(
@@ -141,6 +177,32 @@ export const LocationDetailModal: React.FC<LocationDetailModalProps> = ({
             </div>
           </div>
 
+          {/* Smart Fuzzy Search Bar */}
+          {partsAtLocation.length > 0 && (
+            <div className="px-4 py-3 bg-slate-50/70 border-b border-slate-200 shrink-0">
+              <div className="relative">
+                <Search className="w-4 h-4 text-blue-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Tìm kiếm thông minh (Mã LK, Tên, quy cách - gõ tắt, không dấu)..."
+                  className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 rounded-xl text-xs font-medium text-slate-900 placeholder:text-slate-400 outline-none transition-all shadow-2xs"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full hover:bg-slate-100 cursor-pointer"
+                    title="Xóa tìm kiếm"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Parts List */}
           <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-3">
             <div className="flex items-center justify-between">
@@ -148,6 +210,11 @@ export const LocationDetailModal: React.FC<LocationDetailModalProps> = ({
                 <Boxes className="w-3.5 h-3.5 text-blue-600" />
                 <span>Chi tiết linh kiện lưu trữ ({partsAtLocation.length})</span>
               </h4>
+              {searchQuery.trim() && (
+                <span className="text-[11px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                  Khớp {filteredParts.length}/{partsAtLocation.length} linh kiện
+                </span>
+              )}
             </div>
 
             {partsAtLocation.length === 0 ? (
@@ -160,9 +227,26 @@ export const LocationDetailModal: React.FC<LocationDetailModalProps> = ({
                   Chưa có linh kiện nào được phân bổ vào kệ này. Bạn có thể nhập kho hoặc điều chuyển linh kiện từ kệ khác sang đây.
                 </p>
               </div>
+            ) : filteredParts.length === 0 ? (
+              <div className="py-10 px-4 text-center bg-slate-50/80 rounded-2xl border-2 border-dashed border-slate-200 space-y-2">
+                <Search className="w-8 h-8 text-slate-300 mx-auto" />
+                <p className="text-xs font-bold text-slate-700">
+                  Không tìm thấy linh kiện nào khớp với từ khóa "{searchQuery}"
+                </p>
+                <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                  Vui lòng thử tìm bằng từ khóa khác hoặc gõ một phần mã linh kiện (hệ thống hỗ trợ tìm kiếm không dấu).
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="mt-2 px-3 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                >
+                  Xóa bộ lọc tìm kiếm
+                </button>
+              </div>
             ) : (
               <div className="space-y-2.5">
-                {partsAtLocation.map(({ part, locationQty }) => (
+                {filteredParts.map(({ part, locationQty }) => (
                   <div
                     key={part.id}
                     className="p-3.5 bg-white hover:bg-blue-50/30 rounded-2xl border border-slate-200 hover:border-blue-300 shadow-2xs transition-all space-y-2.5"

@@ -3151,7 +3151,6 @@ export const storageService = {
         },
       ];
       localStorage.setItem('thekho_users_v1', JSON.stringify(defaultUsers));
-      supabaseKeyStore.set('thekho_users_v1', defaultUsers);
       return defaultUsers;
     }
     try {
@@ -3180,6 +3179,28 @@ export const storageService = {
   saveUsers(users: UserAccount[]): void {
     localStorage.setItem('thekho_users_v1', JSON.stringify(users));
     supabaseKeyStore.set('thekho_users_v1', users);
+  },
+
+  getUserById(id: string): UserAccount | undefined {
+    return this.getUsers().find((u) => u.id === id);
+  },
+
+  getUserByUsername(username: string): UserAccount | undefined {
+    const clean = username.trim().toLowerCase();
+    return this.getUsers().find((u) => u.username.toLowerCase() === clean);
+  },
+
+  async fetchUsersFromCloud(): Promise<UserAccount[]> {
+    try {
+      const remoteUsers = await supabaseKeyStore.get<UserAccount[]>('thekho_users_v1', { forceFresh: true });
+      if (remoteUsers && Array.isArray(remoteUsers) && remoteUsers.length > 0) {
+        localStorage.setItem('thekho_users_v1', JSON.stringify(remoteUsers));
+        return remoteUsers;
+      }
+    } catch {
+      // safe fallback
+    }
+    return this.getUsers();
   },
 
   addUser(params: Omit<UserAccount, 'id' | 'createdAt'>): UserAccount {

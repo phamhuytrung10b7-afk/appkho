@@ -85,24 +85,41 @@ export function getActiveSupabaseClient(): { client: SupabaseClient | null; isCo
 
 export const isSupabaseConfigured = true;
 
+// Chainable safe fallback builder when Supabase client is temporarily uninitialized
+function createSafeDummyChain(): any {
+  const dummyFn: any = (..._args: any[]) => createSafeDummyChain();
+  return new Proxy(dummyFn, {
+    get(_target, prop) {
+      if (prop === 'then') {
+        return (resolve: any) => resolve({ data: null, error: null, count: 0 });
+      }
+      if (prop === 'catch') {
+        return (_reject: any) => Promise.resolve({ data: null, error: null, count: 0 });
+      }
+      return createSafeDummyChain();
+    },
+    apply() {
+      return createSafeDummyChain();
+    },
+  });
+}
+
 // Dynamic Proxy for supabase to prevent null client reference errors at app bootstrap
 export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
   get(_target, prop) {
-    const active = getActiveSupabaseClient().client;
-    if (!active) {
-      if (prop === 'from') {
-        return () => ({
-          select: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
-          insert: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
-          update: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
-          delete: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
-          upsert: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
-        });
-      }
-      return undefined;
+    const { client } = getActiveSupabaseClient();
+    if (client) {
+      const val = (client as any)[prop];
+      return typeof val === 'function' ? val.bind(client) : val;
     }
-    const val = (active as any)[prop];
-    return typeof val === 'function' ? val.bind(active) : val;
+    return createSafeDummyChain();
+  },
+  apply(_target, _thisArg, args) {
+    const { client } = getActiveSupabaseClient();
+    if (client && typeof (client as any) === 'function') {
+      return (client as any)(...args);
+    }
+    return createSafeDummyChain();
   },
 }) as SupabaseClient;
 
