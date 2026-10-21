@@ -143,6 +143,17 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         notes: 'Xuất kho qua quét mã QR tự động',
       });
 
+      // Bắt buộc cập nhật lại currentStock và danh sách locations của linh kiện thông qua storageService.updatePart
+      const latestPart = storageService.getPartById(partToOut.id) || storageService.getPartByCode(partToOut.code) || partToOut;
+      const partLocs = storageService.getPartLocations(latestPart);
+      const activeLocs = partLocs.filter((l) => l.quantity > 0);
+      const newLocSummary = storageService.formatPartLocationSummary(activeLocs);
+      storageService.updatePart(latestPart.id, {
+        currentStock: tx.stockAfter,
+        locations: activeLocs,
+        location: newLocSummary,
+      });
+
       const nowTimeStr = new Date().toLocaleTimeString('vi-VN');
       setAutoScanHistory((prev) => [
         {
@@ -214,6 +225,19 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         notes: notes.trim(),
         locationId: selectedOutLocation || undefined,
       });
+
+      // Bắt buộc cập nhật lại currentStock và danh sách locations của linh kiện thông qua storageService.updatePart
+      const latestPart = storageService.getPartById(selectedPartId) || selectedPart;
+      if (latestPart) {
+        const partLocs = storageService.getPartLocations(latestPart);
+        const activeLocs = partLocs.filter((l) => l.quantity > 0);
+        const newLocSummary = storageService.formatPartLocationSummary(activeLocs);
+        storageService.updatePart(latestPart.id, {
+          currentStock: tx.stockAfter,
+          locations: activeLocs,
+          location: newLocSummary,
+        });
+      }
 
       setMessage({
         type: 'success',
@@ -557,7 +581,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                             fullFifoLocStr = `${locationName} (${fifoNext.contNumber})`;
                           }
 
-                          storageService.addStockOut({
+                          const tx = storageService.addStockOut({
                             partId: sysPart.id,
                             quantity: neededQty,
                             date: new Date(dateTime).toISOString(),
@@ -569,6 +593,16 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                             voucherCode: bomVoucherCode,
                             voucherTitle: `Model BOM: ${selectedBom.name}`,
                             sourceBin: locationName,
+                          });
+
+                          const latestPart = storageService.getPartById(sysPart.id) || sysPart;
+                          const partLocs = storageService.getPartLocations(latestPart);
+                          const updatedActiveLocs = partLocs.filter((l) => l.quantity > 0);
+                          const newLocSummary = storageService.formatPartLocationSummary(updatedActiveLocs);
+                          storageService.updatePart(latestPart.id, {
+                            currentStock: tx.stockAfter,
+                            locations: updatedActiveLocs,
+                            location: newLocSummary,
                           });
 
                           printedItems.push({
@@ -1289,6 +1323,17 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               reasonOrPurpose: pPurpose,
               notes: `${pNotes} [📍 Kệ ${location}]`,
               locationId: location,
+            });
+
+            // Bắt buộc cập nhật lại currentStock và danh sách locations của linh kiện thông qua storageService.updatePart
+            const latestPart = storageService.getPartById(part.id) || storageService.getPartByCode(part.code) || part;
+            const partLocs = storageService.getPartLocations(latestPart);
+            const activeLocs = partLocs.filter((l) => l.quantity > 0);
+            const newLocSummary = storageService.formatPartLocationSummary(activeLocs);
+            storageService.updatePart(latestPart.id, {
+              currentStock: tx.stockAfter,
+              locations: activeLocs,
+              location: newLocSummary,
             });
 
             const nowTimeStr = new Date().toLocaleTimeString('vi-VN');

@@ -282,7 +282,6 @@ export function normalizeShelfKey(name: string | undefined | null): string {
 // Helper for location matching that handles accents, case, prefixes, and sub-compartments accurately
 export function isLocationMatch(locA: string | undefined | null, locB: string | undefined | null): boolean {
   if (!locA || !locB) return false;
-  if (!isRealShelfLocation(locA) || !isRealShelfLocation(locB)) return false;
 
   const a = locA.trim().toLowerCase();
   const b = locB.trim().toLowerCase();
@@ -292,6 +291,10 @@ export function isLocationMatch(locA: string | undefined | null, locB: string | 
   const cleanA = a.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
   const cleanB = b.replace(/\s*\([\d\.\,\s]+\)$/, '').trim();
   if (cleanA === cleanB) return true;
+
+  if (!isRealShelfLocation(cleanA) && !isRealShelfLocation(cleanB)) {
+    return cleanA === cleanB;
+  }
 
   const normA = normalizeShelfKey(cleanA);
   const normB = normalizeShelfKey(cleanB);
@@ -426,9 +429,13 @@ export const storageService = {
 
   updatePart(id: string, updatedData: Partial<Part>): Part {
     const parts = this.getParts();
-    const index = parts.findIndex((p) => p.id === id);
+    let index = parts.findIndex((p) => p.id === id);
+    if (index === -1) {
+      index = parts.findIndex((p) => p.code && p.code.trim().toLowerCase() === id.trim().toLowerCase());
+    }
     if (index === -1) throw new Error('Không tìm thấy linh kiện');
 
+    const realId = parts[index].id;
     const updatedPart: Part = {
       ...parts[index],
       ...updatedData,
@@ -436,16 +443,16 @@ export const storageService = {
     };
     parts[index] = updatedPart;
     this.saveParts(parts);
-    supabaseRelationalStore.updatePart(id, updatedData);
+    supabaseRelationalStore.updatePart(realId, updatedData);
     return updatedPart;
   },
 
   deletePart(id: string): void {
-    const parts = this.getParts().filter((p) => p.id !== id);
+    const parts = this.getParts().filter((p) => p.id !== id && p.code !== id);
     this.saveParts(parts);
 
     // Remove transactions for this part
-    const txs = this.getTransactions().filter((t) => t.partId !== id);
+    const txs = this.getTransactions().filter((t) => t.partId !== id && t.partCode !== id);
     this.saveTransactions(txs);
     supabaseRelationalStore.deletePart(id);
   },
@@ -490,21 +497,36 @@ export const storageService = {
     return batchExecuteNgTransaction(params);
   },
 
-
   // Get transactions for a specific part chronologically (ascending for bin card calculations)
-  getBinCardHistory(partId: string): Transaction[] {
-    const part = this.getPartById(partId);
-    const partCodeClean = part?.code?.trim().toLowerCase();
-    const txs = this.getTransactions().filter(
-      (t) =>
-        (t.partId === partId ||
-        (Boolean(partCodeClean) && Boolean(t.partCode) && t.partCode.trim().toLowerCase() === partCodeClean)) &&
-        // Pure NG warehouse operations (manual/excel import directly to NG, RTV or Scrap) do NOT affect the Main Warehouse bin card
-        // ONLY TRANSFER_TO_NG affects main warehouse stock!
+  // Logic lọc giao dịch linh hoạt: kiểm tra đồng thời cả partId, partCode và partName để không bị sót dữ liệu Thẻ kho
+  getBinCardHistory(partIdOrCode: string): Transaction[] {
+    const part = this.getPartById(partIdOrCode) || this.getPartByCode(partIdOrCode);
+    const targetIdClean = (part?.id || partIdOrCode)?.trim().toLowerCase();
+    const targetCodeClean = (part?.code || partIdOrCode)?.trim().toLowerCase();
+    const targetNameClean = part?.name?.trim().toLowerCase();
+
+    const txs = this.getTransactions().filter((t) => {
+      const tPartIdClean = (t.partId || '').trim().toLowerCase();
+      const tPartCodeClean = (t.partCode || '').trim().toLowerCase();
+      const tPartNameClean = (t.partName || '').trim().toLowerCase();
+
+      // Kiểm tra đồng thời cả partId, partCode và partName
+      const matchId = Boolean(targetIdClean) && (tPartIdClean === targetIdClean || t.partId === partIdOrCode);
+      const matchCode = Boolean(targetCodeClean) && (tPartCodeClean === targetCodeClean || tPartIdClean === targetCodeClean);
+      const matchName = Boolean(targetNameClean) && tPartNameClean === targetNameClean;
+
+      const isPartMatch = matchId || matchCode || matchName;
+      if (!isPartMatch) return false;
+
+      // Pure NG warehouse operations (manual/excel import directly to NG, RTV or Scrap) do NOT affect the Main Warehouse bin card
+      // ONLY TRANSFER_TO_NG affects main warehouse stock!
+      return (
         t.type !== 'IMPORT_NG' &&
         t.type !== 'EXPORT_NG_RTV' &&
         t.type !== 'EXPORT_NG_SCRAP'
-    );
+      );
+    });
+
     // Sort by date ascending
     return txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   },
@@ -990,7 +1012,7 @@ export const storageService = {
       contNumber?: string;
     }>;
   }): Transaction {
-    const part = this.getPartById(params.partId);
+    const part = this.getPartById(params.partId) || this.getPartByCode(params.partId);
     if (!part) throw new Error('Linh kiện không tồn tại');
 
     if (params.quantity > part.currentStock) {
