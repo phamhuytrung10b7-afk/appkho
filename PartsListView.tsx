@@ -26,6 +26,7 @@ import {
   ArrowUpDown,
   Layers,
   Zap,
+  X,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -224,10 +225,10 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
           <button
             onClick={() => setIsBatchPrintModalOpen(true)}
             className="flex items-center space-x-1.5 px-3 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer"
-            title="In tem dán kệ hàng loạt (Khổ 73x22mm - Tem đôi)"
+            title="In tem QR linh kiện hàng loạt (Khổ 73x22mm - Tem đôi)"
           >
             <QrCode className="w-4 h-4 text-amber-300" />
-            <span>In Tem QR Kệ (73x22mm)</span>
+            <span>In Tem QR Linh Kiện (73x22mm)</span>
           </button>
 
           {/* Add New Part */}
@@ -292,18 +293,31 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
         </div>
 
         {/* Search */}
-        <div className="relative w-full sm:w-72">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+        <div className="relative w-full sm:w-96 md:w-[440px]">
+          <Search className="w-4 h-4 text-blue-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
-            placeholder="Tìm theo mã, tên, vị trí..."
+            placeholder="Tìm theo mã, tên, vị trí kệ, barcode..."
             value={searchTerm}
             onChange={(e) => {
               onSearchChange(e.target.value);
               setCurrentPage(1);
             }}
-            className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 focus:bg-white outline-hidden"
+            className="w-full pl-10 pr-9 py-2.5 bg-white border-2 border-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 rounded-xl text-sm font-bold text-slate-900 placeholder:text-slate-400 placeholder:font-normal outline-none transition-all shadow-xs"
           />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => {
+                onSearchChange('');
+                setCurrentPage(1);
+              }}
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full cursor-pointer transition-colors"
+              title="Xóa tìm kiếm"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -525,7 +539,7 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
                               setIsBatchPrintModalOpen(true);
                             }}
                             className="p-1.5 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer"
-                            title="In Tem QR Dán Kệ (35x22mm)"
+                            title="In Tem QR Linh Kiện (35x22mm / 73x22mm)"
                           >
                             <QrCode className="w-4 h-4" />
                           </button>

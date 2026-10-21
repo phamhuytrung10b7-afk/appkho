@@ -1,11 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Part, AppSettings } from './types';
 import { QRCodeSVG } from 'qrcode.react';
 import { printHtml } from './printHelper';
 import { getSavedPrintConfigs, savePrintConfigs, PrintLayout, AllPrintConfigs } from './printConfig';
+import { smartFuzzySearch } from './fuzzySearch';
 
-import { Printer, X, Search, CheckSquare, Square, Filter, RefreshCw, Settings, Tag, Eye } from 'lucide-react';
+import {
+  Printer,
+  X,
+  Search,
+  CheckSquare,
+  Square,
+  Filter,
+  RefreshCw,
+  Settings,
+  Tag,
+  Eye,
+  Check,
+  Minus,
+  Plus,
+  MapPin,
+} from 'lucide-react';
 
 interface BatchPrintQrModalProps {
   isOpen: boolean;
@@ -32,6 +48,19 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
     return initialMap;
   });
 
+  // Re-sync initial map when modal opens or parts change
+  useEffect(() => {
+    if (isOpen) {
+      const initialMap: { [id: string]: number } = {};
+      parts.forEach((p) => {
+        initialMap[p.id] = 1;
+      });
+      setSelectedPartsMap(initialMap);
+      setSearchTerm('');
+      setSelectedLocation('ALL');
+    }
+  }, [isOpen, parts]);
+
   // Display options
   const [labelLayout, setLabelLayout] = useState<'double' | 'single' | 'a7'>('double');
   const [printConfigs, setPrintConfigs] = useState<AllPrintConfigs>(getSavedPrintConfigs());
@@ -41,38 +70,72 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
   useEffect(() => {
     savePrintConfigs(printConfigs);
   }, [printConfigs]);
- // 'double' = 73x22mm (2 tem / hàng), 'single' = 35x22mm
+
+  // 'double' = 73x22mm (2 tem / hàng), 'single' = 35x22mm
   const [showLocation, setShowLocation] = useState(true);
   const [showWarehouseName, setShowWarehouseName] = useState(false);
   const [activeTab, setActiveTab] = useState<'select' | 'preview'>('select');
 
   // Locations list
-  const locations = Array.from(new Set(parts.map((p) => p.location || 'Kệ A1'))).sort();
+  const locations = useMemo(() => {
+    return Array.from(new Set(parts.map((p) => p.location || 'Chưa phân vị trí'))).sort();
+  }, [parts]);
 
-  // Filtered parts
-  const filteredParts = parts.filter((p) => {
-    const matchesSearch =
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.location.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesLocation = selectedLocation === 'ALL' || p.location === selectedLocation;
-    return matchesSearch && matchesLocation;
-  });
+  // Filtered parts using Smart Fuzzy Search
+  const filteredParts = useMemo(() => {
+    let list = parts;
+    if (selectedLocation !== 'ALL') {
+      list = list.filter((p) => (p.location || 'Chưa phân vị trí') === selectedLocation);
+    }
+    if (!searchTerm.trim()) {
+      return list;
+    }
+    return smartFuzzySearch<Part>(
+      list,
+      (p) => [p.code, p.name, p.location || '', p.description || '', p.barcode || ''],
+      searchTerm
+    );
+  }, [parts, selectedLocation, searchTerm]);
 
-  // Toggle selection
-  const toggleSelectAll = () => {
-    const allFilteredSelected = filteredParts.every((p) => (selectedPartsMap[p.id] || 0) > 0);
+  // Bỏ tick tất cả (đặt toàn bộ về 0 tem)
+  const handleDeselectAll = () => {
+    setSelectedPartsMap({});
+  };
+
+  // Chọn tất cả linh kiện (đặt toàn bộ về ít nhất 1 tem)
+  const handleSelectAll = () => {
+    const newMap: { [id: string]: number } = {};
+    parts.forEach((p) => {
+      newMap[p.id] = (selectedPartsMap[p.id] && selectedPartsMap[p.id] > 0) ? selectedPartsMap[p.id] : 1;
+    });
+    setSelectedPartsMap(newMap);
+  };
+
+  // Chọn / Bỏ chọn toàn bộ linh kiện đang lọc hiển thị
+  const toggleSelectFiltered = () => {
+    const allFilteredSelected =
+      filteredParts.length > 0 &&
+      filteredParts.every((p) => (selectedPartsMap[p.id] || 0) > 0);
     const newMap = { ...selectedPartsMap };
 
     filteredParts.forEach((p) => {
       if (allFilteredSelected) {
         newMap[p.id] = 0;
       } else {
-        newMap[p.id] = newMap[p.id] > 0 ? newMap[p.id] : 1;
+        newMap[p.id] = (newMap[p.id] && newMap[p.id] > 0) ? newMap[p.id] : 1;
       }
     });
 
     setSelectedPartsMap(newMap);
+  };
+
+  // Bật / tắt tick 1 linh kiện
+  const toggleSinglePart = (partId: string) => {
+    const current = selectedPartsMap[partId] || 0;
+    setSelectedPartsMap((prev) => ({
+      ...prev,
+      [partId]: current > 0 ? 0 : 1,
+    }));
   };
 
   const handleQuantityChange = (partId: string, qty: number) => {
@@ -83,21 +146,32 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
   };
 
   // Build array of individual labels to print
-  const labelItems: Part[] = [];
-  parts.forEach((p) => {
-    const count = selectedPartsMap[p.id] || 0;
-    for (let i = 0; i < count; i++) {
-      labelItems.push(p);
-    }
-  });
+  const labelItems = useMemo(() => {
+    const items: Part[] = [];
+    parts.forEach((p) => {
+      const count = selectedPartsMap[p.id] || 0;
+      for (let i = 0; i < count; i++) {
+        items.push(p);
+      }
+    });
+    return items;
+  }, [parts, selectedPartsMap]);
+
+  // Selected unique parts count
+  const selectedPartIds = useMemo(() => {
+    return Object.keys(selectedPartsMap).filter((id) => (selectedPartsMap[id] || 0) > 0);
+  }, [selectedPartsMap]);
+
+  const totalSelectedLabels = labelItems.length;
 
   // Group labelItems into rows for 2-up (tem đôi 73x22mm)
-  const labelRows: Part[][] = [];
-  
+  const labelRows = useMemo(() => {
+    const rows: Part[][] = [];
     for (let i = 0; i < labelItems.length; i++) {
-      labelRows.push([labelItems[i]]);
-    
-  }
+      rows.push([labelItems[i]]);
+    }
+    return rows;
+  }, [labelItems]);
 
   const handlePrint = () => {
     if (printRef.current) {
@@ -153,8 +227,6 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
 
   if (!isOpen) return null;
 
-  const totalSelectedLabels = labelItems.length;
-
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-200">
       <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-5xl h-[92vh] flex flex-col overflow-hidden">
@@ -166,13 +238,13 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
             </div>
             <div>
               <h3 className="font-extrabold text-base sm:text-lg flex items-center space-x-2">
-                <span>IN HÀNG LOẠT TEM QR CODE DÁN KỆ</span>
+                <span>IN HÀNG LOẠT TEM QR CODE LINH KIỆN</span>
                 <span className="px-2 py-0.5 text-[11px] bg-amber-400 text-slate-950 font-black rounded-full">
-                  Kích thước: {'Khổ A7 74x105mm'}
+                  {labelLayout === 'double' ? 'Khổ 73x22mm (Tem Đôi)' : labelLayout === 'single' ? 'Khổ 35x22mm (Tem Đơn)' : 'Khổ A7 74x105mm'}
                 </span>
               </h3>
               <p className="text-xs text-blue-200 mt-0.5">
-                Thiết kế chuẩn kích thước máy in tem nhiệt (Xprinter, Godex, Zebra...). Chuẩn 2 tem / hàng (35x22mm/tem).
+                In tem mã QR linh kiện dán khay/thùng hàng theo chuẩn máy in nhiệt (Xprinter, Godex, Zebra...). Chuẩn 2 tem / hàng (35x22mm/tem) hoặc tem đơn.
               </p>
             </div>
           </div>
@@ -219,7 +291,7 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
               }`}
             >
               <Eye className="w-4 h-4" />
-              <span>Xem Trước Mẫu In (A7 74x105mm)</span>
+              <span>Xem Trước Mẫu In ({labelLayout === 'double' ? 'Tem Đôi 73x22mm' : labelLayout === 'single' ? 'Tem Đơn 35x22mm' : 'Khổ A7'})</span>
             </button>
           </div>
 
@@ -229,7 +301,7 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
               <span className="text-slate-500">Khổ tem:</span>
               <select
                 value={labelLayout}
-                onChange={(e) => setLabelLayout(e.target.value as 'double' | 'single')}
+                onChange={(e) => setLabelLayout(e.target.value as 'double' | 'single' | 'a7')}
                 className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg font-bold text-blue-700 focus:outline-hidden cursor-pointer"
               >
                 <option value="double">Tem Đôi (73x22mm - 2 Tem/Hàng)</option>
@@ -264,50 +336,142 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
         <div className="flex-1 overflow-hidden">
           {activeTab === 'select' ? (
             <div className="h-full flex flex-col p-4 space-y-3 overflow-hidden">
-              {/* Search & Location Filter Bar */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50 p-3 rounded-2xl border border-slate-200 shrink-0">
-                <div className="flex items-center space-x-2 w-full sm:w-auto flex-1">
-                  <div className="relative flex-1">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              {/* Search & Location Filter Bar (Full-width Search Bar) */}
+              <div className="flex flex-col gap-3 bg-slate-50 p-3 sm:p-4 rounded-2xl border border-slate-200 shrink-0 shadow-xs">
+                {/* 100% Dedicated Full-Width High-Visibility Search Input */}
+                <div className="w-full space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-extrabold text-blue-900 flex items-center space-x-1.5 uppercase tracking-wide">
+                      <Search className="w-4 h-4 text-blue-600" />
+                      <span>Tìm kiếm linh kiện cần in tem:</span>
+                    </label>
+                    {searchTerm && (
+                      <span className="text-xs font-bold text-blue-700 bg-blue-100/90 px-2.5 py-0.5 rounded-full border border-blue-200">
+                        Đang tìm: "{searchTerm}" — {filteredParts.length} kết quả
+                      </span>
+                    )}
+                  </div>
+                  <div className="relative w-full">
+                    <Search className="w-5 h-5 text-blue-600 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
+                      autoFocus
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      placeholder="Tìm theo mã, tên linh kiện hoặc vị trí kệ..."
-                      className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-hidden"
+                      placeholder="Gõ mã linh kiện, tên linh kiện, vị trí kệ, barcode... (hỗ trợ gõ tắt, không dấu)"
+                      className="w-full pl-12 pr-12 py-3 bg-white border-2 border-blue-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100 rounded-xl text-base font-bold text-slate-950 placeholder:text-slate-400 placeholder:font-normal outline-none transition-all shadow-xs"
                     />
+                    {searchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchTerm('')}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full cursor-pointer transition-colors"
+                        title="Xóa tìm kiếm"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
-
-                  <select
-                    value={selectedLocation}
-                    onChange={(e) => setSelectedLocation(e.target.value)}
-                    className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-hidden cursor-pointer shrink-0"
-                  >
-                    <option value="ALL">Tất cả vị trí kệ ({locations.length} kệ)</option>
-                    {locations.map((loc) => (
-                      <option key={loc} value={loc}>
-                        {loc}
-                      </option>
-                    ))}
-                  </select>
                 </div>
 
-                <div className="flex items-center space-x-2 shrink-0">
-                  <button
-                    onClick={toggleSelectAll}
-                    className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-bold border border-blue-200 transition-colors cursor-pointer"
-                  >
-                    <CheckSquare className="w-4 h-4" />
-                    <span>Chọn / Bỏ chọn hiển thị ({filteredParts.length})</span>
-                  </button>
+                {/* Quick Selection & Location Filter Toolbar */}
+                <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-slate-200">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Location Selector Dropdown */}
+                    <div className="flex items-center space-x-1.5 bg-white px-3 py-1.5 rounded-xl border-2 border-slate-300 focus-within:border-blue-500 shadow-2xs">
+                      <MapPin className="w-4 h-4 text-slate-500 shrink-0" />
+                      <span className="text-xs font-bold text-slate-600 shrink-0">Vị trí kệ:</span>
+                      <select
+                        value={selectedLocation}
+                        onChange={(e) => setSelectedLocation(e.target.value)}
+                        className="py-0.5 bg-transparent text-xs font-extrabold text-blue-700 outline-none cursor-pointer"
+                      >
+                        <option value="ALL">📍 Tất cả vị trí kệ ({locations.length} kệ)</option>
+                        {locations.map((loc) => (
+                          <option key={loc} value={loc}>
+                            {loc}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Button Bỏ tick tất cả vị trí (0 tem) */}
+                    <button
+                      type="button"
+                      onClick={handleDeselectAll}
+                      className="flex items-center space-x-1.5 px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border-2 border-rose-300 rounded-xl text-xs font-extrabold transition-all shadow-xs cursor-pointer active:scale-95"
+                      title="Bỏ tick toàn bộ linh kiện (đặt về 0 tem để bạn tự tick cái cần in)"
+                    >
+                      <Square className="w-4 h-4 text-rose-600" />
+                      <span>Bỏ tick tất cả (0 tem)</span>
+                    </button>
+
+                    {/* Button Chọn tất cả */}
+                    <button
+                      type="button"
+                      onClick={handleSelectAll}
+                      className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95"
+                      title="Chọn tất cả linh kiện (mỗi loại 1 tem)"
+                    >
+                      <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Chọn tất cả ({parts.length})</span>
+                    </button>
+
+                    {/* Button Chọn các mục tìm thấy */}
+                    {filteredParts.length > 0 && filteredParts.length < parts.length && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newMap = { ...selectedPartsMap };
+                          filteredParts.forEach((p) => {
+                            newMap[p.id] = (newMap[p.id] && newMap[p.id] > 0) ? newMap[p.id] : 1;
+                          });
+                          setSelectedPartsMap(newMap);
+                        }}
+                        className="flex items-center space-x-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95"
+                      >
+                        <Check className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Tick {filteredParts.length} mục tìm thấy</span>
+                      </button>
+                    )}
+
+                    {selectedLocation !== 'ALL' && (
+                      <span className="text-xs font-bold text-amber-800 bg-amber-50 px-2.5 py-1.5 rounded-xl border border-amber-200">
+                        Đang lọc kệ: {selectedLocation} ({filteredParts.length} LK)
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Selection Summary Badge */}
+                  <div className="flex items-center space-x-2 text-xs">
+                    <span className="text-slate-500 font-medium">Đã chọn in:</span>
+                    <span className="font-mono font-black text-blue-700 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">
+                      {selectedPartIds.length} / {parts.length} loại LK
+                    </span>
+                    <span className="font-mono font-black text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                      Tổng: {totalSelectedLabels} tem
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              {/* Table of Parts with Quantity inputs */}
-              <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl">
+              {/* Table of Parts with Checkbox column and Quantity inputs */}
+              <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl bg-white shadow-xs">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 z-10 border-b border-slate-200">
                     <tr>
+                      <th className="p-3 w-12 text-center">
+                        <input
+                          type="checkbox"
+                          checked={
+                            filteredParts.length > 0 &&
+                            filteredParts.every((p) => (selectedPartsMap[p.id] || 0) > 0)
+                          }
+                          onChange={toggleSelectFiltered}
+                          className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer"
+                          title="Chọn / Bỏ chọn toàn bộ linh kiện đang hiển thị"
+                        />
+                      </th>
                       <th className="p-3 w-12 text-center">STT</th>
                       <th className="p-3">Mã Linh Kiện</th>
                       <th className="p-3">Tên Linh Kiện</th>
@@ -319,7 +483,7 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
                   <tbody className="divide-y divide-slate-100 bg-white">
                     {filteredParts.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-slate-400 font-medium">
+                        <td colSpan={7} className="p-8 text-center text-slate-400 font-medium">
                           Không tìm thấy linh kiện nào phù hợp.
                         </td>
                       </tr>
@@ -330,27 +494,50 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
                         return (
                           <tr
                             key={part.id}
-                            className={`hover:bg-blue-50/50 transition-colors ${
-                              isSelected ? 'bg-blue-50/20' : 'opacity-75'
+                            onClick={() => toggleSinglePart(part.id)}
+                            className={`transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-blue-50/40 hover:bg-blue-100/40'
+                                : 'opacity-60 bg-slate-50/20 hover:bg-slate-100/50'
                             }`}
                           >
-                            <td className="p-3 text-center font-semibold text-slate-400">{index + 1}</td>
-                            <td className="p-3 font-mono font-bold text-blue-700">{part.code}</td>
-                            <td className="p-3 font-extrabold text-slate-900">{part.name}</td>
+                            <td
+                              className="p-3 text-center"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSinglePart(part.id)}
+                                className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer"
+                              />
+                            </td>
+                            <td className="p-3 text-center font-semibold text-slate-400">
+                              {index + 1}
+                            </td>
+                            <td className="p-3 font-mono font-bold text-blue-700">
+                              {part.code}
+                            </td>
+                            <td className="p-3 font-extrabold text-slate-900">
+                              {part.name}
+                            </td>
                             <td className="p-3 font-medium text-slate-600">
                               <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-md font-mono font-bold">
-                                {part.location}
+                                {part.location || 'Chưa phân vị trí'}
                               </span>
                             </td>
                             <td className="p-3 text-center font-extrabold text-slate-800">
                               {part.currentStock} {part.unit}
                             </td>
-                            <td className="p-3 text-center">
+                            <td
+                              className="p-3 text-center"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <div className="inline-flex items-center space-x-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
                                 <button
                                   type="button"
                                   onClick={() => handleQuantityChange(part.id, count - 1)}
-                                  className="w-6 h-6 bg-white hover:bg-slate-200 text-slate-800 font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+                                  className="w-6 h-6 bg-white hover:bg-slate-200 text-slate-800 font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center shadow-2xs"
                                 >
                                   -
                                 </button>
@@ -362,12 +549,12 @@ export const BatchPrintQrModal: React.FC<BatchPrintQrModalProps> = ({
                                   onChange={(e) =>
                                     handleQuantityChange(part.id, parseInt(e.target.value) || 0)
                                   }
-                                  className="w-12 text-center bg-white border-none font-bold text-blue-700 text-xs focus:outline-hidden py-0.5"
+                                  className="w-12 text-center bg-white border-none font-bold text-blue-700 text-xs focus:outline-hidden py-0.5 rounded-sm"
                                 />
                                 <button
                                   type="button"
                                   onClick={() => handleQuantityChange(part.id, count + 1)}
-                                  className="w-6 h-6 bg-white hover:bg-slate-200 text-slate-800 font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+                                  className="w-6 h-6 bg-white hover:bg-slate-200 text-slate-800 font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center shadow-2xs"
                                 >
                                   +
                                 </button>
