@@ -2506,9 +2506,41 @@ export const storageService = {
     return updatedItem;
   },
 
-  deleteKittingItem(id: string): void {
+  async deleteKittingItem(id: string): Promise<boolean> {
     const queue = this.getKittingQueue().filter((q) => q.id !== id);
     this.saveKittingQueue(queue);
+    try {
+      const ok = await supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue);
+      return ok;
+    } catch {
+      return false;
+    }
+  },
+
+  async deleteKittingVoucher(voucherCode: string): Promise<boolean> {
+    const target = voucherCode.trim();
+    const queue = this.getKittingQueue().filter((q) => {
+      const qCode = (q.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      return qCode !== target;
+    });
+    this.saveKittingQueue(queue);
+    try {
+      const ok = await supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue);
+      return ok;
+    } catch {
+      return false;
+    }
+  },
+
+  async clearAllPendingKittingItems(): Promise<boolean> {
+    const queue = this.getKittingQueue().filter((q) => q.status !== 'PENDING_KITTING');
+    this.saveKittingQueue(queue);
+    try {
+      const ok = await supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue);
+      return ok;
+    } catch {
+      return false;
+    }
   },
 
   // --- BUFFER LOCATION METHODS ---

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part, AppSettings, BomExportVoucher } from './types';
 import { storageService } from './storage';
-import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download } from 'lucide-react';
+import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { QrScannerModal } from './QrScannerModal';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -101,6 +101,18 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
 
   const [scannedPartForQuickOut, setScannedPartForQuickOut] = useState<Part | null>(null);
   const [quickOutQty, setQuickOutQty] = useState<number>(10);
+  const [successModalData, setSuccessModalData] = useState<{
+    isOpen: boolean;
+    partCode: string;
+    partName: string;
+    unit: string;
+    qty: number;
+    location: string;
+    stockAfter: number;
+    time: string;
+    person: string;
+    productionOrder?: string;
+  } | null>(null);
   const [autoScanHistory, setAutoScanHistory] = useState<
     { id: string; partCode: string; partName: string; qty: number; unit: string; time: string; stockAfter: number }[]
   >([]);
@@ -899,104 +911,15 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
             mode="out"
             parts={parts}
             onScanSuccess={({ part, qty, contNumber }) => {
-              setScannedPartForQuickOut(part);
               setSelectedPartId(part.id);
               setScannedPartForModal(part);
               setInitialScanQty(qty && qty > 0 ? qty : 1);
               setScanContNumber(contNumber || '');
               setIsScanModalOpen(true);
-              setMessage({
-                type: 'success',
-                text: `🎉 Đã nhận diện mã linh kiện [${part.code}] ${part.name}! Mở bảng POPUP xác nhận số lượng & quét đối soát vị trí kệ FIFO.`,
-              });
+              setScannedPartForQuickOut(null);
+              setMessage(null);
             }}
           />
-
-          {/* Quick Out Confirmation Card when a part is scanned */}
-          {scannedPartForQuickOut && (
-            <div className="p-5 bg-blue-50 border-2 border-blue-300 text-slate-900 rounded-2xl shadow-md space-y-4 animate-in fade-in slide-in-from-top-3">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-blue-200 pb-3">
-                <div className="flex items-center space-x-3">
-                  <div className="p-2.5 bg-blue-600 text-white rounded-xl font-black">
-                    <Package className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <span className="px-2 py-0.5 bg-blue-100 text-blue-900 text-[10px] font-black rounded-md uppercase border border-blue-200">
-                      Đã Nhận Mã Linh Kiện
-                    </span>
-                    <h3 className="text-base font-extrabold text-slate-900 mt-0.5">
-                      [{scannedPartForQuickOut.code}] {scannedPartForQuickOut.name}
-                    </h3>
-                    <p className="text-xs text-slate-600">Vị trí kho: {scannedPartForQuickOut.location} • Tồn kho hiện tại: <strong className="text-blue-700 font-bold">{scannedPartForQuickOut.currentStock} {scannedPartForQuickOut.unit}</strong></p>
-                  </div>
-                </div>
-
-                <div className="text-right">
-                  <button
-                    type="button"
-                    onClick={() => setScannedPartForQuickOut(null)}
-                    className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
-                  >
-                    Hủy chọn
-                  </button>
-                </div>
-              </div>
-
-              {/* FIFO Batch Recommendation for Quick Out */}
-              {(() => {
-                const fifoLots = storageService.getPartFifoLots(scannedPartForQuickOut.id);
-                const fifoNext = fifoLots.find((l) => l.status === 'FIFO_NEXT');
-                if (!fifoNext) return null;
-
-                return (
-                  <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs space-y-1 text-amber-900">
-                    <div className="flex items-center justify-between font-bold text-amber-950">
-                      <span className="flex items-center space-x-1.5">
-                        <Zap className="w-4 h-4 text-amber-600 animate-pulse shrink-0" />
-                        <span>GỢI Ý FIFO (#1 NHẬP TRƯỚC XUẤT TRƯỚC):</span>
-                      </span>
-                      <span className="px-2 py-0.5 bg-amber-200 text-amber-950 text-[10px] font-black rounded-md">
-                        {fifoNext.contNumber}
-                      </span>
-                    </div>
-                    <p className="text-amber-800">
-                      Khuyến nghị lấy hàng từ Cont <strong className="text-amber-950 font-bold">{fifoNext.contNumber}</strong> (Nhập ngày {new Date(fifoNext.importDate).toLocaleDateString('vi-VN')} • Còn tồn {fifoNext.remainingQty.toLocaleString('vi-VN')} {scannedPartForQuickOut.unit}).
-                    </p>
-                  </div>
-                );
-              })()}
-
-              <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
-                <div className="flex items-center space-x-3">
-                  <label className="text-xs font-bold text-slate-800 whitespace-nowrap">
-                    Số lượng xuất:
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max={scannedPartForQuickOut.currentStock}
-                    value={quickOutQty}
-                    onChange={(e) => setQuickOutQty(Number(e.target.value))}
-                    className="w-28 px-3 py-2 bg-white border-2 border-blue-300 rounded-xl text-blue-900 font-black text-center text-sm outline-hidden focus:ring-2 focus:ring-blue-500"
-                  />
-                  <span className="text-xs font-bold text-slate-700">{scannedPartForQuickOut.unit}</span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setScannedPartForModal(scannedPartForQuickOut);
-                    setInitialScanQty(quickOutQty);
-                    setIsScanModalOpen(true);
-                  }}
-                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md transition-all flex items-center space-x-2 cursor-pointer active:scale-95"
-                >
-                  <Zap className="w-4 h-4" />
-                  <span>XÁC NHẬN CHỌN KỆ & XUẤT KHO (-{quickOutQty})</span>
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Auto scan history in current session */}
           {autoScanHistory.length > 0 && (
@@ -1350,13 +1273,24 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               ...prev,
             ]);
 
-            setMessage({
-              type: 'success',
-              text: `🎉 ĐÃ XUẤT KHO THÀNH CÔNG! -${qty} ${tx.unit} cho [${tx.partCode}] ${tx.partName} từ [${location}]. Tồn kho còn lại: ${tx.stockAfter} ${tx.unit}.`,
+            // Mở bảng POPUP thông báo thành công gọn gàng, rõ ràng
+            setSuccessModalData({
+              isOpen: true,
+              partCode: tx.partCode,
+              partName: tx.partName,
+              qty,
+              unit: tx.unit,
+              location,
+              stockAfter: tx.stockAfter,
+              time: nowTimeStr,
+              person: pPerson,
+              productionOrder: pLSX,
             });
 
+            setMessage(null);
             setIsScanModalOpen(false);
             setScannedPartForModal(null);
+            setScannedPartForQuickOut(null);
             onSuccess();
           } catch (err: any) {
             setMessage({ type: 'error', text: err.message || 'Lỗi khi xuất kho' });
@@ -1558,6 +1492,97 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
           setExcelOutFile(null);
         }}
       />
+
+      {/* POPUP THÔNG BÁO XUẤT KHO THÀNH CÔNG */}
+      {successModalData && successModalData.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border-2 border-emerald-400 space-y-5 animate-in zoom-in-95 duration-150 text-center relative">
+            {/* Close 'X' Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setSuccessModalData(null);
+                const scanInput = document.querySelector('input[placeholder*="Bắn súng quét mã"]') as HTMLInputElement;
+                scanInput?.focus();
+              }}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full cursor-pointer transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Icon & Title */}
+            <div className="space-y-2">
+              <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+                <CheckCircle2 className="w-10 h-10 animate-bounce" />
+              </div>
+              <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-black rounded-full uppercase tracking-wider inline-block">
+                Giao Dịch Đã Ghi Nhận
+              </span>
+              <h3 className="text-xl font-black text-slate-900 tracking-tight">
+                XUẤT KHO THÀNH CÔNG!
+              </h3>
+            </div>
+
+            {/* Part & Quantity Highlight Card */}
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-left space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-500 font-semibold">Mã linh kiện:</span>
+                <span className="font-mono font-black text-xs text-blue-700 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">
+                  [{successModalData.partCode}]
+                </span>
+              </div>
+
+              <div>
+                <span className="text-xs text-slate-500 font-semibold block">Tên linh kiện:</span>
+                <span className="font-bold text-slate-900 text-sm block mt-0.5">
+                  {successModalData.partName}
+                </span>
+              </div>
+
+              <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
+                <span className="text-xs text-slate-600 font-bold">Số lượng xuất:</span>
+                <span className="font-mono font-black text-xl text-emerald-600">
+                  -{successModalData.qty.toLocaleString('vi-VN')} {successModalData.unit}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-600 font-semibold">Vị trí kệ đã trừ:</span>
+                <span className="font-bold text-xs text-blue-900 bg-blue-100/70 px-2.5 py-1 rounded-lg border border-blue-200">
+                  📍 {successModalData.location}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-600 font-semibold">Tồn kho còn lại:</span>
+                <span className="font-mono font-black text-sm text-slate-900">
+                  {successModalData.stockAfter.toLocaleString('vi-VN')} {successModalData.unit}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-100">
+                <span>Người xuất: <strong>{successModalData.person}</strong></span>
+                <span>🕒 {successModalData.time}</span>
+              </div>
+            </div>
+
+            {/* Confirm button to continue scanning */}
+            <button
+              type="button"
+              autoFocus
+              onClick={() => {
+                setSuccessModalData(null);
+                const scanInput = document.querySelector('input[placeholder*="Bắn súng quét mã"]') as HTMLInputElement;
+                scanInput?.focus();
+              }}
+              className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center space-x-2 active:scale-95"
+            >
+              <Zap className="w-4 h-4 text-amber-300" />
+              <span>TIẾP TỤC QUÉT MÃ MỚI (ENTER)</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
