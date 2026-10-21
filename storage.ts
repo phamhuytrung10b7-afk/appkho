@@ -22,6 +22,7 @@ const CONVERSION_FACTORS_KEY = 'thekho_conversion_factors_v1';
 const KITTING_SCAN_LOGS_KEY = 'thekho_kitting_scan_logs_v1';
 const PRODUCTIVITY_PERSONNEL_CONFIG_KEY = 'thekho_productivity_personnel_config_v1';
 const CUSTOM_GENERATED_CONTAINER_TAGS_KEY = 'thekho_custom_generated_container_tags_v1';
+const USERS_KEY = 'thekho_users_v1';
 
 export interface CustomGeneratedContainerTag extends MasterKittingTag {
   createdAt: string;
@@ -3150,6 +3151,7 @@ export const storageService = {
         },
       ];
       localStorage.setItem('thekho_users_v1', JSON.stringify(defaultUsers));
+      supabaseKeyStore.set('thekho_users_v1', defaultUsers);
       return defaultUsers;
     }
     try {
@@ -3177,7 +3179,7 @@ export const storageService = {
 
   saveUsers(users: UserAccount[]): void {
     localStorage.setItem('thekho_users_v1', JSON.stringify(users));
-    supabaseKeyStore.set(STORAGE_KEYS.USERS, users);
+    supabaseKeyStore.set('thekho_users_v1', users);
   },
 
   addUser(params: Omit<UserAccount, 'id' | 'createdAt'>): UserAccount {
@@ -3789,6 +3791,12 @@ export const storageService = {
           localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(fallbackTokens));
         }
       }
+
+      // 6. Fetch Users & Roles with Smart Cache
+      const remoteUsers = await supabaseKeyStore.get<UserAccount[]>('thekho_users_v1');
+      if (remoteUsers && Array.isArray(remoteUsers) && remoteUsers.length > 0) {
+        localStorage.setItem('thekho_users_v1', JSON.stringify(remoteUsers));
+      }
     } catch (err: any) {
       parts = this.getParts();
       transactions = this.getTransactions();
@@ -3826,6 +3834,7 @@ export const storageService = {
 
     try {
       this.saveSettings(this.getSettings());
+      this.saveUsers(this.getUsers());
       this.saveParts(this.getParts());
       this.saveTransactions(this.getTransactions());
       this.saveContainerBatches(this.getContainerBatches());

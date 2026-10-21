@@ -84,6 +84,26 @@ export function getActiveSupabaseClient(): { client: SupabaseClient | null; isCo
 }
 
 export const isSupabaseConfigured = true;
-export const supabase: SupabaseClient | null = getActiveSupabaseClient().client;
+
+// Dynamic Proxy for supabase to prevent null client reference errors at app bootstrap
+export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const active = getActiveSupabaseClient().client;
+    if (!active) {
+      if (prop === 'from') {
+        return () => ({
+          select: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
+          insert: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
+          update: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
+          delete: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
+          upsert: () => Promise.resolve({ data: null, error: new Error('Supabase client not initialized') }),
+        });
+      }
+      return undefined;
+    }
+    const val = (active as any)[prop];
+    return typeof val === 'function' ? val.bind(active) : val;
+  },
+}) as SupabaseClient;
 
 
