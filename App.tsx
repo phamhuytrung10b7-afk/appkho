@@ -150,6 +150,19 @@ export default function App() {
     };
   }, [syncCloudAndState]);
 
+  // Lắng nghe sự kiện cập nhật Sơ đồ Kệ Outbuffer từ Cloud/Storage ngầm
+  useEffect(() => {
+    const handleBufferMapUpdated = (e: any) => {
+      if (e.detail && Array.isArray(e.detail)) {
+        setBufferLocations(e.detail);
+      }
+    };
+    window.addEventListener('thekho:buffer_map_updated', handleBufferMapUpdated);
+    return () => {
+      window.removeEventListener('thekho:buffer_map_updated', handleBufferMapUpdated);
+    };
+  }, []);
+
   // ⏱️ Giãn cách Polling ngầm: 90 giây (90000ms) thay vì 15 giây, giúp giảm ~85% lượng Log Query thừa thãi trên Supabase
   // Chỉ kiểm tra khi tab đang hiển thị (visible). Khi người dùng quay lại tab, chỉ sync nếu đã qua hơn 45 giây.
   useEffect(() => {

@@ -36,11 +36,31 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
   const [modalTab, setModalTab] = useState<'view' | 'manage'>('view');
   const [filterPart, setFilterPart] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Current user & configuration permission check
   const currentUser = storageService.getCurrentUser();
   const isAdmin = storageService.isAdminUser(currentUser);
   const canConfigure = storageService.canConfigureOutbuffer(currentUser);
+
+  const handleSyncCloud = async () => {
+    try {
+      setIsSyncing(true);
+      const cloudLocs = await storageService.fetchBufferMapFromCloud(true);
+      setMessage({
+        type: 'success',
+        text: `Đã đồng bộ sơ đồ kệ thành công từ Supabase Cloud (${cloudLocs.length} vị trí kệ)!`,
+      });
+      onRefresh();
+    } catch (err: any) {
+      setMessage({
+        type: 'error',
+        text: `Lỗi đồng bộ từ Supabase: ${err?.message || 'Không thể kết nối'}`,
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   // Print QR Location Modal state
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
@@ -298,6 +318,17 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={handleSyncCloud}
+              disabled={isSyncing}
+              className="px-4 py-2.5 bg-emerald-600/90 hover:bg-emerald-600 text-white font-bold rounded-2xl shadow-lg transition-all cursor-pointer flex items-center space-x-2 text-xs border border-emerald-400/40 disabled:opacity-50"
+              title="Đồng bộ kéo sơ đồ kệ từ Supabase Cloud về máy"
+            >
+              <RefreshCw className={`w-4 h-4 text-emerald-200 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>{isSyncing ? 'Đang kéo...' : 'Đồng bộ Supabase'}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => {

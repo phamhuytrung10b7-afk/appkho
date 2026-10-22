@@ -2544,20 +2544,8 @@ export const storageService = {
   },
 
   // --- BUFFER LOCATION METHODS ---
-  getBufferLocations(): BufferLocationMap[] {
-    const raw = localStorage.getItem(BUFFER_MAP_KEY);
-    let list: BufferLocationMap[] = DEFAULT_BUFFER_LOCATIONS;
-    if (raw) {
-      try {
-        list = JSON.parse(raw);
-      } catch {
-        list = DEFAULT_BUFFER_LOCATIONS;
-      }
-    } else {
-      localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(DEFAULT_BUFFER_LOCATIONS));
-    }
-
-    // Normalize each shelf item array
+  normalizeBufferLocations(list: BufferLocationMap[]): BufferLocationMap[] {
+    if (!Array.isArray(list)) return [];
     return list.map((b) => {
       let items: BufferPartItem[] = b.items ? [...b.items] : [];
       if (items.length === 0 && b.partCode && (b.currentStockQty > 0 || b.partName)) {
@@ -2580,9 +2568,97 @@ export const storageService = {
     });
   },
 
+  getBufferMap(): BufferLocationMap[] {
+    const raw = localStorage.getItem(BUFFER_MAP_KEY);
+    let list: BufferLocationMap[] | null = null;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          list = parsed;
+        }
+      } catch {
+        list = null;
+      }
+    }
+
+    // 1. Kiểm tra cache đồng bộ từ Supabase KeyStore nếu localStorage chưa có
+    if (!list || list.length === 0) {
+      try {
+        const cachedRaw = localStorage.getItem(STORAGE_KEYS.BUFFER_MAP);
+        if (cachedRaw) {
+          const parsed = JSON.parse(cachedRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            list = parsed;
+            localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(list));
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 2. Nếu vẫn chưa có dữ liệu tại máy local, gọi kéo dữ liệu ngầm từ Supabase Cloud
+    if (!list || list.length === 0) {
+      this.fetchBufferMapFromCloud(true)
+        .then((cloudData) => {
+          if (cloudData && Array.isArray(cloudData) && cloudData.length > 0) {
+            localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(cloudData));
+            window.dispatchEvent(new CustomEvent('thekho:buffer_map_updated', { detail: cloudData }));
+          }
+        })
+        .catch((err) => {
+          console.warn('[getBufferMap] Lỗi kéo ngầm sơ đồ kệ từ Supabase:', err);
+        });
+
+      // Tuyệt đối KHÔNG tự ý ghi đè DEFAULT_BUFFER_LOCATIONS vào localStorage!
+      // Trả về DEFAULT_BUFFER_LOCATIONS tạm thời làm placeholder trong lúc chờ Cloud phản hồi
+      list = DEFAULT_BUFFER_LOCATIONS;
+    }
+
+    return this.normalizeBufferLocations(list);
+  },
+
+  getBufferLocations(): BufferLocationMap[] {
+    return this.getBufferMap();
+  },
+
+  async fetchBufferMapFromCloud(forceFresh: boolean = false): Promise<BufferLocationMap[]> {
+    try {
+      const remote = await supabaseKeyStore.get<BufferLocationMap[]>(STORAGE_KEYS.BUFFER_MAP, { forceFresh });
+      if (remote && Array.isArray(remote) && remote.length > 0) {
+        localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(remote));
+        return this.normalizeBufferLocations(remote);
+      }
+    } catch (err) {
+      console.warn('[fetchBufferMapFromCloud] Lỗi kéo sơ đồ kệ từ Supabase:', err);
+    }
+    const raw = localStorage.getItem(BUFFER_MAP_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return this.normalizeBufferLocations(parsed);
+        }
+      } catch (_) {}
+    }
+    return this.normalizeBufferLocations(DEFAULT_BUFFER_LOCATIONS);
+  },
+
+  async saveBufferMap(locs: BufferLocationMap[]): Promise<boolean> {
+    try {
+      localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
+      const ok = await supabaseKeyStore.set(STORAGE_KEYS.BUFFER_MAP, locs);
+      return ok;
+    } catch (err) {
+      console.error('[saveBufferMap] Lỗi đồng bộ sơ đồ kệ lên Supabase:', err);
+      return false;
+    }
+  },
+
   saveBufferLocations(locs: BufferLocationMap[]): void {
     localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
-    supabaseKeyStore.set(STORAGE_KEYS.BUFFER_MAP, locs);
+    this.saveBufferMap(locs).catch((err) => {
+      console.warn('[saveBufferLocations] Lỗi ngầm lưu sơ đồ kệ lên Supabase:', err);
+    });
   },
 
   updateBufferLocation(locationId: string, data: Partial<BufferLocationMap>): BufferLocationMap {
@@ -3872,6 +3948,18 @@ export const storageService = {
       if (remoteUsers && Array.isArray(remoteUsers) && remoteUsers.length > 0) {
         localStorage.setItem('thekho_users_v1', JSON.stringify(remoteUsers));
       }
+
+      // 7. Fetch Buffer Map (Sơ đồ Kệ Outbuffer thekho_buffer_map_v1) - Luôn kéo từ Supabase về localStorage trước
+      const remoteBuffers = await supabaseKeyStore.get<BufferLocationMap[]>(STORAGE_KEYS.BUFFER_MAP, { forceFresh: forceFetch });
+      if (remoteBuffers && Array.isArray(remoteBuffers) && remoteBuffers.length > 0) {
+        localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(remoteBuffers));
+      }
+
+      // 8. Fetch Kitting Queue with Smart Cache
+      const remoteKitting = await supabaseKeyStore.get<KittingQueueItem[]>(STORAGE_KEYS.KITTING_QUEUE);
+      if (remoteKitting && Array.isArray(remoteKitting) && remoteKitting.length > 0) {
+        localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(remoteKitting));
+      }
     } catch (err: any) {
       parts = this.getParts();
       transactions = this.getTransactions();
@@ -3915,7 +4003,7 @@ export const storageService = {
       this.saveContainerBatches(this.getContainerBatches());
       this.saveModelBOMs(this.getModelBOMs());
       this.saveKittingQueue(this.getKittingQueue());
-      this.saveBufferMap(this.getBufferMap());
+      await this.saveBufferMap(this.getBufferMap());
       this.saveMaterialCalls(this.getMaterialCalls());
       this.saveBomVouchers(this.getBomVouchers());
       this.saveMasterContainerTags(this.getMasterContainerTags());
