@@ -255,13 +255,30 @@ export interface StockCheckRecord {
   note?: string;
 }
 
+export interface BomExportVoucherRoundRecord {
+  roundNumber: number;
+  dateTime: string;
+  person: string;
+  notes?: string;
+  items: Array<{
+    partCode: string;
+    quantity: number;
+    fifoLocation?: string;
+  }>;
+}
+
 export interface BomExportVoucherItem {
   partCode: string;
   partName: string;
   unit: string;
   bomQtyPerSet: number;
-  totalQtyOut: number;
+  requiredQty?: number; // Tổng số lượng cần xuất theo định mức = bomQtyPerSet * modelQty
+  exportedQty?: number; // Số lượng đã thực tế xuất (lũy kế qua các đợt)
+  remainingQty?: number; // Số lượng còn thiếu cần xuất bù = requiredQty - exportedQty
+  currentBatchQty?: number; // Số lượng xuất trong đợt này
+  totalQtyOut: number; // Tương thích ngược: tổng đã xuất
   fifoLocation: string;
+  status?: 'COMPLETED' | 'PARTIAL' | 'PENDING';
 }
 
 export interface BomExportVoucher {
@@ -274,14 +291,19 @@ export interface BomExportVoucher {
   items: BomExportVoucherItem[];
   createdByName?: string;
   createdAt: string;
-  modelName?: string;
-  modelQty?: number;
+  updatedAt?: string;
+  modelName: string;
+  modelQty: number;
   dateTime?: string;
-  person?: string;
+  person: string;
   totalPartsCount?: number;
-  totalQtyOut?: number;
+  totalQtyRequired?: number; // Tổng SL cần xuất của toàn phiếu
+  totalQtyOut?: number; // Tổng SL đã xuất thực tế lũy kế
+  totalQtyRemaining?: number; // Tổng SL còn thiếu cần xuất bù
   voucherType?: 'BOM' | 'EXCEL' | 'MANUAL';
-  status?: 'ACTIVE' | 'ROLLED_BACK';
+  status?: 'ACTIVE' | 'PARTIAL' | 'COMPLETED' | 'ROLLED_BACK'; // PARTIAL: Đang xuất bù, COMPLETED: Đã hoàn thành
+  dispatchRounds?: number; // Số đợt xuất (1, 2, 3...)
+  roundsHistory?: BomExportVoucherRoundRecord[];
   notes?: string;
 }
 

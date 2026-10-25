@@ -1,4 +1,4 @@
-import { Part, PartLocationStock, Transaction, StockCheckRecord, AppSettings, ContainerBatch, ContainerQrTag, FifoLot, ModelBOM, ModelBOMItem, KittingQueueItem, BufferLocationMap, BufferPartItem, MaterialCallRequest, BomExportVoucher, BomExportVoucherItem, UserAccount, ViewTab, ConversionFactor, KittingScanLog, ProductivityPersonnelConfig, HourlyPersonnelSlot } from './types';
+import { Part, PartLocationStock, Transaction, StockCheckRecord, AppSettings, ContainerBatch, ContainerQrTag, FifoLot, ModelBOM, ModelBOMItem, KittingQueueItem, BufferLocationMap, BufferPartItem, MaterialCallRequest, BomExportVoucher, BomExportVoucherItem, BomExportVoucherRoundRecord, UserAccount, ViewTab, ConversionFactor, KittingScanLog, ProductivityPersonnelConfig, HourlyPersonnelSlot } from './types';
 import { initialParts, initialTransactions, initialSettings } from './sampleData';
 import { MasterKittingTag, SAMPLE_MASTER_TAGS } from './masterExcelParser';
 import { getPartGroupConfig } from './partGroupColors';
@@ -3166,9 +3166,34 @@ export const storageService = {
     }
   },
 
+  getBomVouchers(): BomExportVoucher[] {
+    return this.getBomExportVouchers();
+  },
+
   saveBomExportVouchers(vouchers: BomExportVoucher[]): void {
     localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
     supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers);
+  },
+
+  saveBomVouchers(vouchers: BomExportVoucher[]): void {
+    this.saveBomExportVouchers(vouchers);
+  },
+
+  getBomVoucherById(id: string): BomExportVoucher | undefined {
+    return this.getBomExportVouchers().find((v) => v.id === id || v.voucherCode === id);
+  },
+
+  updateBomExportVoucher(id: string, updates: Partial<BomExportVoucher>): BomExportVoucher {
+    const vouchers = this.getBomExportVouchers();
+    const idx = vouchers.findIndex((v) => v.id === id || v.voucherCode === id);
+    if (idx === -1) throw new Error(`Không tìm thấy phiếu xuất kho BOM [${id}]!`);
+    vouchers[idx] = {
+      ...vouchers[idx],
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+    this.saveBomExportVouchers(vouchers);
+    return vouchers[idx];
   },
 
   addBomExportVoucher(params: {
@@ -3177,13 +3202,20 @@ export const storageService = {
     dateTime: string;
     person: string;
     items: BomExportVoucherItem[];
+    status?: 'ACTIVE' | 'PARTIAL' | 'COMPLETED' | 'ROLLED_BACK';
+    dispatchRounds?: number;
+    roundsHistory?: BomExportVoucherRoundRecord[];
+    notes?: string;
   }): BomExportVoucher {
     const vouchers = this.getBomExportVouchers();
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const todayCount = vouchers.filter((v) => v.createdAt && v.createdAt.startsWith(new Date().toISOString().slice(0, 10))).length + 1;
     const voucherCode = `PXK-BOM-${todayStr}-${String(todayCount).padStart(3, '0')}`;
 
-    const totalQtyOut = params.items.reduce((sum, i) => sum + (i.totalQtyOut || 0), 0);
+    const totalQtyRequired = params.items.reduce((sum, i) => sum + (i.requiredQty ?? (i.bomQtyPerSet * params.modelQty) ?? 0), 0);
+    const totalQtyOut = params.items.reduce((sum, i) => sum + (i.exportedQty ?? i.totalQtyOut ?? 0), 0);
+    const totalQtyRemaining = Math.max(0, totalQtyRequired - totalQtyOut);
+    const status = params.status || (totalQtyRemaining > 0 ? 'PARTIAL' : 'COMPLETED');
 
     const newVoucher: BomExportVoucher = {
       id: 'vxk-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
@@ -3191,11 +3223,19 @@ export const storageService = {
       modelName: params.modelName,
       modelQty: params.modelQty,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       dateTime: params.dateTime || new Date().toISOString(),
       person: params.person,
       items: params.items,
       totalPartsCount: params.items.length,
+      totalQtyRequired,
       totalQtyOut,
+      totalQtyRemaining,
+      voucherType: 'BOM',
+      status,
+      dispatchRounds: params.dispatchRounds || 1,
+      roundsHistory: params.roundsHistory || [],
+      notes: params.notes,
     };
 
     vouchers.unshift(newVoucher);
@@ -3959,6 +3999,12 @@ export const storageService = {
       const remoteKitting = await supabaseKeyStore.get<KittingQueueItem[]>(STORAGE_KEYS.KITTING_QUEUE);
       if (remoteKitting && Array.isArray(remoteKitting) && remoteKitting.length > 0) {
         localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(remoteKitting));
+      }
+
+      // 9. Fetch BOM Export Vouchers with Smart Cache
+      const remoteVouchers = await supabaseKeyStore.get<BomExportVoucher[]>(STORAGE_KEYS.BOM_VOUCHERS, { forceFresh: forceFetch });
+      if (remoteVouchers && Array.isArray(remoteVouchers) && remoteVouchers.length > 0) {
+        localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(remoteVouchers));
       }
     } catch (err: any) {
       parts = this.getParts();

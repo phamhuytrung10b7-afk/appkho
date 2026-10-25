@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Part, AppSettings, BomExportVoucher } from './types';
+import { Part, AppSettings, BomExportVoucher, BomExportVoucherItem } from './types';
 import { storageService } from './storage';
-import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin } from 'lucide-react';
+import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { QrScannerModal } from './QrScannerModal';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -69,13 +69,19 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
     modelQty: number;
     dateTime: string;
     person: string;
+    status?: string;
+    dispatchRounds?: number;
     items: Array<{
       partCode: string;
       partName: string;
       unit: string;
       bomQtyPerSet: number;
+      requiredQty?: number;
+      exportedQty?: number;
+      remainingQty?: number;
       totalQtyOut: number;
       fifoLocation: string;
+      status?: string;
     }>;
   } | null>(null);
 
@@ -83,21 +89,25 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
   const [savedVouchers, setSavedVouchers] = useState<BomExportVoucher[]>(() => storageService.getBomExportVouchers());
   const [isVoucherHistoryOpen, setIsVoucherHistoryOpen] = useState(false);
   const [searchVoucherTerm, setSearchVoucherTerm] = useState('');
+  const [voucherFilterStatus, setVoucherFilterStatus] = useState<'ALL' | 'PARTIAL' | 'COMPLETED'>('ALL');
 
   const refreshSavedVouchers = () => {
     setSavedVouchers(storageService.getBomExportVouchers());
   };
+
+  // BOM Partial & Backorder Workflow states
+  const [bomWorkflowMode, setBomWorkflowMode] = useState<'new' | 'backorder'>('new');
+  const [selectedBackorderVoucherId, setSelectedBackorderVoucherId] = useState<string>('');
+  const [selectedBOMId, setSelectedBOMId] = useState<string>('');
+  const [modelQty, setModelQty] = useState<number>(1);
+  const [bomChecks, setBomChecks] = useState<Record<string, boolean>>({});
+  const [customOutQuantities, setCustomOutQuantities] = useState<Record<string, number>>({});
 
   // Stock Out Scan Modal States
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
   const [scannedPartForModal, setScannedPartForModal] = useState<Part | null>(null);
   const [initialScanQty, setInitialScanQty] = useState<number>(1);
   const [scanContNumber, setScanContNumber] = useState<string>('');
-
-  // Model-based stock out states
-  const [selectedBOMId, setSelectedBOMId] = useState<string>('');
-  const [modelQty, setModelQty] = useState<number>(1);
-  const [bomChecks, setBomChecks] = useState<Record<string, boolean>>({});
 
   const [scannedPartForQuickOut, setScannedPartForQuickOut] = useState<Part | null>(null);
   const [quickOutQty, setQuickOutQty] = useState<number>(10);
@@ -129,6 +139,49 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
       setSelectedOutLocation(locs[0]?.locationName || '');
     }
   }, [selectedPartId]);
+
+  // Tự động tính toán số lượng xuất đợt này theo tồn kho thực tế khi ở chế độ tạo phiếu mới
+  useEffect(() => {
+    if (bomWorkflowMode === 'new' && selectedBOMId) {
+      const selectedBom = storageService.getModelBOMs().find((b) => b.id === selectedBOMId);
+      if (selectedBom) {
+        const checks: Record<string, boolean> = {};
+        const qtys: Record<string, number> = {};
+        selectedBom.items.forEach((item) => {
+          checks[item.partCode] = true;
+          const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+          const needed = item.quantity * modelQty;
+          const stock = sysPart ? sysPart.currentStock : 0;
+          // Xuất theo tồn kho thực tế: nếu tồn kho < số lượng cần xuất, hệ thống vẫn cho phép xuất số lượng hiện có trong kho
+          qtys[item.partCode] = Math.min(Math.max(0, stock), needed);
+        });
+        setBomChecks(checks);
+        setCustomOutQuantities(qtys);
+      }
+    }
+  }, [bomWorkflowMode, selectedBOMId, modelQty, parts]);
+
+  // Tự động tính toán số lượng xuất bù theo tồn kho thực tế khi mở phiếu đang xuất bù cũ
+  useEffect(() => {
+    if (bomWorkflowMode === 'backorder' && selectedBackorderVoucherId) {
+      const voucher = savedVouchers.find((v) => v.id === selectedBackorderVoucherId || v.voucherCode === selectedBackorderVoucherId);
+      if (voucher) {
+        const checks: Record<string, boolean> = {};
+        const qtys: Record<string, number> = {};
+        voucher.items.forEach((item) => {
+          const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+          const req = item.requiredQty ?? (item.bomQtyPerSet * (voucher.modelQty || 1));
+          const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
+          const rem = item.remainingQty ?? Math.max(0, req - exp);
+          const stock = sysPart ? sysPart.currentStock : 0;
+          checks[item.partCode] = rem > 0;
+          qtys[item.partCode] = rem > 0 ? Math.min(Math.max(0, stock), rem) : 0;
+        });
+        setBomChecks(checks);
+        setCustomOutQuantities(qtys);
+      }
+    }
+  }, [bomWorkflowMode, selectedBackorderVoucherId, savedVouchers, parts]);
 
   // Execute quick stock out
   const handleQuickStockOut = (partToOut: Part, qtyToOut: number) => {
@@ -351,492 +404,1032 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         </div>
       )}
 
-      {/* TAB 1: MODEL-BASED STOCK OUT */}
-      {mainTab === 'model' && (
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <SearchableSelect
-                label="Chọn Model (Lệnh Sản Xuất)"
-                required={true}
-                options={storageService.getModelBOMs().map((bom) => ({
-                  value: bom.id,
-                  label: bom.name,
-                  sublabel: `${bom.items.length} linh kiện định mức`,
-                  badge: `${bom.items.length} LK`,
-                }))}
-                value={selectedBOMId}
-                onChange={(val) => {
-                  setSelectedBOMId(val);
-                  const selectedBom = storageService.getModelBOMs().find((b) => b.id === val);
-                  if (selectedBom) {
-                    const initialChecks: Record<string, boolean> = {};
-                    selectedBom.items.forEach((item) => {
-                      initialChecks[item.partCode] = true;
-                    });
-                    setBomChecks(initialChecks);
-                  } else {
-                    setBomChecks({});
-                  }
-                }}
-                placeholder="-- Tìm kiếm hoặc chọn Model (BOM) --"
-                allowCustom={false}
-                icon={<FileCode className="w-4 h-4 text-pink-600" />}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Số Lượng Sản Xuất <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                min={1}
-                value={modelQty}
-                onChange={(e) => setModelQty(Number(e.target.value) || 0)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold text-center focus:ring-2 focus:ring-pink-500 outline-hidden"
-              />
-            </div>
-          </div>
+      {/* TAB 1: MODEL-BASED STOCK OUT (WITH PARTIAL & BACKORDER WORKFLOW) */}
+      {mainTab === 'model' && (() => {
+        const partialVouchers = savedVouchers.filter(
+          (v) => v.status === 'PARTIAL' || (v.totalQtyRemaining && v.totalQtyRemaining > 0)
+        );
 
-          {selectedBOMId && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-bold text-slate-800 text-sm flex items-center">
-                  <FileCode className="w-4 h-4 text-pink-600 mr-2" />
-                  Danh Sách Linh Kiện Sẽ Xuất Theo Định Mức
-                </h3>
-                <span className="text-xs bg-pink-100 text-pink-800 px-2 py-1 rounded-lg font-bold">
-                  {Object.values(bomChecks).filter(Boolean).length} / {storageService.getModelBOMs().find(b => b.id === selectedBOMId)?.items.length} linh kiện chọn xuất
-                </span>
-              </div>
-              
-              <div className="overflow-x-auto border border-slate-200 rounded-xl max-h-96">
-                <table className="w-full text-left text-xs whitespace-nowrap">
-                  <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm">
-                    <tr>
-                      <th className="p-3 w-10">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 rounded text-pink-600 focus:ring-pink-500 cursor-pointer"
-                          checked={
-                            storageService.getModelBOMs().find(b => b.id === selectedBOMId)?.items.length! > 0 &&
-                            storageService.getModelBOMs().find(b => b.id === selectedBOMId)?.items.every(i => bomChecks[i.partCode])
-                          }
-                          onChange={(e) => {
-                            const selectedBom = storageService.getModelBOMs().find(b => b.id === selectedBOMId);
-                            if (selectedBom) {
-                              const newChecks: Record<string, boolean> = {};
-                              selectedBom.items.forEach(item => {
-                                newChecks[item.partCode] = e.target.checked;
-                              });
-                              setBomChecks(newChecks);
-                            }
-                          }}
-                        />
-                      </th>
-                      <th className="p-3 font-semibold">Mã Linh Kiện</th>
-                      <th className="p-3 font-semibold">Tên Linh Kiện</th>
-                      <th className="p-3 font-semibold text-right">Định Mức</th>
-                      <th className="p-3 font-semibold text-right">SL Cần Xuất</th>
-                      <th className="p-3 font-semibold text-right">Tồn Kho</th>
-                      <th className="p-3 font-semibold text-center">Trạng Thái</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {storageService.getModelBOMs().find(b => b.id === selectedBOMId)?.items.map((item, idx) => {
-                      const sysPart = parts.find(p => p.code.toLowerCase() === item.partCode.toLowerCase());
-                      const neededQty = item.quantity * modelQty;
-                      const hasEnough = sysPart ? sysPart.currentStock >= neededQty : false;
-                      const isChecked = bomChecks[item.partCode] || false;
-                      
-                      return (
-                        <tr key={idx} className={`hover:bg-slate-50 transition-colors ${!isChecked ? 'opacity-50 grayscale' : ''}`}>
-                          <td className="p-3">
-                            <input
-                              type="checkbox"
-                              className="w-4 h-4 rounded text-pink-600 focus:ring-pink-500 cursor-pointer"
-                              checked={isChecked}
-                              onChange={(e) => {
-                                setBomChecks(prev => ({
-                                  ...prev,
-                                  [item.partCode]: e.target.checked
-                                }));
-                              }}
-                            />
-                          </td>
-                          <td className="p-3 font-mono font-bold text-slate-800">{item.partCode}</td>
-                          <td className="p-3 text-slate-600 max-w-[200px] truncate" title={item.partName}>{item.partName}</td>
-                          <td className="p-3 text-right font-medium text-slate-500">{item.quantity}</td>
-                          <td className="p-3 text-right font-black text-pink-600">{neededQty.toLocaleString('vi-VN')} {item.unit}</td>
-                          <td className="p-3 text-right font-bold text-blue-700">
-                            {sysPart ? `${sysPart.currentStock.toLocaleString('vi-VN')} ${sysPart.unit}` : '0 Cái'}
-                          </td>
-                          <td className="p-3 text-center">
-                            {!sysPart ? (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">
-                                Mã mới
-                              </span>
-                            ) : hasEnough ? (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700">
-                                Đủ xuất
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700">
-                                Thiếu hàng
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+        const currentBOM = storageService.getModelBOMs().find((b) => b.id === selectedBOMId);
+        const selectedBackorderVoucher = savedVouchers.find(
+          (v) => v.id === selectedBackorderVoucherId || v.voucherCode === selectedBackorderVoucherId
+        );
 
-              {/* Action Buttons for Model */}
-              <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row gap-4 items-center justify-between">
-                <div className="flex-1 w-full grid grid-cols-2 gap-4">
-                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Người Lấy <span className="text-red-500">*</span>
-                    </label>
-                    <SearchableSelect
-                      options={staffOptions}
-                      value={person}
-                      onChange={(val) => setPerson(val)}
-                      placeholder="Chọn người nhận..."
-                      allowCustom={true}
-                    />
-                  </div>
-                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Ngày Giờ <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={dateTime}
-                      onChange={(e) => setDateTime(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-hidden"
-                    />
-                  </div>
-                </div>
+        // Compute items to display in the table
+        const displayItems = bomWorkflowMode === 'new'
+          ? (currentBOM
+              ? currentBOM.items.map((item) => {
+                  const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+                  const requiredQty = item.quantity * modelQty;
+                  const currentStock = sysPart ? sysPart.currentStock : 0;
+                  const prevExported = 0;
+                  const remainingBeforeRound = requiredQty;
+                  const qtyThisRound =
+                    customOutQuantities[item.partCode] !== undefined
+                      ? customOutQuantities[item.partCode]
+                      : Math.min(Math.max(0, currentStock), remainingBeforeRound);
+                  const remainingAfterRound = Math.max(0, remainingBeforeRound - qtyThisRound);
+                  return {
+                    partCode: item.partCode,
+                    partName: item.partName,
+                    unit: item.unit,
+                    bomQtyPerSet: item.quantity,
+                    requiredQty,
+                    currentStock,
+                    prevExported,
+                    remainingBeforeRound,
+                    qtyThisRound,
+                    remainingAfterRound,
+                    isChecked: bomChecks[item.partCode] !== false,
+                    sysPart,
+                  };
+                })
+              : [])
+          : (selectedBackorderVoucher
+              ? selectedBackorderVoucher.items.map((item) => {
+                  const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+                  const requiredQty = item.requiredQty ?? (item.bomQtyPerSet * (selectedBackorderVoucher.modelQty || 1));
+                  const currentStock = sysPart ? sysPart.currentStock : 0;
+                  const prevExported = item.exportedQty ?? item.totalQtyOut ?? 0;
+                  const remainingBeforeRound = item.remainingQty ?? Math.max(0, requiredQty - prevExported);
+                  const qtyThisRound =
+                    customOutQuantities[item.partCode] !== undefined
+                      ? customOutQuantities[item.partCode]
+                      : (remainingBeforeRound > 0 ? Math.min(Math.max(0, currentStock), remainingBeforeRound) : 0);
+                  const remainingAfterRound = Math.max(0, remainingBeforeRound - qtyThisRound);
+                  return {
+                    partCode: item.partCode,
+                    partName: item.partName,
+                    unit: item.unit,
+                    bomQtyPerSet: item.bomQtyPerSet,
+                    requiredQty,
+                    currentStock,
+                    prevExported,
+                    remainingBeforeRound,
+                    qtyThisRound,
+                    remainingAfterRound,
+                    isChecked: bomChecks[item.partCode] !== false,
+                    sysPart,
+                  };
+                })
+              : []);
+
+        const checkedItems = displayItems.filter((i) => i.isChecked);
+        const totalSelectedPartsCount = checkedItems.length;
+        const totalRequiredQty = checkedItems.reduce((sum, i) => sum + i.requiredQty, 0);
+        const totalRoundOutQty = checkedItems.reduce((sum, i) => sum + i.qtyThisRound, 0);
+        const totalRemainingAfterQty = checkedItems.reduce((sum, i) => sum + i.remainingAfterRound, 0);
+
+        const handleExecuteBomOut = () => {
+          if (!person.trim()) {
+            setMessage({ type: 'error', text: 'Vui lòng chọn hoặc nhập tên người nhận linh kiện!' });
+            return;
+          }
+
+          if (bomWorkflowMode === 'new') {
+            if (!currentBOM) {
+              setMessage({ type: 'error', text: 'Vui lòng chọn Model (Lệnh Sản Xuất)!' });
+              return;
+            }
+            if (modelQty <= 0) {
+              setMessage({ type: 'error', text: 'Số lượng sản xuất phải lớn hơn 0!' });
+              return;
+            }
+            if (checkedItems.length === 0) {
+              setMessage({ type: 'error', text: 'Chưa có linh kiện nào được chọn để xuất!' });
+              return;
+            }
+
+            // Verify physical stock: cannot export more than actual stock
+            for (const item of checkedItems) {
+              if (item.qtyThisRound > item.currentStock) {
+                setMessage({
+                  type: 'error',
+                  text: `Linh kiện [${item.partCode}] có số lượng xuất đợt này (${item.qtyThisRound}) vượt quá tồn kho thực tế (${item.currentStock})!`,
+                });
+                return;
+              }
+            }
+
+            const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            const todayCount = storageService.getBomExportVouchers().filter((v) => v.createdAt && v.createdAt.startsWith(new Date().toISOString().slice(0, 10))).length + 1;
+            const bomVoucherCode = `PXK-BOM-${todayStr}-${String(todayCount).padStart(3, '0')}`;
+
+            const printedItems: BomExportVoucherItem[] = [];
+            const roundItemsSummary: Array<{ partCode: string; quantity: number; fifoLocation?: string }> = [];
+
+            checkedItems.forEach((item) => {
+              let fullFifoLocStr = 'Kho chính';
+              if (item.sysPart && item.qtyThisRound > 0) {
+                const fifoLots = storageService.getPartFifoLots(item.sysPart.id);
+                const fifoNext = fifoLots.find((l) => l.status === 'FIFO_NEXT');
+                const activeLocs = storageService.getPartLocations(item.sysPart).filter((l) => l.quantity > 0);
+                let locationName = 'Kho chính';
+                if (fifoNext && fifoNext.locationName) {
+                  locationName = fifoNext.locationName;
+                } else if (activeLocs.length > 0) {
+                  locationName = activeLocs[0].locationName;
+                } else if (item.sysPart.location) {
+                  locationName = item.sysPart.location.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+                }
+                fullFifoLocStr = locationName;
+                if (fifoNext && fifoNext.contNumber && !locationName.includes(fifoNext.contNumber)) {
+                  fullFifoLocStr = `${locationName} (${fifoNext.contNumber})`;
+                }
+
+                const tx = storageService.addStockOut({
+                  partId: item.sysPart.id,
+                  quantity: item.qtyThisRound,
+                  date: new Date(dateTime).toISOString(),
+                  person: person.trim() || 'Thủ kho',
+                  productionOrder: currentBOM.name,
+                  reasonOrPurpose: 'Sản xuất theo Model (BOM)',
+                  notes: `[Đợt 1] Model ${currentBOM.name} (${modelQty} bộ) ${item.remainingAfterRound > 0 ? `(Nợ: ${item.remainingAfterRound} ${item.unit})` : '(Đủ)'}`,
+                  locationId: locationName,
+                  voucherCode: bomVoucherCode,
+                  voucherTitle: `Model BOM: ${currentBOM.name}`,
+                  sourceBin: locationName,
+                });
+
+                const latestPart = storageService.getPartById(item.sysPart.id) || item.sysPart;
+                const partLocs = storageService.getPartLocations(latestPart);
+                const updatedActiveLocs = partLocs.filter((l) => l.quantity > 0);
+                const newLocSummary = storageService.formatPartLocationSummary(updatedActiveLocs);
+                storageService.updatePart(latestPart.id, {
+                  currentStock: tx.stockAfter,
+                  locations: updatedActiveLocs,
+                  location: newLocSummary,
+                });
+
+                roundItemsSummary.push({
+                  partCode: item.partCode,
+                  quantity: item.qtyThisRound,
+                  fifoLocation: fullFifoLocStr,
+                });
+              }
+
+              printedItems.push({
+                partCode: item.partCode,
+                partName: item.partName,
+                unit: item.unit,
+                bomQtyPerSet: item.bomQtyPerSet,
+                requiredQty: item.requiredQty,
+                exportedQty: item.qtyThisRound,
+                remainingQty: item.remainingAfterRound,
+                currentBatchQty: item.qtyThisRound,
+                totalQtyOut: item.qtyThisRound,
+                fifoLocation: fullFifoLocStr,
+                status: item.remainingAfterRound === 0 ? 'COMPLETED' : item.qtyThisRound > 0 ? 'PARTIAL' : 'PENDING',
+              });
+            });
+
+            const totalQtyRequired = printedItems.reduce((sum, i) => sum + (i.requiredQty || 0), 0);
+            const totalQtyOut = printedItems.reduce((sum, i) => sum + (i.exportedQty || 0), 0);
+            const totalQtyRemaining = Math.max(0, totalQtyRequired - totalQtyOut);
+            const overallStatus = totalQtyRemaining === 0 ? 'COMPLETED' : 'PARTIAL';
+
+            const savedVoucher: BomExportVoucher = {
+              id: 'vxk-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+              voucherCode: bomVoucherCode,
+              modelName: currentBOM.name,
+              modelQty,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              dateTime: dateTime || new Date().toISOString(),
+              person: person.trim() || 'Thủ kho',
+              items: printedItems,
+              totalPartsCount: printedItems.length,
+              totalQtyRequired,
+              totalQtyOut,
+              totalQtyRemaining,
+              voucherType: 'BOM',
+              status: overallStatus,
+              dispatchRounds: 1,
+              roundsHistory: [
+                {
+                  roundNumber: 1,
+                  dateTime: dateTime || new Date().toISOString(),
+                  person: person.trim() || 'Thủ kho',
+                  notes: overallStatus === 'COMPLETED' ? 'Đã xuất đủ 100% trong đợt 1' : `Đợt 1 (Còn thiếu ${totalQtyRemaining} linh kiện chờ xuất bù)`,
+                  items: roundItemsSummary,
+                },
+              ],
+            };
+
+            const existingVouchers = storageService.getBomExportVouchers();
+            existingVouchers.unshift(savedVoucher);
+            storageService.saveBomExportVouchers(existingVouchers);
+            refreshSavedVouchers();
+
+            setMessage({
+              type: 'success',
+              text: overallStatus === 'COMPLETED'
+                ? `🎉 ĐÃ XUẤT KHO HOÀN TẤT 100%! Phiếu [${savedVoucher.voucherCode}] cho Model ${currentBOM.name}.`
+                : `⚠️ ĐÃ XUẤT KHO ĐỢT 1 & LƯU PHIẾU XUẤT BÙ [${savedVoucher.voucherCode}]! Còn thiếu ${totalQtyRemaining} linh kiện. Trạng thái phiếu: "Đang xuất bù".`,
+            });
+
+            setBomPrintModalData({
+              voucherCode: savedVoucher.voucherCode,
+              modelName: savedVoucher.modelName,
+              modelQty: savedVoucher.modelQty,
+              dateTime: savedVoucher.dateTime,
+              person: savedVoucher.person,
+              status: savedVoucher.status,
+              dispatchRounds: savedVoucher.dispatchRounds,
+              items: savedVoucher.items,
+            });
+
+            onSuccess();
+          } else {
+            // 'backorder' mode
+            if (!selectedBackorderVoucher) {
+              setMessage({ type: 'error', text: 'Vui lòng chọn phiếu xuất đang nợ cần xuất bù!' });
+              return;
+            }
+
+            if (checkedItems.length === 0) {
+              setMessage({ type: 'error', text: 'Chưa có linh kiện nào được chọn để xuất bù!' });
+              return;
+            }
+
+            // Verify stock
+            for (const item of checkedItems) {
+              if (item.qtyThisRound > item.currentStock) {
+                setMessage({
+                  type: 'error',
+                  text: `Số lượng xuất bù của [${item.partCode}] (${item.qtyThisRound}) vượt quá tồn kho thực tế (${item.currentStock})!`,
+                });
+                return;
+              }
+            }
+
+            const nextRound = (selectedBackorderVoucher.dispatchRounds || 1) + 1;
+            const roundItemsSummary: Array<{ partCode: string; quantity: number; fifoLocation?: string }> = [];
+
+            const updatedItems = selectedBackorderVoucher.items.map((item) => {
+              const match = checkedItems.find((ci) => ci.partCode === item.partCode);
+              const requiredQty = item.requiredQty ?? (item.bomQtyPerSet * (selectedBackorderVoucher.modelQty || 1));
+              const oldExported = item.exportedQty ?? item.totalQtyOut ?? 0;
+
+              if (!match) {
+                const remaining = item.remainingQty ?? Math.max(0, requiredQty - oldExported);
+                return {
+                  ...item,
+                  requiredQty,
+                  exportedQty: oldExported,
+                  remainingQty: remaining,
+                  status: remaining === 0 ? 'COMPLETED' : 'PARTIAL',
+                };
+              }
+
+              const qtyOutThisRound = match.qtyThisRound;
+              let fullFifoLocStr = item.fifoLocation || 'Kho chính';
+
+              if (qtyOutThisRound > 0 && match.sysPart) {
+                const fifoLots = storageService.getPartFifoLots(match.sysPart.id);
+                const fifoNext = fifoLots.find((l) => l.status === 'FIFO_NEXT');
+                const activeLocs = storageService.getPartLocations(match.sysPart).filter((l) => l.quantity > 0);
+                let locationName = 'Kho chính';
+                if (fifoNext && fifoNext.locationName) {
+                  locationName = fifoNext.locationName;
+                } else if (activeLocs.length > 0) {
+                  locationName = activeLocs[0].locationName;
+                } else if (match.sysPart.location) {
+                  locationName = match.sysPart.location.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+                }
+                fullFifoLocStr = locationName;
+
+                const tx = storageService.addStockOut({
+                  partId: match.sysPart.id,
+                  quantity: qtyOutThisRound,
+                  date: new Date(dateTime).toISOString(),
+                  person: person.trim() || 'Thủ kho',
+                  productionOrder: selectedBackorderVoucher.modelName,
+                  reasonOrPurpose: 'Sản xuất theo Model (BOM) - Xuất bù',
+                  notes: `[Xuất bù Đợt ${nextRound}] Phiếu ${selectedBackorderVoucher.voucherCode} - Model ${selectedBackorderVoucher.modelName} (Đợt này: +${qtyOutThisRound} ${match.unit})`,
+                  locationId: locationName,
+                  voucherCode: selectedBackorderVoucher.voucherCode,
+                  voucherTitle: `Xuất bù Đợt ${nextRound} - ${selectedBackorderVoucher.modelName}`,
+                  sourceBin: locationName,
+                });
+
+                const latestPart = storageService.getPartById(match.sysPart.id) || match.sysPart;
+                const partLocs = storageService.getPartLocations(latestPart);
+                const updatedActiveLocs = partLocs.filter((l) => l.quantity > 0);
+                const newLocSummary = storageService.formatPartLocationSummary(updatedActiveLocs);
+                storageService.updatePart(latestPart.id, {
+                  currentStock: tx.stockAfter,
+                  locations: updatedActiveLocs,
+                  location: newLocSummary,
+                });
+
+                roundItemsSummary.push({
+                  partCode: item.partCode,
+                  quantity: qtyOutThisRound,
+                  fifoLocation: locationName,
+                });
+              }
+
+              const newExported = oldExported + qtyOutThisRound;
+              const newRemaining = Math.max(0, requiredQty - newExported);
+              const newStatus = newRemaining === 0 ? 'COMPLETED' : 'PARTIAL';
+
+              return {
+                ...item,
+                requiredQty,
+                exportedQty: newExported,
+                remainingQty: newRemaining,
+                currentBatchQty: qtyOutThisRound,
+                totalQtyOut: newExported,
+                fifoLocation: fullFifoLocStr,
+                status: newStatus,
+              };
+            });
+
+            const totalQtyRequired = updatedItems.reduce((sum, i) => sum + (i.requiredQty || 0), 0);
+            const totalQtyOut = updatedItems.reduce((sum, i) => sum + (i.exportedQty || 0), 0);
+            const totalQtyRemaining = Math.max(0, totalQtyRequired - totalQtyOut);
+            const overallStatus = totalQtyRemaining === 0 ? 'COMPLETED' : 'PARTIAL';
+
+            const roundsHistory = selectedBackorderVoucher.roundsHistory ? [...selectedBackorderVoucher.roundsHistory] : [];
+            roundsHistory.push({
+              roundNumber: nextRound,
+              dateTime: dateTime || new Date().toISOString(),
+              person: person.trim() || 'Thủ kho',
+              notes: overallStatus === 'COMPLETED' ? `Xuất bù Đợt ${nextRound}: Đã hoàn thành 100% phiếu!` : `Xuất bù Đợt ${nextRound}: Còn nợ ${totalQtyRemaining} linh kiện`,
+              items: roundItemsSummary,
+            });
+
+            const updatedVoucher = storageService.updateBomExportVoucher(selectedBackorderVoucher.id, {
+              items: updatedItems,
+              totalQtyRequired,
+              totalQtyOut,
+              totalQtyRemaining,
+              status: overallStatus,
+              dispatchRounds: nextRound,
+              roundsHistory,
+            });
+
+            refreshSavedVouchers();
+
+            setMessage({
+              type: 'success',
+              text: overallStatus === 'COMPLETED'
+                ? `🎉 XUẤT BÙ ĐỢT ${nextRound} THÀNH CÔNG! Phiếu [${selectedBackorderVoucher.voucherCode}] đã đủ 100% và chuyển sang trạng thái "ĐÃ HOÀN THÀNH".`
+                : `✅ Đã ghi nhận Xuất bù Đợt ${nextRound} cho phiếu [${selectedBackorderVoucher.voucherCode}]! Còn thiếu ${totalQtyRemaining} linh kiện, tiếp tục ở trạng thái "Đang xuất bù".`,
+            });
+
+            setBomPrintModalData({
+              voucherCode: updatedVoucher.voucherCode,
+              modelName: updatedVoucher.modelName,
+              modelQty: updatedVoucher.modelQty,
+              dateTime: dateTime || new Date().toISOString(),
+              person: person.trim() || 'Thủ kho',
+              status: updatedVoucher.status,
+              dispatchRounds: updatedVoucher.dispatchRounds,
+              items: updatedVoucher.items,
+            });
+
+            onSuccess();
+          }
+        };
+
+        return (
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
+            {/* WORKFLOW MODE SWITCHER (Tạo phiếu mới vs Tiếp tục xuất bù) */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-2 bg-slate-100 rounded-2xl border border-slate-200">
+              <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBomWorkflowMode('new');
+                    setMessage(null);
+                  }}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center space-x-2 ${
+                    bomWorkflowMode === 'new'
+                      ? 'bg-pink-600 text-white shadow-md'
+                      : 'text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <PlusCircle className="w-4 h-4 text-pink-200" />
+                  <span>1. Tạo Phiếu Xuất BOM Mới</span>
+                </button>
 
                 <button
                   type="button"
                   onClick={() => {
-                    const selectedBom = storageService.getModelBOMs().find(b => b.id === selectedBOMId);
-                    if (!selectedBom) return;
-                    if (modelQty <= 0) {
-                      setMessage({ type: 'error', text: 'Số lượng sản xuất phải lớn hơn 0!' });
-                      return;
-                    }
-
-                    // Collect items to out
-                    const itemsToOut = selectedBom.items.filter(i => bomChecks[i.partCode]);
-                    if (itemsToOut.length === 0) {
-                      setMessage({ type: 'error', text: 'Chưa có linh kiện nào được chọn để xuất!' });
-                      return;
-                    }
-
-                    // Check stock
-                    const insufficientParts: string[] = [];
-                    for (const item of itemsToOut) {
-                      const sysPart = parts.find(p => p.code.toLowerCase() === item.partCode.toLowerCase());
-                      const neededQty = item.quantity * modelQty;
-                      if (!sysPart || sysPart.currentStock < neededQty) {
-                        insufficientParts.push(item.partCode);
-                      }
-                    }
-
-                    if (insufficientParts.length > 0) {
-                      setMessage({ type: 'error', text: `Có ${insufficientParts.length} linh kiện không đủ tồn kho: ${insufficientParts.join(', ')}` });
-                      return;
-                    }
-
-                    // Perform stock out with FIFO location logging & printable list creation
-                    try {
-                      let totalOut = 0;
-                      const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-                      const todayCount = storageService.getBomExportVouchers().filter((v) => v.createdAt && v.createdAt.startsWith(new Date().toISOString().slice(0, 10))).length + 1;
-                      const bomVoucherCode = `PXK-BOM-${todayStr}-${String(todayCount).padStart(3, '0')}`;
-
-                      const printedItems: Array<{
-                        partCode: string;
-                        partName: string;
-                        unit: string;
-                        bomQtyPerSet: number;
-                        totalQtyOut: number;
-                        fifoLocation: string;
-                      }> = [];
-
-                      itemsToOut.forEach((item) => {
-                        const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
-                        if (sysPart) {
-                          const neededQty = item.quantity * modelQty;
-
-                          // Retrieve FIFO priority location for this part
-                          const fifoLots = storageService.getPartFifoLots(sysPart.id);
-                          const fifoNext = fifoLots.find((l) => l.status === 'FIFO_NEXT');
-                          const activeLocs = storageService.getPartLocations(sysPart).filter((l) => l.quantity > 0);
-
-                          let locationName = 'Kho chính';
-                          if (fifoNext && fifoNext.locationName) {
-                            locationName = fifoNext.locationName;
-                          } else if (activeLocs.length > 0) {
-                            locationName = activeLocs[0].locationName;
-                          } else if (sysPart.location) {
-                            locationName = sysPart.location.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
-                          }
-
-                          let fullFifoLocStr = locationName;
-                          if (fifoNext && fifoNext.contNumber && !locationName.includes(fifoNext.contNumber)) {
-                            fullFifoLocStr = `${locationName} (${fifoNext.contNumber})`;
-                          }
-
-                          const tx = storageService.addStockOut({
-                            partId: sysPart.id,
-                            quantity: neededQty,
-                            date: new Date(dateTime).toISOString(),
-                            person: person.trim() || 'Lê Hoàng Nam',
-                            productionOrder: selectedBom.name,
-                            reasonOrPurpose: 'Sản xuất theo Model (BOM)',
-                            notes: `SL SX: ${modelQty} bộ [FIFO: ${locationName}]`,
-                            locationId: locationName,
-                            voucherCode: bomVoucherCode,
-                            voucherTitle: `Model BOM: ${selectedBom.name}`,
-                            sourceBin: locationName,
-                          });
-
-                          const latestPart = storageService.getPartById(sysPart.id) || sysPart;
-                          const partLocs = storageService.getPartLocations(latestPart);
-                          const updatedActiveLocs = partLocs.filter((l) => l.quantity > 0);
-                          const newLocSummary = storageService.formatPartLocationSummary(updatedActiveLocs);
-                          storageService.updatePart(latestPart.id, {
-                            currentStock: tx.stockAfter,
-                            locations: updatedActiveLocs,
-                            location: newLocSummary,
-                          });
-
-                          printedItems.push({
-                            partCode: sysPart.code,
-                            partName: sysPart.name,
-                            unit: sysPart.unit,
-                            bomQtyPerSet: item.quantity,
-                            totalQtyOut: neededQty,
-                            fifoLocation: fullFifoLocStr,
-                          });
-
-                          totalOut++;
-                        }
-                      });
-
-                      // Save voucher to persistent history
-                      const totalQtyOut = printedItems.reduce((sum, i) => sum + (i.totalQtyOut || 0), 0);
-                      const savedVoucher: BomExportVoucher = {
-                        id: 'vxk-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
-                        voucherCode: bomVoucherCode,
-                        modelName: selectedBom.name,
-                        modelQty,
-                        createdAt: new Date().toISOString(),
-                        dateTime: dateTime || new Date().toISOString(),
-                        person: person.trim() || 'Lê Hoàng Nam',
-                        items: printedItems,
-                        totalPartsCount: printedItems.length,
-                        totalQtyOut,
-                        voucherType: 'BOM',
-                        status: 'ACTIVE',
-                      };
-
-                      const existingVouchers = storageService.getBomExportVouchers();
-                      existingVouchers.unshift(savedVoucher);
-                      storageService.saveBomExportVouchers(existingVouchers);
-
-                      refreshSavedVouchers();
-
-                      setMessage({
-                        type: 'success',
-                        text: `🎉 Đã tiêu hao tồn kho thành công ${totalOut} linh kiện cho Model ${selectedBom.name}! Đã tự động lưu Phiếu Xuất BOM [${savedVoucher.voucherCode}].`,
-                      });
-
-                      // Open printable dispatch sheet modal
-                      setBomPrintModalData({
-                        voucherCode: savedVoucher.voucherCode,
-                        modelName: savedVoucher.modelName,
-                        modelQty: savedVoucher.modelQty,
-                        dateTime: savedVoucher.dateTime,
-                        person: savedVoucher.person,
-                        items: savedVoucher.items,
-                      });
-
-                      setModelQty(1);
-                      onSuccess();
-                    } catch (err: any) {
-                      setMessage({ type: 'error', text: err.message || 'Lỗi khi xuất kho hàng loạt' });
+                    setBomWorkflowMode('backorder');
+                    setMessage(null);
+                    if (partialVouchers.length > 0 && !selectedBackorderVoucherId) {
+                      setSelectedBackorderVoucherId(partialVouchers[0].id);
                     }
                   }}
-                  className="w-full sm:w-auto px-6 py-4 bg-pink-600 hover:bg-pink-700 text-white rounded-xl text-sm font-bold shadow-lg transition-all cursor-pointer flex items-center justify-center space-x-2 shrink-0"
+                  className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center space-x-2 ${
+                    bomWorkflowMode === 'backorder'
+                      ? 'bg-amber-500 text-slate-950 shadow-md font-black'
+                      : 'text-slate-700 hover:bg-slate-200'
+                  }`}
                 >
-                  <ArrowUpRight className="w-5 h-5" />
-                  <span>XUẤT KHO HÀNG LOẠT THEO BOM</span>
+                  <RotateCcw className="w-4 h-4 text-amber-950" />
+                  <span>2. Tiếp Tục Xuất Bù Phiếu Cũ</span>
+                  <span className="px-2 py-0.5 bg-amber-950/20 text-slate-950 rounded-full text-[10px] font-black">
+                    {partialVouchers.length} phiếu chờ
+                  </span>
                 </button>
               </div>
+
+              <div className="text-[11px] font-bold text-slate-500 px-3 py-1 bg-white rounded-xl border border-slate-200 shadow-xs">
+                {bomWorkflowMode === 'new'
+                  ? '⚡ Cho phép xuất theo tồn kho thực tế, tự động lưu vết thiếu hụt'
+                  : '🔄 Đợt linh kiện tiếp theo về: Chọn phiếu cũ để tiếp tục xuất bù'}
+              </div>
             </div>
-          )}
 
-          {/* Saved BOM Export Vouchers History Section */}
-          {(() => {
-            const filteredVouchers = savedVouchers.filter(
-              (v) =>
-                !searchVoucherTerm ||
-                v.voucherCode.toLowerCase().includes(searchVoucherTerm.toLowerCase()) ||
-                v.modelName.toLowerCase().includes(searchVoucherTerm.toLowerCase()) ||
-                v.person.toLowerCase().includes(searchVoucherTerm.toLowerCase())
-            );
+            {/* SELECTION ROW */}
+            {bomWorkflowMode === 'new' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <SearchableSelect
+                    label="Chọn Model (Lệnh Sản Xuất)"
+                    required={true}
+                    options={storageService.getModelBOMs().map((bom) => ({
+                      value: bom.id,
+                      label: bom.name,
+                      sublabel: `${bom.items.length} linh kiện định mức`,
+                      badge: `${bom.items.length} LK`,
+                    }))}
+                    value={selectedBOMId}
+                    onChange={(val) => {
+                      setSelectedBOMId(val);
+                    }}
+                    placeholder="-- Tìm kiếm hoặc chọn Model (BOM) --"
+                    allowCustom={false}
+                    icon={<FileCode className="w-4 h-4 text-pink-600" />}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Số Lượng Sản Xuất (Bộ) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={modelQty}
+                    onChange={(e) => setModelQty(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold text-center focus:ring-2 focus:ring-pink-500 outline-hidden"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <SearchableSelect
+                    label="Chọn Phiếu Xuất Đang Nợ / Chờ Xuất Bù"
+                    required={true}
+                    options={partialVouchers.map((v) => ({
+                      value: v.id,
+                      label: `[${v.voucherCode}] Model: ${v.modelName} (${v.modelQty} bộ)`,
+                      sublabel: `Đã xuất: ${(v.totalQtyOut || 0).toLocaleString('vi-VN')} | Còn nợ: ${(v.totalQtyRemaining || 0).toLocaleString('vi-VN')} | Đợt tiếp theo: Đợt ${(v.dispatchRounds || 1) + 1}`,
+                      badge: `Nợ ${(v.totalQtyRemaining || 0).toLocaleString('vi-VN')}`,
+                    }))}
+                    value={selectedBackorderVoucherId}
+                    onChange={(val) => setSelectedBackorderVoucherId(val)}
+                    placeholder="-- Chọn phiếu xuất đang ở trạng thái Đang xuất bù --"
+                    allowCustom={false}
+                    icon={<RotateCcw className="w-4 h-4 text-amber-600" />}
+                  />
+                </div>
 
-            return (
-              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2.5 bg-pink-100 text-pink-700 rounded-2xl">
-                      <FileText className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-base font-black text-slate-900 flex items-center space-x-2">
-                        <span>Lịch Sử Phiếu Xuất Kho (BOM & File Excel)</span>
-                        <span className="px-2.5 py-0.5 bg-pink-100 text-pink-800 text-xs font-black rounded-full">
-                          {savedVouchers.length} Phiếu
+                {selectedBackorderVoucher && (
+                  <div className="p-4 bg-amber-50/80 rounded-2xl border border-amber-300 flex flex-wrap items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-mono font-black text-xs text-amber-900 bg-amber-200/80 px-2.5 py-0.5 rounded-md">
+                          {selectedBackorderVoucher.voucherCode}
                         </span>
-                      </h3>
-                      <p className="text-xs text-slate-500">
-                        Tất cả phiếu xuất kho soạn hàng theo Model BOM và File Excel đều được tự động lưu lại. Bạn có thể tra cứu, in lại hoặc xóa phiếu bất kỳ lúc nào.
+                        <span className="text-xs font-extrabold text-slate-800">
+                          Model: <span className="text-blue-700">{selectedBackorderVoucher.modelName}</span> ({selectedBackorderVoucher.modelQty} bộ)
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        Phiếu tạo ngày: <strong>{new Date(selectedBackorderVoucher.createdAt).toLocaleString('vi-VN')}</strong> | Người tạo: <strong>{selectedBackorderVoucher.person}</strong>
                       </p>
                     </div>
+
+                    <div className="flex items-center space-x-3 text-xs">
+                      <span className="px-3 py-1.5 bg-amber-400 text-slate-950 font-black rounded-xl shadow-xs">
+                        👉 Đợt Xuất Bù Kế Tiếp: ĐỢT {(selectedBackorderVoucher.dispatchRounds || 1) + 1}
+                      </span>
+                      <span className="px-3 py-1.5 bg-rose-100 text-rose-800 font-black rounded-xl border border-rose-300">
+                        Còn nợ: {(selectedBackorderVoucher.totalQtyRemaining || 0).toLocaleString('vi-VN')} linh kiện
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* INTERACTIVE COMPONENT TABLE WITH PARTIAL QUANTITY OVERRIDES & LIVE SHORTAGE TRACKING */}
+            {((bomWorkflowMode === 'new' && selectedBOMId) || (bomWorkflowMode === 'backorder' && selectedBackorderVoucher)) && (
+              <div className="space-y-4 animate-in fade-in duration-150">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center space-x-2">
+                    <FileCode className="w-4 h-4 text-pink-600" />
+                    <h3 className="font-black text-slate-800 text-sm">
+                      {bomWorkflowMode === 'new'
+                        ? 'Danh Sách Linh Kiện Xuất Đợt 1 (Cho Phép Xuất Một Phần)'
+                        : `Danh Sách Xuất Bù Đợt ${(selectedBackorderVoucher?.dispatchRounds || 1) + 1}`}
+                    </h3>
                   </div>
 
-                  <div className="flex items-center space-x-2 w-full sm:w-auto">
-                    <input
-                      type="text"
-                      value={searchVoucherTerm}
-                      onChange={(e) => setSearchVoucherTerm(e.target.value)}
-                      placeholder="Tìm mã phiếu / model / người lập..."
-                      className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-pink-500 w-full sm:w-60"
-                    />
+                  <div className="flex items-center space-x-2 text-xs">
+                    <span className="bg-pink-100 text-pink-900 px-2.5 py-1 rounded-lg font-bold">
+                      {checkedItems.length} / {displayItems.length} linh kiện chọn xuất
+                    </span>
                     <button
                       type="button"
-                      onClick={() => setIsVoucherHistoryOpen(!isVoucherHistoryOpen)}
-                      className="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1.5 shadow-xs shrink-0"
+                      onClick={() => {
+                        const allChecked = displayItems.every((i) => bomChecks[i.partCode]);
+                        const newChecks: Record<string, boolean> = {};
+                        displayItems.forEach((i) => {
+                          newChecks[i.partCode] = !allChecked;
+                        });
+                        setBomChecks(newChecks);
+                      }}
+                      className="px-2.5 py-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold cursor-pointer transition-colors"
                     >
-                      <Clock className="w-4 h-4" />
-                      <span>{isVoucherHistoryOpen ? 'Thu Gọn' : 'Xem Lịch Sử & In Lại'}</span>
+                      {displayItems.every((i) => bomChecks[i.partCode]) ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
                     </button>
                   </div>
                 </div>
 
-                {isVoucherHistoryOpen && (
-                  <div className="space-y-3 animate-in fade-in duration-200 pt-2">
-                    {filteredVouchers.length === 0 ? (
-                      <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 italic text-xs">
-                        {searchVoucherTerm ? 'Không tìm thấy phiếu xuất kho nào phù hợp.' : 'Chưa có phiếu xuất kho nào trong lịch sử lưu trữ.'}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {filteredVouchers.map((v) => (
-                          <div
-                            key={v.id}
-                            className="p-4 bg-slate-50 hover:bg-pink-50/50 border border-slate-200 hover:border-pink-300 rounded-2xl transition-all space-y-3 flex flex-col justify-between"
+                <div className="overflow-x-auto border border-slate-200 rounded-2xl max-h-[480px] shadow-xs">
+                  <table className="w-full text-left text-xs whitespace-nowrap">
+                    <thead className="bg-slate-100 text-slate-700 sticky top-0 shadow-xs z-10 font-bold">
+                      <tr>
+                        <th className="p-3 w-10 text-center">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 rounded text-pink-600 focus:ring-pink-500 cursor-pointer"
+                            checked={displayItems.length > 0 && displayItems.every((i) => bomChecks[i.partCode])}
+                            onChange={(e) => {
+                              const newChecks: Record<string, boolean> = {};
+                              displayItems.forEach((i) => {
+                                newChecks[i.partCode] = e.target.checked;
+                              });
+                              setBomChecks(newChecks);
+                            }}
+                          />
+                        </th>
+                        <th className="p-3">Mã Linh Kiện</th>
+                        <th className="p-3">Tên Linh Kiện</th>
+                        <th className="p-3 text-right">Định Mức (1 Bộ)</th>
+                        <th className="p-3 text-right">SL Cần Xuất</th>
+                        <th className="p-3 text-right">Tồn Kho Hiện Tại</th>
+                        {bomWorkflowMode === 'backorder' && (
+                          <th className="p-3 text-right">Đã Xuất Đợt Trước</th>
+                        )}
+                        <th className="p-3 text-right bg-pink-50/80 text-pink-900 border-x border-pink-200">
+                          SL Xuất Đợt Này (Thực Tế)
+                        </th>
+                        <th className="p-3 text-right bg-amber-50/80 text-amber-900">
+                          Chờ Xuất Bù (Còn Thiếu)
+                        </th>
+                        <th className="p-3 text-center">Trạng Thái Đợt Này</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {displayItems.map((item, idx) => {
+                        const isChecked = bomChecks[item.partCode] || false;
+                        const isZeroStock = item.currentStock <= 0;
+                        const isPartiallyMet = item.qtyThisRound > 0 && item.remainingAfterRound > 0;
+                        const isFullyMet = item.remainingAfterRound === 0;
+
+                        return (
+                          <tr
+                            key={idx}
+                            className={`hover:bg-slate-50/80 transition-colors ${
+                              !isChecked ? 'opacity-40 grayscale bg-slate-50/40' : ''
+                            }`}
                           >
-                            <div className="space-y-2">
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    <span className="font-mono font-black text-pink-700 text-xs px-2 py-0.5 bg-pink-100 rounded-md inline-block">
-                                      {v.voucherCode}
-                                    </span>
-                                    {v.voucherType === 'EXCEL' ? (
-                                      <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-blue-100 text-blue-900 border border-blue-200 rounded-md">
-                                        📊 File Excel
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-pink-100 text-pink-900 border border-pink-200 rounded-md">
-                                        🎯 Model BOM
-                                      </span>
-                                    )}
-                                  </div>
-                                  <h4 className="font-extrabold text-slate-900 text-sm mt-1">
-                                    {v.voucherType === 'EXCEL' ? 'Phiếu xuất:' : 'Model:'}{' '}
-                                    <span className="text-blue-700 font-bold">{v.modelName}</span>
-                                  </h4>
-                                </div>
-                                <span className={`px-2.5 py-1 text-white text-xs font-black rounded-lg shrink-0 ${v.voucherType === 'EXCEL' ? 'bg-blue-600' : 'bg-pink-600'}`}>
-                                  {v.voucherType === 'EXCEL' ? `${v.totalPartsCount || v.items.length} Mã VT` : `${v.modelQty} Bộ`}
+                            <td className="p-3 text-center">
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 rounded text-pink-600 focus:ring-pink-500 cursor-pointer"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  setBomChecks((prev) => ({
+                                    ...prev,
+                                    [item.partCode]: e.target.checked,
+                                  }));
+                                }}
+                              />
+                            </td>
+                            <td className="p-3 font-mono font-bold text-slate-800">{item.partCode}</td>
+                            <td className="p-3 text-slate-700 max-w-[220px] truncate" title={item.partName}>
+                              {item.partName}
+                            </td>
+                            <td className="p-3 text-right font-medium text-slate-500">
+                              {item.bomQtyPerSet} {item.unit}
+                            </td>
+                            <td className="p-3 text-right font-black text-slate-800">
+                              {item.requiredQty.toLocaleString('vi-VN')} {item.unit}
+                            </td>
+                            <td className="p-3 text-right">
+                              <span
+                                className={`font-mono font-bold px-2 py-0.5 rounded-md ${
+                                  isZeroStock
+                                    ? 'bg-rose-100 text-rose-700 border border-rose-300'
+                                    : item.currentStock < item.remainingBeforeRound
+                                    ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                    : 'bg-blue-50 text-blue-800 border border-blue-200'
+                                }`}
+                              >
+                                {item.currentStock.toLocaleString('vi-VN')} {item.unit}
+                              </span>
+                            </td>
+
+                            {bomWorkflowMode === 'backorder' && (
+                              <td className="p-3 text-right font-mono font-semibold text-slate-600">
+                                {item.prevExported.toLocaleString('vi-VN')} {item.unit}
+                              </td>
+                            )}
+
+                            {/* CỘT NHẬP SỐ LƯỢNG THỰC TẾ XUẤT ĐỢT NÀY */}
+                            <td className="p-2.5 text-right bg-pink-50/30 border-x border-pink-100">
+                              <div className="flex items-center space-x-1.5 justify-end">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={item.currentStock}
+                                  value={item.qtyThisRound}
+                                  disabled={!isChecked || item.remainingBeforeRound === 0}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value) || 0;
+                                    const clamped = Math.max(0, Math.min(val, item.currentStock));
+                                    setCustomOutQuantities((prev) => ({
+                                      ...prev,
+                                      [item.partCode]: clamped,
+                                    }));
+                                  }}
+                                  className={`w-24 px-2 py-1 text-right text-xs font-black rounded-xl border focus:ring-2 focus:ring-pink-500 outline-hidden transition-all ${
+                                    item.qtyThisRound > item.currentStock
+                                      ? 'bg-red-50 border-red-500 text-red-700'
+                                      : item.qtyThisRound > 0
+                                      ? 'bg-emerald-50 border-emerald-400 text-emerald-800'
+                                      : 'bg-white border-slate-300 text-slate-700'
+                                  }`}
+                                />
+                                <span className="text-[11px] text-slate-500 font-semibold w-7 text-left">
+                                  {item.unit}
                                 </span>
                               </div>
+                            </td>
 
-                              <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600 bg-white p-2.5 rounded-xl border border-slate-200/80">
-                                <div>
-                                  <span className="text-slate-400 block text-[10px]">Thời gian lập:</span>
-                                  <strong className="font-semibold text-slate-800 font-mono">
-                                    {new Date(v.dateTime || v.createdAt).toLocaleString('vi-VN')}
-                                  </strong>
+                            {/* CỘT TÍNH VÀ LƯU VẾT THIẾU HỤT: CHỜ XUẤT BÙ */}
+                            <td className="p-3 text-right bg-amber-50/30">
+                              {item.remainingAfterRound > 0 ? (
+                                <span className="font-mono font-black text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-300">
+                                  -{item.remainingAfterRound.toLocaleString('vi-VN')} {item.unit}
+                                </span>
+                              ) : (
+                                <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                                  0 (Đủ)
+                                </span>
+                              )}
+                            </td>
+
+                            {/* CỘT TRẠNG THÁI CỦA LINH KIỆN */}
+                            <td className="p-3 text-center">
+                              {item.remainingBeforeRound === 0 ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                  ✅ Đã đủ 100%
+                                </span>
+                              ) : isFullyMet ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                  ✅ Đủ xuất đợt này
+                                </span>
+                              ) : isPartiallyMet ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300">
+                                  ⚡ Xuất 1 phần (+{item.qtyThisRound})
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300">
+                                  ⚠️ Hết tồn kho / Nợ bù
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* SUMMARY METRICS BAR */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs">
+                  <div>
+                    <span className="text-slate-400 block text-[11px] font-semibold">Linh kiện chọn xuất:</span>
+                    <strong className="text-sm font-black text-slate-800">{totalSelectedPartsCount} mã</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[11px] font-semibold">Tổng SL cần xuất:</span>
+                    <strong className="text-sm font-black text-slate-800">{totalRequiredQty.toLocaleString('vi-VN')}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[11px] font-semibold">SL thực tế xuất đợt này:</span>
+                    <strong className="text-sm font-black text-emerald-600">+{totalRoundOutQty.toLocaleString('vi-VN')}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[11px] font-semibold">Chờ xuất bù sau đợt này:</span>
+                    <strong className={`text-sm font-black ${totalRemainingAfterQty > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                      {totalRemainingAfterQty > 0 ? `-${totalRemainingAfterQty.toLocaleString('vi-VN')}` : '0 (Đủ 100%)'}
+                    </strong>
+                  </div>
+                </div>
+
+                {/* BOTTOM FORM CONTROLS & SUBMIT BUTTON */}
+                <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row gap-4 items-center justify-between">
+                  <div className="flex-1 w-full grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Người Lấy / Soạn Hàng <span className="text-red-500">*</span>
+                      </label>
+                      <SearchableSelect
+                        options={staffOptions}
+                        value={person}
+                        onChange={(val) => setPerson(val)}
+                        placeholder="Chọn người nhận..."
+                        allowCustom={true}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Ngày Giờ Xuất <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={dateTime}
+                        onChange={(e) => setDateTime(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-hidden"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleExecuteBomOut}
+                    className={`w-full sm:w-auto px-6 py-4 rounded-xl text-sm font-black shadow-lg transition-all cursor-pointer flex items-center justify-center space-x-2 shrink-0 ${
+                      bomWorkflowMode === 'new'
+                        ? totalRemainingAfterQty > 0
+                          ? 'bg-amber-500 hover:bg-amber-600 text-slate-950'
+                          : 'bg-pink-600 hover:bg-pink-700 text-white'
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    }`}
+                  >
+                    <ArrowUpRight className="w-5 h-5" />
+                    <span>
+                      {bomWorkflowMode === 'new'
+                        ? totalRemainingAfterQty > 0
+                          ? 'XUẤT KHO ĐỢT 1 & LƯU PHIẾU XUẤT BÙ (PARTIAL)'
+                          : 'XUẤT KHO HÀNG LOẠT THEO BOM (HOÀN TẤT 100%)'
+                        : `XÁC NHẬN XUẤT BÙ ĐỢT ${(selectedBackorderVoucher?.dispatchRounds || 1) + 1}`}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* SAVED BOM EXPORT VOUCHERS HISTORY SECTION */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4 pt-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 bg-pink-100 text-pink-700 rounded-2xl">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-slate-900 flex items-center space-x-2">
+                      <span>Lịch Sử Phiếu Xuất Kho & Theo Dõi Xuất Bù</span>
+                      <span className="px-2.5 py-0.5 bg-pink-100 text-pink-800 text-xs font-black rounded-full">
+                        {savedVouchers.length} Phiếu
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Tất cả phiếu xuất kho soạn hàng theo Model BOM và File Excel đều được lưu vết chi tiết theo từng đợt xuất bù.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                  {/* Status Filters */}
+                  <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setVoucherFilterStatus('ALL')}
+                      className={`px-3 py-1 rounded-lg cursor-pointer transition-all ${
+                        voucherFilterStatus === 'ALL' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                      }`}
+                    >
+                      Tất cả ({savedVouchers.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVoucherFilterStatus('PARTIAL')}
+                      className={`px-3 py-1 rounded-lg cursor-pointer transition-all ${
+                        voucherFilterStatus === 'PARTIAL' ? 'bg-amber-400 text-slate-950 font-black shadow-xs' : 'text-amber-700'
+                      }`}
+                    >
+                      Đang xuất bù ({savedVouchers.filter((v) => v.status === 'PARTIAL' || (v.totalQtyRemaining && v.totalQtyRemaining > 0)).length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVoucherFilterStatus('COMPLETED')}
+                      className={`px-3 py-1 rounded-lg cursor-pointer transition-all ${
+                        voucherFilterStatus === 'COMPLETED' ? 'bg-emerald-600 text-white font-black shadow-xs' : 'text-emerald-700'
+                      }`}
+                    >
+                      Đã hoàn thành ({savedVouchers.filter((v) => v.status === 'COMPLETED' || (!v.totalQtyRemaining && v.status !== 'PARTIAL')).length})
+                    </button>
+                  </div>
+
+                  <input
+                    type="text"
+                    value={searchVoucherTerm}
+                    onChange={(e) => setSearchVoucherTerm(e.target.value)}
+                    placeholder="Tìm mã phiếu / model / người lập..."
+                    className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-pink-500 w-full sm:w-56"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setIsVoucherHistoryOpen(!isVoucherHistoryOpen)}
+                    className="px-4 py-2 bg-pink-600 hover:bg-pink-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1.5 shadow-xs shrink-0"
+                  >
+                    <Clock className="w-4 h-4" />
+                    <span>{isVoucherHistoryOpen ? 'Thu Gọn' : 'Xem Lịch Sử & In Lại'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {isVoucherHistoryOpen && (
+                <div className="space-y-3 animate-in fade-in duration-200 pt-2">
+                  {(() => {
+                    const filteredVouchers = savedVouchers.filter((v) => {
+                      const matchesSearch =
+                        !searchVoucherTerm ||
+                        v.voucherCode.toLowerCase().includes(searchVoucherTerm.toLowerCase()) ||
+                        v.modelName.toLowerCase().includes(searchVoucherTerm.toLowerCase()) ||
+                        v.person.toLowerCase().includes(searchVoucherTerm.toLowerCase());
+
+                      const isPartial = v.status === 'PARTIAL' || (v.totalQtyRemaining && v.totalQtyRemaining > 0);
+                      const matchesStatus =
+                        voucherFilterStatus === 'ALL' ||
+                        (voucherFilterStatus === 'PARTIAL' && isPartial) ||
+                        (voucherFilterStatus === 'COMPLETED' && !isPartial);
+
+                      return matchesSearch && matchesStatus;
+                    });
+
+                    if (filteredVouchers.length === 0) {
+                      return (
+                        <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 italic text-xs">
+                          {searchVoucherTerm || voucherFilterStatus !== 'ALL'
+                            ? 'Không tìm thấy phiếu xuất kho nào phù hợp với bộ lọc.'
+                            : 'Chưa có phiếu xuất kho nào trong lịch sử lưu trữ.'}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {filteredVouchers.map((v) => {
+                          const isPartial = v.status === 'PARTIAL' || (v.totalQtyRemaining && v.totalQtyRemaining > 0);
+                          const currentRounds = v.dispatchRounds || 1;
+
+                          return (
+                            <div
+                              key={v.id}
+                              className={`p-4 rounded-2xl border transition-all space-y-3 flex flex-col justify-between ${
+                                isPartial
+                                  ? 'bg-amber-50/40 border-amber-300 hover:border-amber-400 shadow-xs'
+                                  : 'bg-slate-50 hover:bg-pink-50/50 border-slate-200 hover:border-pink-300'
+                              }`}
+                            >
+                              <div className="space-y-2.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <span className="font-mono font-black text-pink-700 text-xs px-2 py-0.5 bg-pink-100 rounded-md inline-block">
+                                        {v.voucherCode}
+                                      </span>
+                                      {isPartial ? (
+                                        <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-amber-400 text-slate-950 rounded-md border border-amber-500 shadow-xs">
+                                          ⏳ Đang Xuất Bù (Đợt {currentRounds})
+                                        </span>
+                                      ) : (
+                                        <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-md">
+                                          ✅ Đã Hoàn Thành
+                                        </span>
+                                      )}
+                                    </div>
+                                    <h4 className="font-extrabold text-slate-900 text-sm mt-1">
+                                      Model: <span className="text-blue-700 font-bold">{v.modelName}</span>
+                                    </h4>
+                                  </div>
+                                  <span className="px-2.5 py-1 text-white text-xs font-black rounded-lg shrink-0 bg-pink-600">
+                                    {v.modelQty} Bộ
+                                  </span>
                                 </div>
-                                <div>
-                                  <span className="text-slate-400 block text-[10px]">Người lập:</span>
-                                  <strong className="font-semibold text-slate-800">{v.person}</strong>
+
+                                <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600 bg-white p-2.5 rounded-xl border border-slate-200/80">
+                                  <div>
+                                    <span className="text-slate-400 block text-[10px]">Thời gian lập:</span>
+                                    <strong className="font-semibold text-slate-800 font-mono">
+                                      {new Date(v.dateTime || v.createdAt).toLocaleString('vi-VN')}
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[10px]">Người lập:</span>
+                                    <strong className="font-semibold text-slate-800">{v.person}</strong>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[10px]">Tổng đã xuất:</span>
+                                    <strong className="font-bold text-emerald-700">
+                                      {(v.totalQtyOut || 0).toLocaleString('vi-VN')}
+                                    </strong>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[10px]">Chờ xuất bù:</span>
+                                    <strong className={`font-black ${isPartial ? 'text-rose-600' : 'text-slate-500'}`}>
+                                      {isPartial ? `-${(v.totalQtyRemaining || 0).toLocaleString('vi-VN')}` : '0 (Đủ)'}
+                                    </strong>
+                                  </div>
                                 </div>
-                                <div>
-                                  <span className="text-slate-400 block text-[10px]">Số loại LK:</span>
-                                  <strong className="font-bold text-indigo-700">{v.totalPartsCount || v.items.length} loại</strong>
-                                </div>
-                                <div>
-                                  <span className="text-slate-400 block text-[10px]">Tổng SL xuất:</span>
-                                  <strong className="font-bold text-emerald-700">{(v.totalQtyOut || 0).toLocaleString('vi-VN')}</strong>
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/60">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (confirm(`Bạn có chắc muốn xóa lịch sử phiếu ${v.voucherCode}?`)) {
+                                      storageService.deleteBomExportVoucher(v.id);
+                                      refreshSavedVouchers();
+                                    }
+                                  }}
+                                  className="px-2.5 py-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                                >
+                                  Xóa
+                                </button>
+
+                                <div className="flex items-center space-x-2">
+                                  {isPartial && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setBomWorkflowMode('backorder');
+                                        setSelectedBackorderVoucherId(v.id);
+                                        window.scrollTo({ top: 180, behavior: 'smooth' });
+                                      }}
+                                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1 shadow-sm"
+                                      title="Tiếp tục xuất bù đợt tiếp theo cho phiếu này"
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                      <span>Xuất Bù Đợt {currentRounds + 1}</span>
+                                    </button>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setBomPrintModalData({
+                                        voucherCode: v.voucherCode,
+                                        modelName: v.modelName,
+                                        modelQty: v.modelQty,
+                                        dateTime: v.dateTime,
+                                        person: v.person,
+                                        status: v.status,
+                                        dispatchRounds: v.dispatchRounds,
+                                        items: v.items,
+                                      });
+                                    }}
+                                    className="px-3 py-1.5 bg-pink-600 hover:bg-pink-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1 shadow-xs"
+                                  >
+                                    <Printer className="w-3.5 h-3.5" />
+                                    <span>In Phiếu</span>
+                                  </button>
                                 </div>
                               </div>
                             </div>
-
-                            <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (confirm(`Bạn có chắc muốn xóa lịch sử phiếu ${v.voucherCode}?`)) {
-                                    storageService.deleteBomExportVoucher(v.id);
-                                    refreshSavedVouchers();
-                                  }
-                                }}
-                                className="px-2.5 py-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-                              >
-                                Xóa phiếu
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setBomPrintModalData({
-                                    voucherCode: v.voucherCode,
-                                    modelName: v.modelName,
-                                    modelQty: v.modelQty,
-                                    dateTime: v.dateTime,
-                                    person: v.person,
-                                    items: v.items,
-                                  });
-                                }}
-                                className="px-3.5 py-1.5 bg-pink-600 hover:bg-pink-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1.5 shadow-xs"
-                              >
-                                <Printer className="w-3.5 h-3.5" />
-                                <span>IN LẠI / XEM PHIẾU</span>
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-        </div>
-      )}
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* TAB 1: AUTO SCAN & QUICK STOCK OUT MODE */}
       {mainTab === 'scan' && (
@@ -1354,26 +1947,52 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                       <th className="p-3">Tên Linh Kiện</th>
                       <th className="p-3 text-center">ĐVT</th>
                       <th className="p-3 text-right">Định Mức</th>
-                      <th className="p-3 text-right text-emerald-800 bg-emerald-50">Tổng SL Xuất</th>
+                      <th className="p-3 text-right">SL Cần Xuất</th>
+                      <th className="p-3 text-right text-emerald-800 bg-emerald-50">Đã Thực Xuất</th>
+                      <th className="p-3 text-right text-rose-800 bg-rose-50">Chờ Xuất Bù</th>
                       <th className="p-3 text-blue-900 bg-blue-50">Vị Trí Kệ Lấy Hàng (FIFO)</th>
+                      <th className="p-3 text-center">Trạng Thái</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {bomPrintModalData.items.map((item, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                        <td className="p-3 text-center font-bold text-slate-500">{idx + 1}</td>
-                        <td className="p-3 font-mono font-bold text-blue-700">{item.partCode}</td>
-                        <td className="p-3 font-semibold text-slate-900">{item.partName}</td>
-                        <td className="p-3 text-center text-slate-600">{item.unit}</td>
-                        <td className="p-3 text-right font-medium text-slate-600">{item.bomQtyPerSet}</td>
-                        <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/50">
-                          {item.totalQtyOut.toLocaleString('vi-VN')}
-                        </td>
-                        <td className="p-3 font-bold text-blue-900 bg-blue-50/50">
-                          📍 {item.fifoLocation}
-                        </td>
-                      </tr>
-                    ))}
+                    {bomPrintModalData.items.map((item, idx) => {
+                      const req = item.requiredQty ?? (item.bomQtyPerSet * (bomPrintModalData.modelQty || 1));
+                      const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
+                      const rem = item.remainingQty ?? Math.max(0, req - exp);
+
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                          <td className="p-3 text-center font-bold text-slate-500">{idx + 1}</td>
+                          <td className="p-3 font-mono font-bold text-blue-700">{item.partCode}</td>
+                          <td className="p-3 font-semibold text-slate-900">{item.partName}</td>
+                          <td className="p-3 text-center text-slate-600">{item.unit}</td>
+                          <td className="p-3 text-right font-medium text-slate-600">{item.bomQtyPerSet}</td>
+                          <td className="p-3 text-right font-bold text-slate-800">{req.toLocaleString('vi-VN')}</td>
+                          <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/50">
+                            {exp.toLocaleString('vi-VN')}
+                          </td>
+                          <td className="p-3 text-right font-black bg-rose-50/50">
+                            {rem > 0 ? (
+                              <span className="text-rose-700">-{rem.toLocaleString('vi-VN')}</span>
+                            ) : (
+                              <span className="text-emerald-700">0 (Đủ)</span>
+                            )}
+                          </td>
+                          <td className="p-3 font-bold text-blue-900 bg-blue-50/50">
+                            📍 {item.fifoLocation}
+                          </td>
+                          <td className="p-3 text-center">
+                            {rem === 0 ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">Đủ 100%</span>
+                            ) : exp > 0 ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">Xuất 1 phần</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">Nợ 100%</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1399,8 +2018,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                       <div style="padding: 24px; font-family: 'Segoe UI', Arial, sans-serif; max-width: 800px; margin: 0 auto; color: #0f172a;">
                         <div style="text-align: center; border-bottom: 3px double #1e3a8a; padding-bottom: 12px; margin-bottom: 20px;">
                           <h2 style="margin: 0; font-size: 20px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; letter-spacing: 0.5px;">PHIẾU XUẤT KHO & SOẠN HÀNG THEO MODEL (BOM)</h2>
-                          ${bomPrintModalData.voucherCode ? `<p style="margin: 4px 0 0 0; font-size: 14px; font-family: monospace; font-weight: bold; color: #1e3a8a;">[ MÃ PHIẾU: ${bomPrintModalData.voucherCode} ]</p>` : ''}
-                          <p style="margin: 4px 0 0 0; font-size: 13px; color: #475569; font-style: italic;">Quản Lý Kho Linh Kiện - Chỉ Dẫn Soạn Hàng Chuẩn FIFO (Nhập Trước Xuất Trước)</p>
+                          ${bomPrintModalData.voucherCode ? `<p style="margin: 4px 0 0 0; font-size: 14px; font-family: monospace; font-weight: bold; color: #1e3a8a;">[ MÃ PHIẾU: ${bomPrintModalData.voucherCode} ${bomPrintModalData.status === 'PARTIAL' ? '- ĐANG XUẤT BÙ' : '- ĐÃ HOÀN THÀNH'} ]</p>` : ''}
+                          <p style="margin: 4px 0 0 0; font-size: 13px; color: #475569; font-style: italic;">Quản Lý Kho Linh Kiện - Cơ Chế Xuất Kho Từng Phần / Xuất Bù Nối Đuôi Chuẩn FIFO</p>
                         </div>
 
                         <table style="width: 100%; font-size: 13px; margin-bottom: 20px; border-collapse: collapse;">
@@ -1412,34 +2031,47 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                             <td style="padding: 6px 0;"><strong>Thời Gian Thực Hiện:</strong> ${new Date(bomPrintModalData.dateTime).toLocaleString('vi-VN')}</td>
                             <td style="padding: 6px 0; text-align: right;"><strong>Người Lập / Soạn Hàng:</strong> ${bomPrintModalData.person}</td>
                           </tr>
+                          <tr>
+                            <td style="padding: 6px 0;"><strong>Trạng Thái Phiếu:</strong> <span style="font-weight: bold; color: ${bomPrintModalData.status === 'PARTIAL' ? '#b45309' : '#15803d'};">${bomPrintModalData.status === 'PARTIAL' ? 'ĐANG XUẤT BÙ' : 'ĐÃ HOÀN THÀNH 100%'}</span></td>
+                            <td style="padding: 6px 0; text-align: right;"><strong>Số Đợt Xuất:</strong> Đợt ${bomPrintModalData.dispatchRounds || 1}</td>
+                          </tr>
                         </table>
 
-                        <table style="width: 100%; border-collapse: collapse; font-size: 12px; border: 1px solid #cbd5e1;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 11px; border: 1px solid #cbd5e1;">
                           <thead>
                             <tr style="background-color: #f1f5f9; color: #0f172a; font-weight: bold; text-align: left;">
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; width: 35px;">STT</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; width: 140px;">Mã Linh Kiện</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px;">Tên Linh Kiện</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; width: 45px;">ĐVT</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; width: 75px;">Định Mức</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; width: 85px; color: #15803d; background-color: #f0fdf4;">Tổng SL Xuất</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; color: #1e40af; background-color: #eff6ff;">Vị Trí Kệ Lấy Hàng (FIFO)</th>
-                              <th style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; width: 65px;">Đã Lấy</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; width: 30px;">STT</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; width: 130px;">Mã Linh Kiện</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px;">Tên Linh Kiện</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; width: 40px;">ĐVT</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 55px;">Định Mức</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 70px;">Cần Xuất</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 75px; color: #15803d; background-color: #f0fdf4;">Đã Thực Xuất</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 75px; color: #be123c; background-color: #fff1f2;">Chờ Xuất Bù</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; color: #1e40af; background-color: #eff6ff;">Vị Trí Kệ (FIFO)</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; width: 55px;">Đã Lấy</th>
                             </tr>
                           </thead>
                           <tbody>
-                            ${bomPrintModalData.items.map((item, idx) => `
-                              <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background-color: #f8fafc;' : ''}">
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; font-weight: bold;">${idx + 1}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; font-family: monospace; font-weight: bold; color: #1d4ed8;">${item.partCode}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: 600;">${item.partName}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center;">${item.unit}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right;">${item.bomQtyPerSet}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: right; font-weight: bold; color: #15803d; background-color: #f0fdf4;">${item.totalQtyOut.toLocaleString('vi-VN')}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; font-weight: bold; color: #1e40af; background-color: #eff6ff;">📍 ${item.fifoLocation}</td>
-                                <td style="border: 1px solid #cbd5e1; padding: 8px; text-align: center; font-size: 10px; color: #94a3b8;">[ &nbsp; ]</td>
-                              </tr>
-                            `).join('')}
+                            ${bomPrintModalData.items.map((item, idx) => {
+                              const req = item.requiredQty ?? (item.bomQtyPerSet * (bomPrintModalData.modelQty || 1));
+                              const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
+                              const rem = item.remainingQty ?? Math.max(0, req - exp);
+                              return `
+                                <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background-color: #f8fafc;' : ''}">
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; font-weight: bold;">${idx + 1}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; font-family: monospace; font-weight: bold; color: #1d4ed8;">${item.partCode}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight: 600;">${item.partName}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center;">${item.unit}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${item.bomQtyPerSet}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold;">${req.toLocaleString('vi-VN')}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: #15803d; background-color: #f0fdf4;">${exp.toLocaleString('vi-VN')}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: ${rem > 0 ? '#be123c' : '#15803d'}; background-color: ${rem > 0 ? '#fff1f2' : '#f0fdf4'};">${rem > 0 ? `-${rem.toLocaleString('vi-VN')}` : '0 (Đủ)'}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight: bold; color: #1e40af; background-color: #eff6ff;">📍 ${item.fifoLocation}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; font-size: 10px; color: #94a3b8;">[ &nbsp; ]</td>
+                                </tr>
+                              `;
+                            }).join('')}
                           </tbody>
                         </table>
 
