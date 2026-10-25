@@ -44,6 +44,7 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>('ALL');
   const [activeTab, setActiveTab] = useState<'master_data' | 'color_config' | 'print_preview'>('master_data');
+  const [printLayoutOption, setPrintLayoutOption] = useState<'a7' | 'a4_duplex'>('a7');
   const [addedMsg, setAddedMsg] = useState<string | null>(null);
 
   // Custom print quantities per tag ID (default 1)
@@ -186,6 +187,70 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
     }
 
     if (printContainerRef.current) {
+      if (printLayoutOption === 'a7') {
+        const styles = `
+          @page {
+            size: 74mm 105mm portrait;
+            margin: 0;
+          }
+          * {
+            box-sizing: border-box !important;
+          }
+          html, body {
+            margin: 0;
+            padding: 0;
+            width: 74mm;
+            background: #fff;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            font-family: Arial, Helvetica, sans-serif;
+          }
+          .a7-page {
+            width: 74mm !important;
+            height: 105mm !important;
+            min-height: 105mm !important;
+            max-height: 105mm !important;
+            box-sizing: border-box !important;
+            page-break-after: always !important;
+            break-after: page !important;
+            padding: 2.5mm !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            margin: 0 auto !important;
+            background: #fff !important;
+            border: none !important;
+            box-shadow: none !important;
+          }
+          .tag-a7-card {
+            width: 69mm !important;
+            height: 100mm !important;
+            min-width: 69mm !important;
+            min-height: 100mm !important;
+            max-width: 69mm !important;
+            max-height: 100mm !important;
+            box-sizing: border-box !important;
+            border: 1.5px solid #000 !important;
+            border-radius: 4px !important;
+            padding: 4mm 3mm !important;
+            background: #ffffff !important;
+            color: #000000 !important;
+            font-family: Arial, Helvetica, sans-serif !important;
+            position: relative !important;
+            overflow: hidden !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            text-align: center !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+        `;
+        printHtml(printContainerRef.current.innerHTML, styles);
+        return;
+      }
+
       const styles = `
         @page {
           size: A4 portrait;
@@ -928,6 +993,162 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
     );
   };
 
+  // Render A7 Tag Card (74mm x 105mm - 1 Mặt Sau duy nhất, không in mặt trước - ảnh 4 & ảnh 5)
+  const renderTagCardA7 = (tag: MasterKittingTag, copyIndex?: number) => {
+    const getA7PartNameFontSize = (text: string) => {
+      if (text.length > 50) return '11.5px';
+      if (text.length > 30) return '13px';
+      if (text.length > 18) return '14.5px';
+      return '16px';
+    };
+
+    return (
+      <div
+        key={`a7-${tag.id}-${copyIndex ?? 0}`}
+        className="tag-a7-card"
+        style={{
+          width: '68mm',
+          height: '99mm',
+          minWidth: '68mm',
+          minHeight: '99mm',
+          maxWidth: '68mm',
+          maxHeight: '99mm',
+          boxSizing: 'border-box',
+          border: '1.5px solid #000',
+          borderRadius: '4px',
+          padding: '4mm 3mm 3mm 3mm',
+          backgroundColor: '#ffffff',
+          color: '#000000',
+          fontFamily: 'Arial, Helvetica, sans-serif',
+          position: 'relative',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          textAlign: 'center',
+          pageBreakInside: 'avoid',
+          breakInside: 'avoid',
+        }}
+      >
+        {/* Nhãn 74x105mm góc trên (ảnh 4 - chỉ hiện trên màn hình preview) */}
+        <span
+          className="print:hidden"
+          style={{
+            position: 'absolute',
+            top: '2mm',
+            right: '2.5mm',
+            fontSize: '8px',
+            fontFamily: 'monospace',
+            color: '#94a3b8',
+            fontWeight: 'bold',
+          }}
+        >
+          74x105mm
+        </span>
+
+        {/* PHẦN ĐỈNH: TÊN LINH KIỆN & MÃ LINH KIỆN (ảnh 5) */}
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div
+            style={{
+              fontWeight: 900,
+              fontSize: getA7PartNameFontSize(tag.partName),
+              color: '#000000',
+              lineHeight: 1.25,
+              textTransform: 'uppercase',
+              textAlign: 'center',
+              wordBreak: 'break-word',
+              marginBottom: '2mm',
+              paddingLeft: '2mm',
+              paddingRight: '2mm',
+            }}
+            title={tag.partName}
+          >
+            {tag.partName}
+          </div>
+
+          <div
+            style={{
+              fontFamily: 'monospace',
+              fontWeight: 900,
+              fontSize: '11.5px',
+              color: '#000000',
+              letterSpacing: '0.3px',
+              textAlign: 'center',
+              lineHeight: 1.2,
+              backgroundColor: '#f1f5f9',
+              border: '1px solid #cbd5e1',
+              borderRadius: '4px',
+              padding: '1.5px 6px',
+              maxWidth: '96%',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            MÃ LINH KIỆN: {tag.partCode}
+          </div>
+        </div>
+
+        {/* PHẦN GIỮA: MÃ QR CODE TO RÕ CÓ KHUNG VIỀN ĐEN ĐẶC TRƯNG (ảnh 5) */}
+        <div
+          style={{
+            width: '46mm',
+            height: '46mm',
+            border: '1.8px solid #000000',
+            padding: '2mm',
+            backgroundColor: '#ffffff',
+            borderRadius: '2px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxSizing: 'border-box',
+            margin: '2mm 0',
+          }}
+        >
+          <QRCodeSVG
+            value={tag.qrPayload}
+            size={160}
+            style={{ width: '42mm', height: '42mm' }}
+            level="M"
+            includeMargin={false}
+          />
+        </div>
+
+        {/* PHẦN ĐÁY: DÒNG THÔNG TIN MÃ QR THẺ THÙNG KITTING (ảnh 5) */}
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div
+            style={{
+              fontFamily: 'monospace',
+              fontSize: '10.5px',
+              fontWeight: 900,
+              color: '#000000',
+              letterSpacing: '-0.2px',
+              textAlign: 'center',
+              lineHeight: 1.25,
+            }}
+          >
+            MÃ QR THẺ THÙNG KITTING (SL: {tag.standardQty} {tag.unit})
+          </div>
+
+          {tag.groupName && (
+            <div
+              style={{
+                fontSize: '9px',
+                fontWeight: 700,
+                color: '#475569',
+                marginTop: '1mm',
+                textTransform: 'uppercase',
+              }}
+            >
+              [{tag.groupName}] {tag.ccdcSpec && tag.ccdcSpec !== '-' && tag.ccdcSpec !== '0' ? `• ${tag.ccdcSpec}` : ''}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // Mirrored Back Page helper for duplex printing
   const getMirroredBackCards = (frontCards: MasterKittingTag[]): (MasterKittingTag | null)[] => {
     const backCards: (MasterKittingTag | null)[] = new Array(8).fill(null);
@@ -1031,7 +1252,7 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                 }`}
               >
                 <Printer className="w-4 h-4 text-amber-600" />
-                <span>3. Xem Mẫu In "PHIẾU THÔNG TIN" ({totalSelectedCopies} Thẻ)</span>
+                <span>3. Xem Mẫu In {printLayoutOption === 'a7' ? 'Khổ A7 (1 Mặt Sau)' : '"PHIẾU THÔNG TIN" (A4)'} ({totalSelectedCopies} Thẻ)</span>
               </button>
             </div>
           </div>
@@ -1118,6 +1339,19 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                     >
                       Áp Dụng
                     </button>
+                  </div>
+
+                  {/* Khổ tem Selector (Ảnh 3) */}
+                  <div className="flex items-center space-x-1.5 bg-slate-50 px-2 py-1 rounded-xl border border-slate-200 text-xs">
+                    <span className="font-bold text-slate-600 text-[11px] pl-0.5">Khổ tem:</span>
+                    <select
+                      value={printLayoutOption}
+                      onChange={(e) => setPrintLayoutOption(e.target.value as 'a7' | 'a4_duplex')}
+                      className="bg-white border border-slate-300 rounded-lg px-2 py-0.5 text-xs font-bold text-blue-700 outline-hidden cursor-pointer"
+                    >
+                      <option value="a7">Khổ A7 (74x105mm - 1 Tem)</option>
+                      <option value="a4_duplex">Khổ A4 (100x70mm - 2 Mặt)</option>
+                    </select>
                   </div>
 
                   <span className="text-xs font-bold text-slate-500">Lọc Nhóm:</span>
@@ -1363,22 +1597,39 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               </div>
             </div>
           ) : (
-            /* PRINT PREVIEW TAB (8 Cards per A4 Page, 90mm x 60mm Grid) */
+            /* PRINT PREVIEW TAB */
             <div className="h-full flex flex-col space-y-3">
               <div className="p-3 bg-white rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center space-x-2">
                   <Printer className="w-5 h-5 text-amber-600" />
                   <div>
                     <h4 className="font-extrabold text-xs text-slate-900">
-                      XEM TRƯỚC MẪU IN PHIẾU THÔNG TIN (KÍCH THƯỚC 90mm x 60mm, TỐI ƯU 8 THẺ / TRANG A4)
+                      {printLayoutOption === 'a7'
+                        ? 'XEM TRƯỚC MẪU IN THẺ THÙNG KHỔ A7 (74x105mm - 1 MẶT SAU QR CODE)'
+                        : 'XEM TRƯỚC MẪU IN PHIẾU THÔNG TIN (KÍCH THƯỚC 90mm x 60mm, TỐI ƯU 8 THẺ / TRANG A4)'}
                     </h4>
                     <p className="text-[11px] text-slate-500">
-                      Đã chọn {tagsToPrint.length} mã thẻ (Tổng <strong>{totalSelectedCopies} bản in</strong>). Tự động dàn trang xếp 8 thẻ / 1 tờ giấy A4 ({a4Pages.length} trang A4).
+                      {printLayoutOption === 'a7'
+                        ? `Đã chọn ${tagsToPrint.length} mã thẻ (Tổng ${totalSelectedCopies} bản in A7). Chỉ in 1 mặt sau chứa mã QR to rõ ràng.`
+                        : `Đã chọn ${tagsToPrint.length} mã thẻ (Tổng ${totalSelectedCopies} bản in). Tự động dàn trang xếp 8 thẻ / 1 tờ giấy A4 (${a4Pages.length} trang A4).`}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Selector Khổ tem (ảnh 3) */}
+                  <div className="flex items-center space-x-1.5 bg-slate-100 px-2.5 py-1.5 rounded-xl border border-slate-200">
+                    <span className="text-[11px] font-extrabold text-slate-600">Khổ tem:</span>
+                    <select
+                      value={printLayoutOption}
+                      onChange={(e) => setPrintLayoutOption(e.target.value as 'a7' | 'a4_duplex')}
+                      className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg font-bold text-blue-700 text-xs focus:outline-hidden cursor-pointer shadow-2xs"
+                    >
+                      <option value="a7">Khổ A7 (74x105mm - 1 Tem)</option>
+                      <option value="a4_duplex">Khổ A4 (100x70mm - 2 Mặt Trước/Sau)</option>
+                    </select>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => handlePrint('SELECTED')}
@@ -1386,7 +1637,7 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                     className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs rounded-xl shadow-md transition-all flex items-center space-x-1.5 cursor-pointer"
                   >
                     <Printer className="w-4 h-4" />
-                    <span>In {tagsToPrint.length} Mã Thẻ ({totalSelectedCopies} Bản A4)</span>
+                    <span>In {tagsToPrint.length} Mã Thẻ ({totalSelectedCopies} Bản {printLayoutOption === 'a7' ? 'A7' : 'A4'})</span>
                   </button>
 
                   <button
@@ -1395,7 +1646,7 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md transition-all flex items-center space-x-1.5 cursor-pointer"
                   >
                     <Printer className="w-4 h-4" />
-                    <span>In TẤT CẢ ({tags.length} Mã - {totalAllCopies} Bản)</span>
+                    <span>In TẤT CẢ ({tags.length} Mã - {totalAllCopies} Bản {printLayoutOption === 'a7' ? 'A7' : 'A4'})</span>
                   </button>
                 </div>
               </div>
@@ -1403,7 +1654,24 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
               {/* Printable Pages Preview Container */}
               <div className="flex-1 overflow-y-auto bg-slate-200/80 p-6 rounded-2xl border border-slate-300 space-y-8">
                 <div ref={printContainerRef} className="space-y-8">
-                  {a4Pages.length === 0 ? (
+                  {printLayoutOption === 'a7' ? (
+                    expandedSelectedList.length === 0 ? (
+                      <div className="text-center py-12 text-slate-500 font-bold">
+                        Chưa chọn thẻ nào để hiển thị xem trước mẫu in A7!
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 justify-center">
+                        {expandedSelectedList.map((tag, idx) => (
+                          <div
+                            key={`a7-preview-${tag.id}-${idx}`}
+                            className="a7-page bg-white p-3 rounded-2xl border-2 border-dashed border-slate-300 shadow-md hover:shadow-lg transition-all flex items-center justify-center"
+                          >
+                            {renderTagCardA7(tag, idx)}
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : a4Pages.length === 0 ? (
                     <div className="text-center py-12 text-slate-500 font-bold">
                       Chưa chọn thẻ nào để hiển thị xem trước mẫu in A4!
                     </div>
