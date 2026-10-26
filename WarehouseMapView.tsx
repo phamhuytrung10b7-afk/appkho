@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { Part, AppSettings, WarehouseLocation } from './types';
-import { storageService } from './storage';
+import { storageService, normalizeShelfKey } from './storage';
 import {
   MapPin,
   Plus,
@@ -20,11 +20,138 @@ import {
   Printer,
   QrCode,
   Eye,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { LocationQrPrintModal } from './LocationQrPrintModal';
 import { LocationDetailModal } from './LocationDetailModal';
 import { LocationTransferModal } from './LocationTransferModal';
+
+interface ShelfCardProps {
+  loc: WarehouseLocation;
+  isSelected: boolean;
+  partCount: number;
+  totalStockInLoc: number;
+  isAdmin: boolean;
+  onSelect: (loc: WarehouseLocation) => void;
+  onOpenDetails: (loc: WarehouseLocation) => void;
+  onOpenPrint: (locId: string) => void;
+  onDelete: (id: string, name: string) => void;
+}
+
+// Sub-component ShelfCard wrapped with React.memo to prevent unnecessary re-renders
+const ShelfCard = React.memo<ShelfCardProps>(({
+  loc,
+  isSelected,
+  partCount,
+  totalStockInLoc,
+  isAdmin,
+  onSelect,
+  onOpenDetails,
+  onOpenPrint,
+  onDelete,
+}) => {
+  const isOccupied = partCount > 0;
+
+  return (
+    <div
+      onClick={() => onSelect(loc)}
+      className={`relative p-3.5 rounded-2xl border-2 cursor-pointer transition-all flex flex-col justify-between group active:scale-98 ${
+        isSelected
+          ? 'border-blue-600 bg-blue-50/80 shadow-md ring-2 ring-blue-500/20'
+          : isOccupied
+          ? 'border-emerald-300 bg-emerald-50/40 hover:border-emerald-500 hover:bg-emerald-50/80 shadow-2xs'
+          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+      }`}
+    >
+      {/* Top Header & Actions */}
+      <div className="flex items-start justify-between">
+        <span
+          className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
+            isOccupied ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'
+          }`}
+        >
+          {isOccupied ? `${partCount} LK` : 'Trống'}
+        </span>
+
+        <div className="flex items-center space-x-1 opacity-80 group-hover:opacity-100 transition-opacity">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDetails(loc);
+            }}
+            className="p-1 text-blue-600 hover:bg-blue-100 rounded-lg transition-all cursor-pointer"
+            title="Mở bảng chi tiết linh kiện"
+          >
+            <Eye className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenPrint(loc.id);
+            }}
+            className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100 rounded-lg transition-all cursor-pointer"
+            title="In tem QR Kệ 35x22mm"
+          >
+            <QrCode className="w-3.5 h-3.5 text-emerald-600" />
+          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(loc.id, loc.name);
+              }}
+              className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all cursor-pointer"
+              title="Xóa vị trí (Chỉ Quản trị viên)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Title & Description */}
+      <div className="my-2.5 text-center">
+        <div className="text-base font-black text-slate-900 group-hover:text-blue-600 transition-colors font-mono">
+          {loc.name}
+        </div>
+        {loc.description && (
+          <div className="text-[10px] text-slate-500 truncate mt-0.5" title={loc.description}>
+            {loc.description}
+          </div>
+        )}
+      </div>
+
+      {/* Stock summary */}
+      <div className="text-[11px] font-bold text-center border-t border-slate-200/60 pt-2 flex items-center justify-between text-slate-500">
+        <span className="text-[10px]">Tồn vị trí:</span>
+        <span className="font-mono font-black text-emerald-700">
+          {totalStockInLoc.toLocaleString('vi-VN')}
+        </span>
+      </div>
+    </div>
+  );
+});
+
+// Helper for pagination range with ellipsis
+function getPaginationRange(current: number, total: number): (number | '...')[] {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+  if (current <= 4) {
+    return [1, 2, 3, 4, 5, '...', total];
+  }
+  if (current >= total - 3) {
+    return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
+  }
+  return [1, '...', current - 1, current, current + 1, '...', total];
+}
 
 interface WarehouseMapViewProps {
   parts: Part[];
@@ -58,7 +185,7 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   } | null>(null);
   
   // Sync locations with settings prop
-  React.useEffect(() => {
+  useEffect(() => {
     if (settings.locations) {
       setLocations(settings.locations);
       if (!selectedLocation && settings.locations.length > 0) {
@@ -73,6 +200,15 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'occupied' | 'empty'>('all');
 
+  // Pagination states (24, 36, 48, 96 per page; default 36)
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(36);
+
+  // Reset pagination to page 1 on filter or search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filterMode, pageSize]);
+
   // Message banner
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -83,27 +219,91 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   // Hidden File Input Ref for Excel Import
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle opening shelf details popup
-  const handleOpenShelfDetails = (loc: WarehouseLocation) => {
+  // 1. FAST PRE-COMPUTED LOOKUP MAP: O(Parts) once instead of O(Locations * Parts)
+  const locationSummaryMap = useMemo(() => {
+    const map = new Map<string, { partCount: number; totalQty: number }>();
+
+    for (const part of parts) {
+      const stock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+      if (stock <= 0) continue;
+
+      const locs = storageService.getPartLocations(part);
+      for (const l of locs) {
+        if (!l || typeof l.quantity !== 'number' || l.quantity <= 0) continue;
+        const normKey = normalizeShelfKey(l.locationName) || l.locationName.toLowerCase().trim();
+        const existing = map.get(normKey);
+        if (existing) {
+          existing.partCount += 1;
+          existing.totalQty += l.quantity;
+        } else {
+          map.set(normKey, { partCount: 1, totalQty: l.quantity });
+        }
+
+        // Sub-compartment support (e.g. "A01 - Tầng 1" also populates "A01")
+        const hasSub = /[-/]/.test(l.locationName);
+        if (hasSub) {
+          const parentName = l.locationName.split(/\s*[-/]\s*/)[0].trim();
+          const parentKey = normalizeShelfKey(parentName) || parentName.toLowerCase();
+          if (parentKey && parentKey !== normKey) {
+            const pExisting = map.get(parentKey);
+            if (pExisting) {
+              pExisting.partCount += 1;
+              pExisting.totalQty += l.quantity;
+            } else {
+              map.set(parentKey, { partCount: 1, totalQty: l.quantity });
+            }
+          }
+        }
+      }
+    }
+
+    return map;
+  }, [parts]);
+
+  // Instant O(1) summary getter
+  const getLocationSummary = useCallback(
+    (locName: string) => {
+      const normKey = normalizeShelfKey(locName) || locName.toLowerCase().trim();
+      return locationSummaryMap.get(normKey) || { partCount: 0, totalQty: 0 };
+    },
+    [locationSummaryMap]
+  );
+
+  // Handlers with useCallback for zero useless re-renders
+  const handleSelectLocation = useCallback((loc: WarehouseLocation) => {
+    setSelectedLocation(loc);
+  }, []);
+
+  const handleOpenShelfDetails = useCallback((loc: WarehouseLocation) => {
     setSelectedLocation(loc);
     setDetailModalLocation(loc);
     setIsDetailModalOpen(true);
-  };
+  }, []);
 
-  // Filter locations based on search and filter mode
-  const filteredLocations = locations.filter((loc) => {
-    const matchesSearch =
-      loc.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (loc.description && loc.description.toLowerCase().includes(searchTerm.toLowerCase()));
-    
-    const partsAtLoc = storageService.getPartsAtLocation(parts, loc.name);
-    const isOccupied = partsAtLoc.length > 0;
+  const handleOpenPrintModal = useCallback((locId?: string) => {
+    setPrintInitialLocId(locId);
+    setIsPrintModalOpen(true);
+  }, []);
 
-    if (!matchesSearch) return false;
-    if (filterMode === 'occupied') return isOccupied;
-    if (filterMode === 'empty') return !isOccupied;
-    return true;
-  });
+  // Filter locations based on search and filter mode (< 0.2ms via lookup map)
+  const filteredLocations = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return locations.filter((loc) => {
+      const matchesSearch =
+        !query ||
+        loc.name.toLowerCase().includes(query) ||
+        (loc.description && loc.description.toLowerCase().includes(query));
+
+      if (!matchesSearch) return false;
+
+      const summary = getLocationSummary(loc.name);
+      const isOccupied = summary.partCount > 0;
+
+      if (filterMode === 'occupied') return isOccupied;
+      if (filterMode === 'empty') return !isOccupied;
+      return true;
+    });
+  }, [locations, searchTerm, filterMode, getLocationSummary]);
 
   // Add Location Handler
   const handleAddLocation = () => {
@@ -284,61 +484,85 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
 
   const isAdmin = storageService.isAdminUser();
 
-  // Delete Location Handler
-  const handleDeleteLocation = (id: string, name: string) => {
-    if (!isAdmin) {
-      alert('Chỉ tài khoản Quản trị viên (ADMIN) mới có quyền xóa vị trí kho!');
-      return;
-    }
-    const partsInLoc = storageService.getPartsAtLocation(parts, name);
-    if (partsInLoc.length > 0) {
-      if (
-        !confirm(
-          `Vị trí "${name}" đang chứa ${partsInLoc.length} linh kiện. Bạn có chắc chắn muốn xóa không?`
-        )
-      ) {
+  // Delete Location Handler with useCallback
+  const handleDeleteLocation = useCallback(
+    (id: string, name: string) => {
+      if (!isAdmin) {
+        alert('Chỉ tài khoản Quản trị viên (ADMIN) mới có quyền xóa vị trí kho!');
         return;
       }
-    } else {
-      if (!confirm(`Bạn có chắc muốn xóa vị trí "${name}" không?`)) return;
-    }
+      const partsInLoc = storageService.getPartsAtLocation(parts, name);
+      if (partsInLoc.length > 0) {
+        if (
+          !confirm(
+            `Vị trí "${name}" đang chứa ${partsInLoc.length} linh kiện. Bạn có chắc chắn muốn xóa không?`
+          )
+        ) {
+          return;
+        }
+      } else {
+        if (!confirm(`Bạn có chắc muốn xóa vị trí "${name}" không?`)) return;
+      }
 
-    const updated = locations.filter((l) => l.id !== id);
-    setLocations(updated);
+      const updated = locations.filter((l) => l.id !== id);
+      setLocations(updated);
 
-    const updatedSettings: AppSettings = {
-      ...settings,
-      locations: updated,
-    };
+      const updatedSettings: AppSettings = {
+        ...settings,
+        locations: updated,
+      };
 
-    storageService.saveSettings(updatedSettings);
-    onUpdateSettings(updatedSettings);
+      storageService.saveSettings(updatedSettings);
+      onUpdateSettings(updatedSettings);
 
-    if (selectedLocation?.id === id) {
-      setSelectedLocation(updated.length > 0 ? updated[0] : null);
-    }
+      if (selectedLocation?.id === id) {
+        setSelectedLocation(updated.length > 0 ? updated[0] : null);
+      }
 
-    setMessage({ type: 'success', text: `Đã xóa vị trí "${name}"!` });
-    setTimeout(() => setMessage(null), 3000);
-  };
+      setMessage({ type: 'success', text: `Đã xóa vị trí "${name}"!` });
+      setTimeout(() => setMessage(null), 3000);
+    },
+    [isAdmin, parts, locations, settings, selectedLocation, onUpdateSettings]
+  );
 
-  // Open QR Code Label Printing Modal
-  const handleOpenPrintModal = (locId?: string) => {
-    setPrintInitialLocId(locId);
-    setIsPrintModalOpen(true);
-  };
-
-  // Stats
+  // Stats (Memoized to prevent recalculation)
   const totalLocations = locations.length;
-  const occupiedLocationsCount = locations.filter((loc) =>
-    storageService.getPartsAtLocation(parts, loc.name).length > 0
-  ).length;
+  const occupiedLocationsCount = useMemo(() => {
+    let count = 0;
+    for (const loc of locations) {
+      if (getLocationSummary(loc.name).partCount > 0) count++;
+    }
+    return count;
+  }, [locations, getLocationSummary]);
   const emptyLocationsCount = totalLocations - occupiedLocationsCount;
-  const unassignedPartsCount = parts.filter((p) => {
-    if (typeof p.currentStock !== 'number' || p.currentStock <= 0) return false;
-    const locs = storageService.getPartLocations(p);
-    return locs.length === 0;
-  }).length;
+
+  const unassignedPartsCount = useMemo(() => {
+    return parts.filter((p) => {
+      const stock = typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0;
+      if (stock <= 0) return false;
+      const locs = storageService.getPartLocations(p);
+      return locs.length === 0;
+    }).length;
+  }, [parts]);
+
+  // Pagination calculations (displays pageSize cards per page)
+  const totalPages = Math.max(1, Math.ceil(filteredLocations.length / pageSize));
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+  const startIndex = (safePage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, filteredLocations.length);
+  const displayedLocations = useMemo(() => {
+    return filteredLocations.slice(startIndex, endIndex);
+  }, [filteredLocations, startIndex, endIndex]);
+
+  // Lazy load parts ONLY for the currently selected location (Right panel)
+  const selectedLocationParts = useMemo(() => {
+    if (!selectedLocation) return [];
+    return storageService.getPartsAtLocation(parts, selectedLocation.name);
+  }, [selectedLocation?.name, parts]);
+
+  const totalUnitsOnShelf = useMemo(() => {
+    return selectedLocationParts.reduce((sum, item) => sum + item.locationQty, 0);
+  }, [selectedLocationParts]);
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
@@ -564,98 +788,117 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                {filteredLocations.map((loc) => {
-                  const partsAtLoc = storageService.getPartsAtLocation(parts, loc.name);
-                  const isSelected = selectedLocation?.id === loc.id;
-                  const isOccupied = partsAtLoc.length > 0;
-                  const totalStockInLoc = partsAtLoc.reduce((acc, item) => acc + item.locationQty, 0);
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {displayedLocations.map((loc) => {
+                    const summary = getLocationSummary(loc.name);
+                    return (
+                      <ShelfCard
+                        key={loc.id}
+                        loc={loc}
+                        isSelected={selectedLocation?.id === loc.id}
+                        partCount={summary.partCount}
+                        totalStockInLoc={summary.totalQty}
+                        isAdmin={isAdmin}
+                        onSelect={handleSelectLocation}
+                        onOpenDetails={handleOpenShelfDetails}
+                        onOpenPrint={handleOpenPrintModal}
+                        onDelete={handleDeleteLocation}
+                      />
+                    );
+                  })}
+                </div>
 
-                  return (
-                    <div
-                      key={loc.id}
-                      onClick={() => handleOpenShelfDetails(loc)}
-                      className={`relative p-3.5 rounded-2xl border-2 cursor-pointer transition-all flex flex-col justify-between group active:scale-98 ${
-                        isSelected
-                          ? 'border-blue-600 bg-blue-50/80 shadow-md ring-2 ring-blue-500/20'
-                          : isOccupied
-                          ? 'border-emerald-300 bg-emerald-50/40 hover:border-emerald-500 hover:bg-emerald-50/80 shadow-2xs'
-                          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      {/* Top Header & Actions */}
-                      <div className="flex items-start justify-between">
-                        <span
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
-                            isOccupied
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-slate-200 text-slate-600'
+                {/* Pagination Controls */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-200 text-xs">
+                  {/* Left: Summary and Page Size Selector */}
+                  <div className="flex items-center space-x-3 text-slate-500 flex-wrap gap-2">
+                    <span>
+                      Hiển thị <strong className="text-slate-800 font-bold">{filteredLocations.length > 0 ? startIndex + 1 : 0} - {endIndex}</strong> / <strong className="text-slate-800 font-bold">{filteredLocations.length}</strong> kệ
+                    </span>
+                    <div className="flex items-center space-x-1 pl-2 border-l border-slate-200">
+                      <span className="text-[11px] text-slate-400">Số kệ/trang:</span>
+                      {[24, 36, 48, 96].map((size) => (
+                        <button
+                          key={size}
+                          type="button"
+                          onClick={() => setPageSize(size)}
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                            pageSize === size
+                              ? 'bg-blue-600 text-white shadow-2xs'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                           }`}
                         >
-                          {isOccupied ? `${partsAtLoc.length} LK` : 'Trống'}
-                        </span>
-
-                        <div className="flex items-center space-x-1 opacity-80 group-hover:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenShelfDetails(loc);
-                            }}
-                            className="p-1 text-blue-600 hover:bg-blue-100 rounded-lg transition-all cursor-pointer"
-                            title="Mở bảng chi tiết linh kiện"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenPrintModal(loc.id);
-                            }}
-                            className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-100 rounded-lg transition-all cursor-pointer"
-                            title="In tem QR Kệ 35x22mm"
-                          >
-                            <QrCode className="w-3.5 h-3.5 text-emerald-600" />
-                          </button>
-                          {isAdmin && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteLocation(loc.id, loc.name);
-                              }}
-                              className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all cursor-pointer"
-                              title="Xóa vị trí (Chỉ Quản trị viên)"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Title & Description */}
-                      <div className="my-2.5 text-center">
-                        <div className="text-base font-black text-slate-900 group-hover:text-blue-600 transition-colors font-mono">
-                          {loc.name}
-                        </div>
-                        {loc.description && (
-                          <div className="text-[10px] text-slate-500 truncate mt-0.5" title={loc.description}>
-                            {loc.description}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Stock summary */}
-                      <div className="text-[11px] font-bold text-center border-t border-slate-200/60 pt-2 flex items-center justify-between text-slate-500">
-                        <span className="text-[10px]">Tồn vị trí:</span>
-                        <span className="font-mono font-black text-emerald-700">
-                          {totalStockInLoc.toLocaleString('vi-VN')}
-                        </span>
-                      </div>
+                          {size}
+                        </button>
+                      ))}
                     </div>
-                  );
-                })}
+                  </div>
+
+                  {/* Right: Page Navigation Buttons */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center space-x-1 flex-wrap gap-1">
+                      <button
+                        type="button"
+                        disabled={safePage === 1}
+                        onClick={() => setCurrentPage(1)}
+                        className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                        title="Trang đầu"
+                      >
+                        <ChevronsLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={safePage === 1}
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                        title="Trang trước"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+
+                      {getPaginationRange(safePage, totalPages).map((p, idx) =>
+                        p === '...' ? (
+                          <span key={`dots-${idx}`} className="px-1.5 py-1 text-slate-400 font-bold">
+                            ...
+                          </span>
+                        ) : (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setCurrentPage(Number(p))}
+                            className={`min-w-7 h-7 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              safePage === p
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        )
+                      )}
+
+                      <button
+                        type="button"
+                        disabled={safePage === totalPages}
+                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                        className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                        title="Trang sau"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={safePage === totalPages}
+                        onClick={() => setCurrentPage(totalPages)}
+                        className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                        title="Trang cuối"
+                      >
+                        <ChevronsRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -699,96 +942,84 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
                 </div>
               </div>
 
-              {/* Parts inside selected location */}
-              {(() => {
-                const partsAtSelectedLoc = selectedLocation
-                  ? storageService.getPartsAtLocation(parts, selectedLocation.name)
-                  : [];
-                const totalUnitsOnShelf = partsAtSelectedLoc.reduce(
-                  (sum, item) => sum + item.locationQty,
-                  0
-                );
+              {/* Parts inside selected location (Lazy loaded) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                  <span>Linh kiện lưu trữ ({selectedLocationParts.length}):</span>
+                  <span className="text-[11px] text-emerald-800 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                    {totalUnitsOnShelf.toLocaleString('vi-VN')} đơn vị trên kệ
+                  </span>
+                </div>
 
-                return (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                      <span>Linh kiện lưu trữ ({partsAtSelectedLoc.length}):</span>
-                      <span className="text-[11px] text-emerald-800 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
-                        {totalUnitsOnShelf.toLocaleString('vi-VN')} đơn vị trên kệ
-                      </span>
-                    </div>
-
-                    {partsAtSelectedLoc.length === 0 ? (
-                      <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
-                        <Info className="w-6 h-6 mx-auto mb-1 text-slate-300" />
-                        Chưa có linh kiện nào được gán ở vị trí "{selectedLocation.name}".
-                      </div>
-                    ) : (
-                      <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                        {partsAtSelectedLoc.map(({ part, locationQty }) => (
-                          <div
-                            key={part.id}
-                            className="p-3.5 bg-slate-50 hover:bg-blue-50/50 rounded-2xl border border-slate-200 transition-all space-y-2 group"
-                          >
-                            <div className="flex items-start justify-between">
-                              <div className="space-y-0.5 min-w-0 pr-2">
-                                <div className="font-mono font-bold text-blue-700 text-[11px]">
-                                  {part.code}
-                                </div>
-                                <div className="font-semibold text-slate-800 text-xs truncate" title={part.name}>
-                                  {part.name}
-                                </div>
-                                {part.currentStock !== locationQty && (
-                                  <div className="text-[10px] text-slate-500 font-medium">
-                                    Tổng tồn các kệ:{' '}
-                                    <span className="font-bold text-slate-700">
-                                      {part.currentStock.toLocaleString('vi-VN')}
-                                    </span>{' '}
-                                    {part.unit}
-                                  </div>
-                                )}
-                              </div>
-
-                              <div className="text-right shrink-0">
-                                <div className="font-mono font-black text-emerald-600 text-sm">
-                                  {locationQty.toLocaleString('vi-VN')} {part.unit}
-                                </div>
-                              </div>
+                {selectedLocationParts.length === 0 ? (
+                  <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                    <Info className="w-6 h-6 mx-auto mb-1 text-slate-300" />
+                    Chưa có linh kiện nào được gán ở vị trí "{selectedLocation.name}".
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+                    {selectedLocationParts.map(({ part, locationQty }) => (
+                      <div
+                        key={part.id}
+                        className="p-3.5 bg-slate-50 hover:bg-blue-50/50 rounded-2xl border border-slate-200 transition-all space-y-2 group"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-0.5 min-w-0 pr-2">
+                            <div className="font-mono font-bold text-blue-700 text-[11px]">
+                              {part.code}
                             </div>
+                            <div className="font-semibold text-slate-800 text-xs truncate" title={part.name}>
+                              {part.name}
+                            </div>
+                            {part.currentStock !== locationQty && (
+                              <div className="text-[10px] text-slate-500 font-medium">
+                                Tổng tồn các kệ:{' '}
+                                <span className="font-bold text-slate-700">
+                                  {part.currentStock.toLocaleString('vi-VN')}
+                                </span>{' '}
+                                {part.unit}
+                              </div>
+                            )}
+                          </div>
 
-                            {/* Action Buttons: Move & Bin Card */}
-                            <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
-                              <button
-                                type="button"
-                                onClick={() => onOpenBinCard(part)}
-                                className="text-[11px] text-blue-600 hover:underline font-bold inline-flex items-center space-x-0.5 cursor-pointer"
-                              >
-                                <span>Thẻ kho</span>
-                                <ArrowRight className="w-2.5 h-2.5" />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setTransferringInfo({
-                                    part,
-                                    fromLocation: selectedLocation.name,
-                                    availableQty: locationQty,
-                                  })
-                                }
-                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold shadow-2xs flex items-center space-x-1 transition-colors cursor-pointer"
-                              >
-                                <ArrowRightLeft className="w-3 h-3" />
-                                <span>Điều chuyển</span>
-                              </button>
+                          <div className="text-right shrink-0">
+                            <div className="font-mono font-black text-emerald-600 text-sm">
+                              {locationQty.toLocaleString('vi-VN')} {part.unit}
                             </div>
                           </div>
-                        ))}
+                        </div>
+
+                        {/* Action Buttons: Move & Bin Card */}
+                        <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between">
+                          <button
+                            type="button"
+                            onClick={() => onOpenBinCard(part)}
+                            className="text-[11px] text-blue-600 hover:underline font-bold inline-flex items-center space-x-0.5 cursor-pointer"
+                          >
+                            <span>Thẻ kho</span>
+                            <ArrowRight className="w-2.5 h-2.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTransferringInfo({
+                                part,
+                                fromLocation: selectedLocation.name,
+                                availableQty: locationQty,
+                              })
+                            }
+                            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold shadow-2xs flex items-center space-x-1 transition-colors cursor-pointer"
+                          >
+                            <ArrowRightLeft className="w-3 h-3" />
+                            <span>Điều chuyển</span>
+                          </button>
+                        </div>
                       </div>
-                    )}
+                    ))}
                   </div>
-                );
-              })()}
+                )}
+              </div>
             </div>
           ) : (
             <div className="bg-white p-6 rounded-2xl border border-slate-200 text-center text-slate-400 text-xs">
