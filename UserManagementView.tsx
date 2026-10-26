@@ -88,6 +88,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
   const [supabaseUrl, setSupabaseUrl] = useState(initialCreds.url);
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(initialCreds.anonKey);
   const [supabaseSyncing, setSupabaseSyncing] = useState(false);
+  const [isSyncingUsers, setIsSyncingUsers] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
 
   const handleSaveSupabaseConfig = () => {
@@ -117,6 +118,54 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({ currentU
       setMessage({ type: 'success', text: result.message });
     } else {
       setMessage({ type: 'error', text: result.message });
+    }
+  };
+
+  const handleSyncUsersToCloud = async () => {
+    setIsSyncingUsers(true);
+    setMessage(null);
+    try {
+      const res = await storageService.syncUsersToSupabase();
+      if (res.success) {
+        setMessage({ type: 'success', text: res.message });
+      } else {
+        setMessage({ type: 'error', text: res.message });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Lỗi khi đồng bộ lên Supabase' });
+    } finally {
+      setIsSyncingUsers(false);
+    }
+  };
+
+  const handleReset12DefaultUsers = async () => {
+    if (
+      !confirm(
+        'Bạn có chắc chắn muốn khôi phục lại chuẩn 12 tài khoản mặc định của hệ thống kèm phân quyền chính xác và lưu đồng bộ lên Supabase không?'
+      )
+    ) {
+      return;
+    }
+    setIsSyncingUsers(true);
+    setMessage(null);
+    try {
+      const res = await storageService.resetToDefaultSystemUsers();
+      setUsers(res.users);
+      if (res.success) {
+        setMessage({
+          type: 'success',
+          text: 'Đã khôi phục thành công 12 tài khoản mặc định và lưu đồng bộ lên Supabase Cloud!',
+        });
+      } else {
+        setMessage({
+          type: 'success',
+          text: 'Đã khôi phục 12 tài khoản trong bộ nhớ cục bộ (lưu ý kiểm tra kết nối Supabase)!',
+        });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Lỗi khi khôi phục tài khoản' });
+    } finally {
+      setIsSyncingUsers(false);
     }
   };
 
@@ -466,14 +515,38 @@ CREATE POLICY "Allow public access on settings" ON public.settings FOR ALL USING
         </div>
 
         {activeSubTab === 'users' && (
-          <button
-            type="button"
-            onClick={handleOpenAdd}
-            className="px-5 py-3 bg-blue-500 hover:bg-blue-600 text-white font-extrabold rounded-2xl text-xs transition-all cursor-pointer shadow-md flex items-center space-x-2 shrink-0"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>THÊM TÀI KHOẢN MỚI</span>
-          </button>
+          <div className="flex items-center space-x-2 flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleReset12DefaultUsers}
+              disabled={isSyncingUsers}
+              className="px-4 py-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/30 font-bold rounded-2xl text-xs transition-all cursor-pointer shadow-md flex items-center space-x-2 shrink-0 disabled:opacity-50"
+              title="Khôi phục chuẩn 12 tài khoản mặc định và lưu đồng bộ lên Supabase Cloud"
+            >
+              <RotateCcw className={`w-4 h-4 ${isSyncingUsers ? 'animate-spin' : ''}`} />
+              <span>KHÔI PHỤC 12 TK MẶC ĐỊNH</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSyncUsersToCloud}
+              disabled={isSyncingUsers}
+              className="px-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-2xl text-xs transition-all cursor-pointer shadow-md flex items-center space-x-2 shrink-0 disabled:opacity-50"
+              title="Lưu và đồng bộ danh sách tài khoản hiện tại lên Supabase Cloud"
+            >
+              <CloudUpload className={`w-4 h-4 ${isSyncingUsers ? 'animate-pulse' : ''}`} />
+              <span>LƯU & ĐỒNG BỘ SUPABASE</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenAdd}
+              className="px-5 py-3 bg-blue-500 hover:bg-blue-600 text-white font-extrabold rounded-2xl text-xs transition-all cursor-pointer shadow-md flex items-center space-x-2 shrink-0"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>THÊM TÀI KHOẢN MỚI</span>
+            </button>
+          </div>
         )}
       </div>
 

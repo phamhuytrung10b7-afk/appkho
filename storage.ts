@@ -81,6 +81,225 @@ export const DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG: ProductivityPersonnelConfig 
   ],
 };
 
+export const DEFAULT_SYSTEM_USERS: UserAccount[] = [
+  {
+    id: 'user-admin',
+    username: 'admin',
+    password: '123',
+    fullName: 'Sunhouse',
+    roleTitle: 'Quản Trị Hệ Thống (Admin)',
+    allowedTabs: [
+      'dashboard',
+      'parts',
+      'stock_in',
+      'stock_out',
+      'ng_warehouse',
+      'warehouse_map',
+      'kitting',
+      'buffer',
+      'andon_request',
+      'andon_calling',
+      'andon_delivering',
+      'andon_history',
+      'bin_card',
+      'settings',
+      'users',
+    ],
+    canConfigureBuffer: true,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-thukho',
+    username: 'thukho',
+    password: '123',
+    fullName: 'Nguyễn Văn Nghĩa',
+    roleTitle: 'Thủ Kho Trung Tâm',
+    allowedTabs: [
+      'dashboard',
+      'parts',
+      'stock_in',
+      'stock_out',
+      'ng_warehouse',
+      'warehouse_map',
+      'kitting',
+      'buffer',
+      'andon_request',
+      'andon_calling',
+      'andon_delivering',
+      'andon_history',
+      'bin_card',
+      'settings',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-boctach1',
+    username: 'boctach1',
+    password: '123',
+    fullName: 'Võ Thạch Toàn',
+    roleTitle: 'Nhân Viên Bóc Tách Kitting',
+    allowedTabs: [
+      'kitting',
+      'buffer',
+      'andon_calling',
+      'andon_delivering',
+      'andon_history',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-daychuyen',
+    username: 'daychuyen',
+    password: '123',
+    fullName: 'Nguyễn Minh Hoàng Khiêm',
+    roleTitle: 'Quản Lý Dây Chuyền Lắp Ráp',
+    allowedTabs: [
+      'buffer',
+      'andon_request',
+      'andon_calling',
+      'andon_delivering',
+    ],
+    canConfigureBuffer: true,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-phukho1',
+    username: 'phukho1',
+    password: '123',
+    fullName: 'Nguyễn Văn Thìn',
+    roleTitle: 'Phụ kho',
+    allowedTabs: [
+      'parts',
+      'stock_in',
+      'stock_out',
+      'ng_warehouse',
+      'warehouse_map',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-phukho2',
+    username: 'phukho2',
+    password: '123',
+    fullName: 'Nguyễn Thị Kim Đào',
+    roleTitle: 'Phụ kho',
+    allowedTabs: [
+      'parts',
+      'stock_in',
+      'stock_out',
+      'ng_warehouse',
+      'warehouse_map',
+      'kitting',
+      'buffer',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-phukho3',
+    username: 'phukho3',
+    password: '123',
+    fullName: 'Nguyễn Văn Hùng',
+    roleTitle: 'Phụ Kho',
+    allowedTabs: [
+      'parts',
+      'stock_in',
+      'stock_out',
+      'ng_warehouse',
+      'warehouse_map',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-boctach2',
+    username: 'boctach2',
+    password: '123',
+    fullName: 'Tuấn',
+    roleTitle: 'Thủ Kho',
+    allowedTabs: [
+      'kitting',
+      'buffer',
+      'bin_card',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-daychuyen1',
+    username: 'daychuyen1',
+    password: '123',
+    fullName: 'Duyên',
+    roleTitle: 'Nhóm trưởng',
+    allowedTabs: [
+      'andon_request',
+      'andon_delivering',
+      'andon_history',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-daychuyen2',
+    username: 'daychuyen2',
+    password: '123',
+    fullName: 'Dũng',
+    roleTitle: 'Nhóm trưởng',
+    allowedTabs: [
+      'andon_request',
+      'andon_delivering',
+      'andon_history',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-daychuyen3',
+    username: 'daychuyen3',
+    password: '123',
+    fullName: 'Tuyền',
+    roleTitle: 'Nhóm trưởng',
+    allowedTabs: [
+      'parts',
+      'stock_in',
+      'ng_warehouse',
+      'andon_request',
+      'andon_delivering',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+  {
+    id: 'user-daychuyen4',
+    username: 'daychuyen4',
+    password: '123',
+    fullName: 'Nguyễn Quốc Thịnh',
+    roleTitle: 'Thủ Kho',
+    allowedTabs: [
+      'buffer',
+      'andon_request',
+      'andon_delivering',
+    ],
+    canConfigureBuffer: false,
+    isActive: true,
+    createdAt: '2026-10-26T10:00:00.000Z',
+  },
+];
+
 const DEFAULT_BUFFER_LOCATIONS: BufferLocationMap[] = [
   {
     locationId: 'BUFFER-A1-01',
@@ -3481,79 +3700,67 @@ export const storageService = {
   getUsers(): UserAccount[] {
     const data = localStorage.getItem('thekho_users_v1');
     if (!data) {
-      const defaultUsers: UserAccount[] = [
-        {
-          id: 'user-admin',
-          username: 'admin',
-          password: '123',
-          fullName: 'Nguyễn Văn Quản Trị',
-          roleTitle: 'Quản Trị Hệ Thống (Admin)',
-          allowedTabs: [
-            'dashboard',
-            'parts',
-            'stock_in',
-            'stock_out',
-            'ng_warehouse',
-            'warehouse_map',
-            'kitting',
-            'buffer',
-            'andon_request',
-            'andon_calling',
-            'andon_delivering',
-            'bin_card',
-            'reports',
-            'settings',
-            'users',
-          ],
-          isActive: true,
-          canConfigureBuffer: true,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: 'user-thukho',
-          username: 'thukho',
-          password: '123',
-          fullName: 'Trần Văn Bình',
-          roleTitle: 'Thủ Kho Trung Tâm',
-          allowedTabs: [
-            'dashboard',
-            'parts',
-            'stock_in',
-            'stock_out',
-            'ng_warehouse',
-            'warehouse_map',
-            'bin_card',
-            'reports',
-          ],
-          isActive: true,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: 'user-kitting',
-          username: 'kitting',
-          password: '123',
-          fullName: 'Lê Thị Hoa',
-          roleTitle: 'Nhân Viên Bóc Tách Kitting',
-          allowedTabs: ['kitting', 'buffer'],
-          isActive: true,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: 'user-daychuyen',
-          username: 'daychuyen',
-          password: '123',
-          fullName: 'Phạm Văn Mạnh',
-          roleTitle: 'Quản Lý Dây Chuyền Lắp Ráp',
-          allowedTabs: ['andon_request', 'andon_calling', 'andon_delivering', 'buffer'],
-          isActive: true,
-          createdAt: new Date().toISOString(),
-        },
-      ];
-      localStorage.setItem('thekho_users_v1', JSON.stringify(defaultUsers));
-      return defaultUsers;
+      localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+      supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
+      return DEFAULT_SYSTEM_USERS;
     }
     try {
       const parsed: UserAccount[] = JSON.parse(data);
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+        supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
+        return DEFAULT_SYSTEM_USERS;
+      }
+
+      // Check if parsed list is missing any of the 12 default accounts or contains old dummy placeholder users
+      const hasOldDummy = parsed.some(
+        (u) =>
+          u.username === 'kitting' ||
+          u.fullName === 'Lê Thị Hoa' ||
+          u.fullName === 'Trần Văn Bình' ||
+          u.fullName === 'Nguyễn Văn Quản Trị' ||
+          u.fullName === 'Phạm Văn Mạnh'
+      );
+
+      if (parsed.length < 12 || hasOldDummy) {
+        // Automatically merge/reconcile so all 12 canonical accounts are always present
+        const merged: UserAccount[] = [];
+        for (const defUser of DEFAULT_SYSTEM_USERS) {
+          const existing = parsed.find(
+            (p) => p.username.toLowerCase() === defUser.username.toLowerCase()
+          );
+          if (existing) {
+            merged.push({
+              ...defUser,
+              password: existing.password || defUser.password,
+              lastLoginAt: existing.lastLoginAt,
+            });
+          } else {
+            merged.push(defUser);
+          }
+        }
+
+        // Keep any extra custom user accounts created by user (excluding old dummy placeholders)
+        for (const p of parsed) {
+          const isStandard = DEFAULT_SYSTEM_USERS.some(
+            (d) => d.username.toLowerCase() === p.username.toLowerCase()
+          );
+          const isOldDummy =
+            p.username === 'kitting' ||
+            p.fullName === 'Lê Thị Hoa' ||
+            p.fullName === 'Trần Văn Bình' ||
+            p.fullName === 'Nguyễn Văn Quản Trị' ||
+            p.fullName === 'Phạm Văn Mạnh';
+          if (!isStandard && !isOldDummy) {
+            merged.push(p);
+          }
+        }
+
+        localStorage.setItem('thekho_users_v1', JSON.stringify(merged));
+        supabaseKeyStore.set('thekho_users_v1', merged);
+        return merged;
+      }
+
       // Migrate legacy tabs & add ng_warehouse if applicable
       return parsed.map((u) => {
         let tabs = [...(u.allowedTabs || [])];
@@ -3571,13 +3778,36 @@ export const storageService = {
         return { ...u, allowedTabs: tabs };
       });
     } catch {
-      return [];
+      localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+      return DEFAULT_SYSTEM_USERS;
     }
   },
 
   saveUsers(users: UserAccount[]): void {
     localStorage.setItem('thekho_users_v1', JSON.stringify(users));
     supabaseKeyStore.set('thekho_users_v1', users);
+  },
+
+  async syncUsersToSupabase(): Promise<{ success: boolean; count: number; message: string }> {
+    const current = this.getUsers();
+    localStorage.setItem('thekho_users_v1', JSON.stringify(current));
+    const ok = await supabaseKeyStore.set('thekho_users_v1', current);
+    return {
+      success: ok,
+      count: current.length,
+      message: ok
+        ? `Đã lưu & đồng bộ thành công ${current.length} tài khoản lên Supabase Cloud!`
+        : 'Có lỗi khi lưu lên Supabase, vui lòng kiểm tra kết nối mạng!',
+    };
+  },
+
+  async resetToDefaultSystemUsers(): Promise<{ success: boolean; users: UserAccount[] }> {
+    localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+    const ok = await supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
+    return {
+      success: ok,
+      users: DEFAULT_SYSTEM_USERS,
+    };
   },
 
   getUserById(id: string): UserAccount | undefined {
@@ -4213,9 +4443,13 @@ export const storageService = {
       }
 
       // 6. Fetch Users & Roles with Smart Cache
-      const remoteUsers = await supabaseKeyStore.get<UserAccount[]>('thekho_users_v1');
-      if (remoteUsers && Array.isArray(remoteUsers) && remoteUsers.length > 0) {
+      const remoteUsers = await supabaseKeyStore.get<UserAccount[]>('thekho_users_v1', { forceFresh: forceFetch });
+      if (remoteUsers && Array.isArray(remoteUsers) && remoteUsers.length >= 12) {
         localStorage.setItem('thekho_users_v1', JSON.stringify(remoteUsers));
+      } else {
+        const canonicalUsers = this.getUsers();
+        localStorage.setItem('thekho_users_v1', JSON.stringify(canonicalUsers));
+        supabaseKeyStore.set('thekho_users_v1', canonicalUsers);
       }
 
       // 7. Fetch Buffer Map (Sơ đồ Kệ Outbuffer thekho_buffer_map_v1) - Luôn kéo từ Supabase về localStorage trước
