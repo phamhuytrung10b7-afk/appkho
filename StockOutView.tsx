@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part, AppSettings, BomExportVoucher, BomExportVoucherItem } from './types';
-import { storageService } from './storage';
+import { storageService, isLocationMatch } from './storage';
 import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { QrScannerModal } from './QrScannerModal';
@@ -136,7 +136,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
   useEffect(() => {
     if (selectedPart) {
       const locs = storageService.getPartLocations(selectedPart);
-      setSelectedOutLocation(locs[0]?.locationName || '');
+      setSelectedOutLocation(locs[0]?.locationName || selectedPart.location || 'Kho chính');
     }
   }, [selectedPartId]);
 
@@ -270,7 +270,17 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
       });
       return;
     }
-    if (!selectedOutLocation.trim()) {
+    let finalLocation = selectedOutLocation.trim();
+    if (!finalLocation) {
+      const locs = storageService.getPartLocations(selectedPart);
+      if (locs.length > 0) {
+        finalLocation = locs[0].locationName;
+        setSelectedOutLocation(finalLocation);
+      } else {
+        finalLocation = selectedPart.location || 'Kho chính';
+      }
+    }
+    if (!finalLocation) {
       setMessage({ type: 'error', text: 'Vui lòng chọn hoặc quét vị trí / kệ cần xuất kho!' });
       return;
     }
@@ -288,7 +298,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         productionOrder: productionOrder.trim(),
         reasonOrPurpose: purpose.trim(),
         notes: notes.trim(),
-        locationId: selectedOutLocation || undefined,
+        locationId: finalLocation || undefined,
       });
 
       // Bắt buộc cập nhật lại currentStock và danh sách locations của linh kiện thông qua storageService.updatePart
@@ -1687,6 +1697,22 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     📍 {loc.locationName} — Tồn tại kệ này: {loc.quantity.toLocaleString('vi-VN')} {selectedPart.unit}
                   </option>
                 ))}
+                {settings.locations && settings.locations.length > 0 && (
+                  <optgroup label="Các kệ khác trong kho">
+                    {settings.locations
+                      .filter(
+                        (l) =>
+                          !storageService
+                            .getPartLocations(selectedPart)
+                            .some((pl) => isLocationMatch(pl.locationName, l.name))
+                      )
+                      .map((l) => (
+                        <option key={l.id} value={l.name}>
+                          Kệ {l.name} {l.description ? `(${l.description})` : ''}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
               </select>
             </div>
           )}

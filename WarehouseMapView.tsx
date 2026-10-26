@@ -57,6 +57,16 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
     availableQty: number;
   } | null>(null);
   
+  // Sync locations with settings prop
+  React.useEffect(() => {
+    if (settings.locations) {
+      setLocations(settings.locations);
+      if (!selectedLocation && settings.locations.length > 0) {
+        setSelectedLocation(settings.locations[0]);
+      }
+    }
+  }, [settings.locations]);
+
   // New Location inputs
   const [newLocationName, setNewLocationName] = useState('');
   const [newLocationDesc, setNewLocationDesc] = useState('');

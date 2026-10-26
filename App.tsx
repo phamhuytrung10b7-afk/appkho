@@ -70,7 +70,8 @@ export default function App() {
 
   // Apply state from local storage cache
   const applyLocalState = useCallback(() => {
-    setParts(storageService.getParts());
+    const reconciled = storageService.reconcileAllPartsStock();
+    setParts(reconciled.length > 0 ? reconciled : storageService.getParts());
     setTransactions(storageService.getTransactions());
     setKittingQueue(storageService.getKittingQueue());
     setBufferLocations(storageService.getBufferLocations());
@@ -96,7 +97,8 @@ export default function App() {
 
         const { parts: cloudParts, transactions: cloudTxs } = await storageService.fetchInitialDataFromCloud(forceFetch);
         lastCloudSyncTimestamp.current = Date.now();
-        setParts(cloudParts);
+        const reconciled = storageService.reconcileAllPartsStock();
+        setParts(reconciled.length > 0 ? reconciled : cloudParts);
         setTransactions(cloudTxs);
         setKittingQueue(storageService.getKittingQueue());
         setBufferLocations(storageService.getBufferLocations());

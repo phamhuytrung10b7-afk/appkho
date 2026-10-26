@@ -390,13 +390,13 @@ export const storageService = {
     if (history.length === 0) return part;
     const latestTx = history[history.length - 1];
     const trueStock = Math.max(0, latestTx.stockAfter);
-    if (part.currentStock !== trueStock || (trueStock === 0 && Array.isArray(part.locations) && part.locations.length > 0)) {
-      const locs = this.getPartLocations(part);
-      if (trueStock === 0) {
-        locs.forEach((l) => (l.quantity = 0));
-      }
-      const activeLocs = locs.filter((l) => l.quantity > 0);
-      const newLocSummary = this.formatPartLocationSummary(activeLocs);
+    const activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(part, history) : [];
+    const newLocSummary = this.formatPartLocationSummary(activeLocs);
+
+    const locationsChanged = JSON.stringify(part.locations || []) !== JSON.stringify(activeLocs);
+    const stockChanged = part.currentStock !== trueStock;
+
+    if (stockChanged || locationsChanged || (activeLocs.length > 0 && part.location !== newLocSummary)) {
       const updated = this.updatePart(part.id, {
         currentStock: trueStock,
         locations: activeLocs,
@@ -405,6 +405,43 @@ export const storageService = {
       return updated;
     }
     return part;
+  },
+
+  /**
+   * Scan and reconcile all parts against the transaction ledger.
+   * Restores accurate shelf locations (locations array and location summary)
+   * for any parts that were imported without shelves or had desynchronized locations.
+   */
+  reconcileAllPartsStock(): Part[] {
+    const parts = this.getParts();
+    let hasChanges = false;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      const history = this.getBinCardHistory(p.id);
+      if (history.length === 0) continue;
+      const latestTx = history[history.length - 1];
+      const trueStock = Math.max(0, latestTx.stockAfter);
+      const trueLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];
+      const newSummary = this.formatPartLocationSummary(trueLocs);
+
+      const locsChanged = JSON.stringify(p.locations || []) !== JSON.stringify(trueLocs);
+      const stockChanged = p.currentStock !== trueStock;
+
+      if (stockChanged || locsChanged || (trueLocs.length > 0 && p.location !== newSummary)) {
+        parts[i] = {
+          ...p,
+          currentStock: trueStock,
+          locations: trueLocs,
+          location: newSummary,
+          updatedAt: new Date().toISOString(),
+        };
+        hasChanges = true;
+      }
+    }
+    if (hasChanges) {
+      this.saveParts(parts);
+    }
+    return parts;
   },
 
   saveParts(parts: Part[]): void {
@@ -531,6 +568,178 @@ export const storageService = {
     return txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   },
 
+  /**
+   * Derive accurate physical shelf stock breakdown directly from the transaction ledger.
+   * This is the immutable source of truth for shelf distribution (as seen in Thẻ kho).
+   */
+  deriveLocationsFromTransactions(part: Part, txs?: Transaction[]): PartLocationStock[] {
+    const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+    if (currentStock <= 0) return [];
+
+    const history = txs || this.getBinCardHistory(part.id);
+    if (!history || history.length === 0) return [];
+
+    // Track stock per shelf
+    // Key: normalized shelf key, Value: { displayName: string, quantity: number }
+    const shelfMap = new Map<string, { displayName: string; quantity: number }>();
+
+    for (let i = 0; i < history.length; i++) {
+      const tx = history[i];
+      const qty = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+      if (qty <= 0) continue;
+
+      const locRaw = (tx.locationId || '').trim();
+
+      // Check if this is an audit adjustment representing a shelf transfer
+      const isTransfer =
+        tx.type === 'AUDIT_ADJUSTMENT' &&
+        ((tx.reasonOrPurpose && /điều chuyển|chuyển/i.test(tx.reasonOrPurpose)) ||
+         (tx.notes && /chuyển.*từ.*sang/i.test(tx.notes)));
+
+      if (isTransfer) {
+        const transferText = `${tx.reasonOrPurpose || ''} ${tx.notes || ''}`;
+        const match = transferText.match(/(?:từ|vị trí:?)\s*([^\s➔\->]+)\s*(?:➔|->|sang)\s*([^\s\.\,]+)/i);
+        if (match) {
+          const fromLoc = match[1].trim();
+          const toLoc = match[2].trim();
+          if (fromLoc && toLoc) {
+            const fromKey = normalizeShelfKey(fromLoc) || fromLoc.toLowerCase();
+            const toKey = normalizeShelfKey(toLoc) || toLoc.toLowerCase();
+            const fromExisting = shelfMap.get(fromKey);
+            if (fromExisting) {
+              fromExisting.quantity = Math.max(0, fromExisting.quantity - qty);
+            }
+            const toExisting = shelfMap.get(toKey);
+            if (toExisting) {
+              toExisting.quantity += qty;
+            } else {
+              shelfMap.set(toKey, { displayName: toLoc, quantity: qty });
+            }
+            continue;
+          }
+        }
+      }
+
+      // Normal IN/OUT operations
+      const segments = locRaw.includes(',') ? locRaw.split(',') : [locRaw];
+
+      if (tx.type === 'IN') {
+        let anyShelfAdded = false;
+        for (const seg of segments) {
+          const trimmed = seg.trim();
+          if (!trimmed) continue;
+          const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
+          let shelfName = trimmed;
+          let shelfQty = qty;
+          if (match) {
+            shelfName = match[1].trim();
+            shelfQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || qty;
+          }
+          if (isRealShelfLocation(shelfName)) {
+            anyShelfAdded = true;
+            const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
+            const existing = shelfMap.get(key);
+            if (existing) {
+              existing.quantity += shelfQty;
+            } else {
+              shelfMap.set(key, { displayName: shelfName, quantity: shelfQty });
+            }
+          }
+        }
+
+        // If locationId had no real shelf name, check if notes had shelf name (e.g. "Kệ X21")
+        if (!anyShelfAdded) {
+          const noteMatch = (tx.notes || '').match(/(?:kệ|vị trí|khoang)\s*([a-zA-Z0-9_\-]+)/i);
+          if (noteMatch && isRealShelfLocation(noteMatch[1])) {
+            const shelfName = noteMatch[1].trim();
+            const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
+            const existing = shelfMap.get(key);
+            if (existing) {
+              existing.quantity += qty;
+            } else {
+              shelfMap.set(key, { displayName: shelfName, quantity: qty });
+            }
+          }
+        }
+      } else if (
+        tx.type === 'OUT' ||
+        tx.type === 'TRANSFER_TO_NG' ||
+        tx.type === 'EXPORT_NG_RTV' ||
+        tx.type === 'EXPORT_NG_SCRAP'
+      ) {
+        let remainingToDeduct = qty;
+
+        // 1. If explicit shelves were recorded in locationId
+        for (const seg of segments) {
+          const trimmed = seg.trim();
+          if (!trimmed) continue;
+          const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
+          let shelfName = trimmed;
+          let shelfDeductQty = remainingToDeduct;
+          if (match) {
+            shelfName = match[1].trim();
+            shelfDeductQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || remainingToDeduct;
+          }
+          const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
+          const existing = shelfMap.get(key);
+          if (existing && existing.quantity > 0) {
+            const deduct = Math.min(existing.quantity, shelfDeductQty, remainingToDeduct);
+            existing.quantity -= deduct;
+            remainingToDeduct -= deduct;
+          }
+        }
+
+        // 2. If remaining to deduct > 0, deduct FIFO from any positive shelves
+        if (remainingToDeduct > 0) {
+          for (const val of shelfMap.values()) {
+            if (val.quantity > 0) {
+              const deduct = Math.min(val.quantity, remainingToDeduct);
+              val.quantity -= deduct;
+              remainingToDeduct -= deduct;
+              if (remainingToDeduct <= 0) break;
+            }
+          }
+        }
+      }
+    }
+
+    // Filter positive shelf balances
+    const activeShelves: PartLocationStock[] = [];
+    for (const val of shelfMap.values()) {
+      if (val.quantity > 0 && isRealShelfLocation(val.displayName)) {
+        activeShelves.push({
+          locationName: val.displayName,
+          quantity: val.quantity,
+        });
+      }
+    }
+
+    if (activeShelves.length === 0) {
+      return [];
+    }
+
+    // Align sum with part.currentStock if discrepancy exists
+    const derivedSum = activeShelves.reduce((acc, s) => acc + s.quantity, 0);
+    if (derivedSum !== currentStock) {
+      if (derivedSum > currentStock) {
+        let excess = derivedSum - currentStock;
+        for (let j = activeShelves.length - 1; j >= 0; j--) {
+          if (excess <= 0) break;
+          const deduct = Math.min(activeShelves[j].quantity, excess);
+          activeShelves[j].quantity -= deduct;
+          excess -= deduct;
+        }
+      } else {
+        const diff = currentStock - derivedSum;
+        if (activeShelves.length > 0) {
+          activeShelves[0].quantity += diff;
+        }
+      }
+    }
+
+    return activeShelves.filter((s) => s.quantity > 0);
+  },
+
   // Helper to get normalized location breakdown array for a part (only real shelves with stock > 0)
   getPartLocations(part: Part): PartLocationStock[] {
     const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
@@ -540,56 +749,72 @@ export const storageService = {
       return [];
     }
 
+    // 1. Check if part already has valid non-empty locations array whose sum equals currentStock
     if (Array.isArray(part.locations) && part.locations.length > 0) {
       const active = part.locations
-        .map((l) => ({ locationName: l.locationName.trim(), quantity: Math.max(0, Number(l.quantity) || 0) }))
+        .map((l) => ({ locationName: (l.locationName || '').trim(), quantity: Math.max(0, Number(l.quantity) || 0) }))
         .filter((l) => l.quantity > 0 && isRealShelfLocation(l.locationName));
-      if (active.length > 0) {
+      const totalActiveQty = active.reduce((sum, item) => sum + item.quantity, 0);
+      if (active.length > 0 && totalActiveQty === currentStock) {
         return active;
       }
     }
 
+    // 2. Derive directly from the Bin Card transaction ledger (Immutable ground truth)
+    const derived = this.deriveLocationsFromTransactions(part);
+    if (derived && derived.length > 0) {
+      // In-memory cache on part for high-performance repeated calls
+      part.locations = derived;
+      part.location = this.formatPartLocationSummary(derived);
+      return derived;
+    }
+
+    // 3. Fallback to parsing part.location string
     if (part.location && part.location.trim()) {
       const raw = part.location.trim();
-      if (raw.toLowerCase().includes('chưa phân') || raw.toLowerCase().includes('hết hàng') || !isRealShelfLocation(raw)) {
-        return [];
-      }
-
-      if (raw.includes(',')) {
-        const segments = raw.split(',');
-        const result: PartLocationStock[] = [];
-        for (const seg of segments) {
-          const trimmed = seg.trim();
-          const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
+      if (!raw.toLowerCase().includes('chưa phân') && !raw.toLowerCase().includes('hết hàng') && isRealShelfLocation(raw)) {
+        if (raw.includes(',')) {
+          const segments = raw.split(',');
+          const result: PartLocationStock[] = [];
+          for (const seg of segments) {
+            const trimmed = seg.trim();
+            if (!trimmed) continue;
+            const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
+            if (match) {
+              const name = match[1].trim();
+              const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
+              if (qty > 0 && isRealShelfLocation(name)) {
+                result.push({ locationName: name, quantity: qty });
+              }
+            } else if (isRealShelfLocation(trimmed)) {
+              result.push({ locationName: trimmed, quantity: currentStock });
+            }
+          }
+          if (result.length > 0) {
+            part.locations = result;
+            return result;
+          }
+        } else {
+          const match = raw.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
           if (match) {
             const name = match[1].trim();
             const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
             if (qty > 0 && isRealShelfLocation(name)) {
-              result.push({ locationName: name, quantity: qty });
+              const res = [{ locationName: name, quantity: qty }];
+              part.locations = res;
+              return res;
             }
-          } else {
-            if (trimmed && isRealShelfLocation(trimmed)) {
-              result.push({ locationName: trimmed, quantity: currentStock });
-            }
+          } else if (isRealShelfLocation(raw)) {
+            const res = [{ locationName: raw, quantity: currentStock }];
+            part.locations = res;
+            return res;
           }
-        }
-        if (result.length > 0) return result;
-      } else {
-        const match = raw.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
-        if (match) {
-          const name = match[1].trim();
-          const qty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
-          if (qty > 0 && isRealShelfLocation(name)) {
-            return [{ locationName: name, quantity: qty }];
-          }
-          return [];
-        }
-        if (isRealShelfLocation(raw)) {
-          return [{ locationName: raw, quantity: currentStock }];
         }
       }
     }
-    return [];
+
+    // 4. Fallback for unassigned parts so stock-out selection is never empty
+    return [{ locationName: 'Kho chính', quantity: currentStock }];
   },
 
   getOldestFifoLocationSummary(part: Part): string {
@@ -647,7 +872,8 @@ export const storageService = {
   getPartsAtLocation(parts: Part[], locationName: string): { part: Part; locationQty: number }[] {
     const result: { part: Part; locationQty: number }[] = [];
     for (const part of parts) {
-      if (typeof part.currentStock !== 'number' || part.currentStock <= 0) continue;
+      const stock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+      if (stock <= 0) continue;
       const qty = this.getPartStockAtLocation(part, locationName);
       if (qty > 0) {
         result.push({ part, locationQty: qty });
@@ -1364,13 +1590,16 @@ export const storageService = {
       );
 
       if (existingIndex !== -1) {
-        // Update existing part stock & info
+        // Update existing part stock & info while preserving existing physical shelf breakdown
+        const existing = existingParts[existingIndex];
+        const hasExistingShelves = Array.isArray(existing.locations) && existing.locations.length > 0;
         existingParts[existingIndex] = {
-          ...existingParts[existingIndex],
+          ...existing,
           code: itemCode,
           name: itemName,
-          description: desc || existingParts[existingIndex].description,
-          location: locationStr,
+          description: desc || existing.description,
+          location: hasExistingShelves ? existing.location : (locationStr || existing.location),
+          locations: existing.locations,
           unit: unitStr,
           currentStock: currentStock,
           updatedAt: new Date().toISOString(),
