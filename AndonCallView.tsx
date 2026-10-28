@@ -495,11 +495,13 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
       setMessage({
         type: 'success',
-        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công! ${deductInfo}.`,
+        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công! ${deductInfo}. Bạn có thể tiếp tục gọi linh kiện khác bên dưới.`,
       });
 
       onRefresh();
-      setActiveTab('calling');
+      // Giữ nguyên tại tab gọi hàng (không nhảy qua tab đơn đang gọi) để người thao tác tiếp tục gọi
+      setSelectedPartCode('');
+      setRequestedQty(10);
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Lỗi khi tạo tín hiệu Andon' });
     }
@@ -576,7 +578,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       });
 
       onRefresh();
-      setActiveTab('calling');
+      // Giữ nguyên tab gọi hàng để tiếp tục thao tác
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Lỗi khi tạo tín hiệu Andon' });
     }
@@ -1243,20 +1245,20 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
         {/* TAB 2: CREATE ANDON CALL REQUEST */}
         {activeTab === 'request' && (
-          <div className="p-4 sm:p-6 max-w-2xl mx-auto space-y-5">
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center space-x-3 text-amber-900">
-              <Zap className="w-6 h-6 text-amber-600 shrink-0" />
+          <div className="p-2 sm:p-6 max-w-2xl mx-auto space-y-4 w-full min-w-0">
+            <div className="p-3.5 sm:p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center space-x-3 text-amber-900">
+              <Zap className="w-5 h-5 sm:w-6 sm:h-6 text-amber-600 shrink-0" />
               <div>
-                <h3 className="font-bold text-sm">Chế Độ Sản Xuất Bấm Gọi Hàng (Andon Call)</h3>
-                <p className="text-xs text-amber-800">
+                <h3 className="font-bold text-xs sm:text-sm">Chế Độ Sản Xuất Bấm Gọi Hàng (Andon Call)</h3>
+                <p className="text-[11px] sm:text-xs text-amber-800">
                   Chọn mã/tên linh kiện cần gọi và nhập số lượng, hệ thống tự động xác định vị trí kệ Outbuffer khả dụng tốt nhất.
                 </p>
               </div>
             </div>
 
-            <form onSubmit={handleCreateCallRequest} className="p-6 bg-white border border-slate-200 rounded-3xl space-y-4 text-xs text-slate-800 shadow-xs">
+            <form onSubmit={handleCreateCallRequest} className="p-3.5 sm:p-6 bg-white border border-slate-200 rounded-2xl sm:rounded-3xl space-y-4 text-xs text-slate-800 shadow-xs w-full min-w-0">
               {/* QUÉT MÃ QR PHIẾU THÔNG TIN / THẺ THÙNG (TỰ ĐỘNG LẤY TÊN, MÃ, SỐ LƯỢNG QUY CÁCH) */}
-              <div className="p-4 bg-blue-50/80 border-2 border-blue-200 rounded-2xl space-y-3">
+              <div className="p-3.5 sm:p-4 bg-blue-50/80 border-2 border-blue-200 rounded-2xl space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="font-extrabold text-blue-900 text-xs flex items-center space-x-2">
                     <QrCode className="w-4 h-4 text-blue-700 animate-pulse shrink-0" />
@@ -1287,7 +1289,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   />
                 )}
 
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <input
                     type="text"
                     value={andonQrInputText}
@@ -1300,7 +1302,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       }
                     }}
                     placeholder="Quét hoặc dán chuỗi QR code Phiếu Thông Tin / Thẻ Thùng..."
-                    className="flex-1 px-3.5 py-2 bg-white border border-blue-300 rounded-xl font-mono text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-hidden"
+                    className="w-full flex-1 px-3.5 py-2 bg-white border border-blue-300 rounded-xl font-mono text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-hidden"
                   />
                   <button
                     type="button"
@@ -1308,7 +1310,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       handleParseAndonQrPayload(andonQrInputText);
                       setAndonQrInputText('');
                     }}
-                    className="px-4 py-2 bg-blue-800 hover:bg-blue-900 text-white rounded-xl font-extrabold text-xs cursor-pointer shadow-2xs"
+                    className="w-full sm:w-auto px-4 py-2 bg-blue-800 hover:bg-blue-900 text-white rounded-xl font-extrabold text-xs cursor-pointer shadow-2xs text-center"
                   >
                     Xác Nhận Quét
                   </button>
@@ -1332,7 +1334,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowManualForm(!showManualForm)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-extrabold text-xs rounded-xl transition-all cursor-pointer inline-flex items-center space-x-2 border border-slate-300 shadow-2xs"
+                  className="w-full sm:w-auto px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-extrabold text-xs rounded-xl transition-all cursor-pointer inline-flex items-center justify-center space-x-2 border border-slate-300 shadow-2xs"
                 >
                   <SettingsIcon className="w-4 h-4 text-amber-700" />
                   <span>{showManualForm ? 'Ẩn Form Chọn Linh Kiện Thủ Công' : '📋 Hiện Form Chọn Linh Kiện Thủ Công (Không Quét QR)'}</span>
@@ -1340,11 +1342,11 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
               </div>
 
               {showManualForm && (
-                <div className="space-y-4 pt-2 border-t border-slate-200 animate-in fade-in">
+                <div className="space-y-4 pt-2 border-t border-slate-200 animate-in fade-in w-full min-w-0">
                   {/* 1. Dây Chuyền / Bàn Máy Yêu Cầu Cấp Hàng - Default DCLR */}
-                  <div>
+                  <div className="w-full min-w-0">
                     <div className="flex items-center justify-between mb-1">
-                      <label className="block font-bold text-slate-800">
+                      <label className="block font-bold text-slate-800 text-xs">
                         1. Dây Chuyền / Bàn Máy Yêu Cầu Cấp Hàng <span className="text-rose-500">*</span>
                       </label>
                       <button
@@ -1353,7 +1355,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         className="text-[11px] font-bold text-amber-700 hover:text-amber-900 underline flex items-center space-x-1 cursor-pointer"
                       >
                         <SettingsIcon className="w-3.5 h-3.5" />
-                        <span>{isCustomLineMode ? 'Mặc Định DCLR' : 'Sửa Chi Tiết Vị Trí'}</span>
+                        <span>{isCustomLineMode ? 'Mặc Định DCLR' : 'Sửa Chi Tiết'}</span>
                       </button>
                     </div>
 
@@ -1388,17 +1390,17 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         </div>
                       </div>
                     ) : (
-                      <div className="flex items-center space-x-2">
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                         <input
                           type="text"
                           value={assemblyLine}
                           onChange={(e) => setAssemblyLine(e.target.value)}
-                          className="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-extrabold text-amber-900 text-sm focus:ring-2 focus:ring-amber-500 outline-hidden"
+                          className="w-full flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-extrabold text-amber-900 text-sm focus:ring-2 focus:ring-amber-500 outline-hidden"
                         />
                         <button
                           type="button"
                           onClick={() => setIsCustomLineMode(true)}
-                          className="px-3.5 py-2.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-xs font-extrabold shrink-0 cursor-pointer"
+                          className="w-full sm:w-auto px-3.5 py-2.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-xs font-extrabold shrink-0 cursor-pointer text-center"
                         >
                           ✏️ Sửa Chi Tiết
                         </button>
@@ -1410,8 +1412,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   </div>
 
                   {/* Searchable Select Part Code & Name */}
-                  <div>
-                    <label className="block font-bold text-slate-800 mb-1">
+                  <div className="w-full min-w-0">
+                    <label className="block font-bold text-slate-800 mb-1 text-xs sm:text-sm">
                       2. Chọn Mã & Tên Linh Kiện Cần Gọi (Chỉ gọi linh kiện trong Danh Sách Chờ Bóc Tách hoặc Kệ Outbuffer) <span className="text-rose-500">*</span>
                     </label>
                     {partSelectOptions.length === 0 ? (

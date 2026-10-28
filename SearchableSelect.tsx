@@ -118,21 +118,35 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
       {/* Main Trigger Button */}
       <div
         onClick={() => setIsOpen(!isOpen)}
-        className={`w-full flex items-center justify-between px-3.5 py-2.5 sm:py-3 bg-slate-50 hover:bg-slate-100/90 border rounded-xl cursor-pointer transition-all shadow-2xs select-none ${
+        className={`w-full flex items-center justify-between px-3 py-2.5 sm:px-3.5 sm:py-3 bg-slate-50 hover:bg-slate-100/90 border rounded-xl cursor-pointer transition-all shadow-2xs select-none gap-2 ${
           isOpen ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-white' : 'border-slate-300'
         }`}
       >
-        <div className="flex items-center space-x-2 min-w-0 pr-2">
-          {icon && <span className="text-slate-400 shrink-0">{icon}</span>}
-          <span
-            className={`text-xs sm:text-sm truncate font-medium ${
-              value ? 'text-slate-900 font-bold' : 'text-slate-400'
-            }`}
-          >
-            {displayLabel}
-          </span>
+        <div className="flex items-start sm:items-center space-x-2 min-w-0 pr-1 flex-1">
+          {icon && <span className="text-slate-400 shrink-0 mt-0.5 sm:mt-0">{icon}</span>}
+          <div className="min-w-0 flex-1 text-left">
+            <span
+              className={`text-xs sm:text-sm font-semibold break-words leading-snug line-clamp-2 block ${
+                value ? 'text-slate-900' : 'text-slate-400 font-normal'
+              }`}
+            >
+              {displayLabel}
+            </span>
+            {selectedOpt && (selectedOpt.badge || selectedOpt.sublabel) && (
+              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
+                {selectedOpt.badge && (
+                  <span className="px-1.5 py-0.2 bg-emerald-100/80 text-emerald-800 rounded font-mono font-bold">
+                    {selectedOpt.badge}
+                  </span>
+                )}
+                {selectedOpt.sublabel && (
+                  <span className="truncate max-w-[240px] text-slate-500">{selectedOpt.sublabel}</span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-        <div className="flex items-center space-x-1.5 shrink-0">
+        <div className="flex items-center space-x-1.5 shrink-0 self-center">
           <ChevronDown
             className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
               isOpen ? 'rotate-180 text-emerald-600' : ''
@@ -152,14 +166,14 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Gõ từ khóa không dấu, rời rạc (VD: plc s7, bulong 25)..."
+              placeholder="Gõ mã, tên linh kiện, vị trí kệ (không dấu)..."
               className="w-full bg-transparent border-none text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-hidden py-1 font-medium"
             />
             {searchTerm && (
               <button
                 type="button"
                 onClick={() => setSearchTerm('')}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200 transition-colors"
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200 transition-colors shrink-0"
                 title="Xóa tìm kiếm"
               >
                 <X className="w-4 h-4" />
@@ -170,13 +184,13 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
           {/* Quick status bar showing result count */}
           <div className="px-3 py-1 bg-emerald-50/60 border-b border-emerald-100 flex items-center justify-between text-[11px] text-emerald-800 font-medium">
             <span className="flex items-center space-x-1">
-              <Sparkles className="w-3 h-3 text-emerald-600" />
+              <Sparkles className="w-3 h-3 text-emerald-600 shrink-0" />
               <span>
                 {debouncedSearch ? `Tìm thấy ${filteredOptions.length} kết quả phù hợp` : `Tổng cộng ${normalizedOptions.length} linh kiện`}
               </span>
             </span>
             {debouncedSearch && (
-              <span className="text-[10px] text-slate-400">Đã sắp xếp độ khớp cao nhất</span>
+              <span className="text-[10px] text-slate-400 shrink-0">Khớp nhất trên đầu</span>
             )}
           </div>
 
@@ -189,7 +203,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                 className="p-2.5 hover:bg-emerald-50 text-emerald-700 rounded-xl cursor-pointer text-xs font-semibold flex items-center space-x-2 transition-colors mb-1 border border-dashed border-emerald-200"
               >
                 <Plus className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
+                <span className="break-words">
                   Dùng giá trị tự nhập: <strong className="font-bold">"{searchTerm.trim()}"</strong>
                 </span>
               </div>
@@ -207,28 +221,30 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                   <div
                     key={opt.value}
                     onClick={() => handleSelect(opt.value)}
-                    className={`p-2.5 sm:p-3 rounded-xl cursor-pointer text-xs flex items-center justify-between transition-colors ${
+                    className={`p-2.5 sm:p-3 rounded-xl cursor-pointer text-xs flex items-start justify-between transition-colors gap-2 ${
                       isSelected
                         ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-200'
                         : 'hover:bg-slate-50 text-slate-700 active:bg-emerald-50/50'
                     }`}
                   >
-                    <div className="min-w-0 pr-2">
-                      <div className="flex items-center space-x-2 flex-wrap">
-                        <span className="truncate text-xs sm:text-sm font-semibold">{opt.label}</span>
+                    <div className="min-w-0 pr-1 flex-1 space-y-1">
+                      <div className="text-xs sm:text-sm font-semibold break-words leading-snug text-slate-900">
+                        {opt.label}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                         {opt.badge && (
-                          <span className="px-1.5 py-0.5 text-[10px] bg-emerald-100/70 text-emerald-800 rounded-md font-mono shrink-0 font-bold">
+                          <span className="px-1.5 py-0.5 text-[10px] bg-emerald-100/90 text-emerald-800 rounded-md font-mono shrink-0 font-bold">
                             {opt.badge}
                           </span>
                         )}
+                        {opt.sublabel && (
+                          <span className="text-[11px] text-slate-500 font-normal break-words leading-tight">
+                            {opt.sublabel}
+                          </span>
+                        )}
                       </div>
-                      {opt.sublabel && (
-                        <p className="text-[11px] text-slate-400 mt-0.5 truncate font-normal">
-                          {opt.sublabel}
-                        </p>
-                      )}
                     </div>
-                    {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 ml-1.5" />}
+                    {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
                   </div>
                 );
               })

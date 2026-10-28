@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { Part, Transaction, AppSettings, TransactionType } from './types';
 import { storageService } from './storage';
+import { SearchableSelect, SelectOption } from './SearchableSelect';
 import {
   ShieldAlert,
   ArrowDownLeft,
@@ -903,6 +904,26 @@ const NgImportModal: React.FC<NgImportModalProps> = ({
   const [errorText, setErrorText] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Pre-computed Smart Fuzzy Search options for Transfer from Main Warehouse
+  const transferPartOptions: SelectOption[] = useMemo(() => {
+    return parts.map((p) => ({
+      value: p.code,
+      label: `[${p.code}] ${p.name}`,
+      sublabel: `Tồn kho chính: ${p.currentStock.toLocaleString('vi-VN')} ${p.unit} ${p.location ? `| Vị trí: ${p.location}` : ''}`,
+      badge: `Tồn chính: ${p.currentStock} ${p.unit}`,
+    }));
+  }, [parts]);
+
+  // Pre-computed Smart Fuzzy Search options for Direct NG Import
+  const directPartOptions: SelectOption[] = useMemo(() => {
+    return parts.map((p) => ({
+      value: p.code,
+      label: `[${p.code}] ${p.name}`,
+      sublabel: `Tồn NG hiện tại: ${(p.qtyNg || 0).toLocaleString('vi-VN')} ${p.unit} | Tồn chính: ${p.currentStock.toLocaleString('vi-VN')} ${p.unit}`,
+      badge: `Tồn NG: ${p.qtyNg || 0} ${p.unit}`,
+    }));
+  }, [parts]);
+
   if (!isOpen) return null;
 
   // Selected Part for Transfer
@@ -1318,21 +1339,16 @@ const NgImportModal: React.FC<NgImportModalProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Chọn Linh Kiện Từ Kho Chính <span className="text-rose-500">*</span>
-                  </label>
-                  <select
+                  <SearchableSelect
+                    label="Chọn Linh Kiện Từ Kho Chính"
+                    required
+                    options={transferPartOptions}
                     value={transferPartCode}
-                    onChange={(e) => setTransferPartCode(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20"
-                  >
-                    <option value="">-- Chọn linh kiện có trong Kho Chính --</option>
-                    {parts.map((p) => (
-                      <option key={p.id} value={p.code}>
-                        [{p.code}] {p.name} (Tồn kho chính: {p.currentStock} {p.unit})
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => setTransferPartCode(val)}
+                    placeholder="— Gõ mã, tên linh kiện, vị trí kho để tìm kiếm thông minh —"
+                    allowCustom={false}
+                    icon={<Search className="w-4 h-4 text-rose-500" />}
+                  />
                 </div>
 
                 <div>
@@ -1531,21 +1547,16 @@ const NgImportModal: React.FC<NgImportModalProps> = ({
               {directSubMode === 'manual' && (
                 <div className="space-y-3 pt-2">
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Chọn Linh Kiện <span className="text-rose-500">*</span>
-                    </label>
-                    <select
+                    <SearchableSelect
+                      label="Chọn Linh Kiện Nhập Lỗi"
+                      required
+                      options={directPartOptions}
                       value={directPartCode}
-                      onChange={(e) => setDirectPartCode(e.target.value)}
-                      className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20"
-                    >
-                      <option value="">-- Chọn linh kiện --</option>
-                      {parts.map((p) => (
-                        <option key={p.id} value={p.code}>
-                          [{p.code}] {p.name} (Tồn NG hiện tại: {p.qtyNg || 0} {p.unit})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(val) => setDirectPartCode(val)}
+                      placeholder="— Gõ mã hoặc tên linh kiện để tìm kiếm thông minh —"
+                      allowCustom={false}
+                      icon={<Search className="w-4 h-4 text-rose-500" />}
+                    />
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1791,6 +1802,16 @@ const NgExportModal: React.FC<NgExportModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorText, setErrorText] = useState('');
 
+  // Pre-computed Smart Fuzzy Search options for Export NG
+  const exportPartOptions: SelectOption[] = useMemo(() => {
+    return ngInventoryList.map((p) => ({
+      value: p.id,
+      label: `[${p.code}] ${p.name}`,
+      sublabel: `Tồn NG: ${(p.qtyNg || 0).toLocaleString('vi-VN')} ${p.unit} | Kho chính: ${p.currentStock.toLocaleString('vi-VN')} ${p.unit}`,
+      badge: `Tồn NG: ${p.qtyNg || 0} ${p.unit}`,
+    }));
+  }, [ngInventoryList]);
+
   if (!isOpen) return null;
 
   const handleAddExportItem = () => {
@@ -2021,18 +2042,14 @@ const NgExportModal: React.FC<NgExportModalProps> = ({
             </span>
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
               <div className="sm:col-span-8">
-                <select
+                <SearchableSelect
+                  options={exportPartOptions}
                   value={selectedAddPartId}
-                  onChange={(e) => setSelectedAddPartId(e.target.value)}
-                  className="w-full p-2 bg-white border border-slate-300 rounded-lg text-xs font-bold"
-                >
-                  <option value="">-- Chọn linh kiện trong Kho NG --</option>
-                  {ngInventoryList.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      [{p.code}] {p.name} (Tồn NG: {p.qtyNg} {p.unit})
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setSelectedAddPartId(val)}
+                  placeholder="— Gõ tìm linh kiện trong Kho NG —"
+                  allowCustom={false}
+                  icon={<Search className="w-3.5 h-3.5 text-rose-500" />}
+                />
               </div>
 
               <div className="sm:col-span-3">
