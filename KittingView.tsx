@@ -268,21 +268,27 @@ export const KittingView: React.FC<KittingViewProps> = ({
   // FIFO Dynamic Reconciliation: Automatically allocate completed history & scan logs onto pending queue items
   // QUY TẮC NGHIỆP VỤ: Nếu xuất kho nhiều đợt sẽ phải CỘNG DỒN vào SL đề nghị ban đầu
   const rawPendingItems = (() => {
-    const rawList = queue
-      .filter((i) => i.status === 'PENDING_KITTING')
-      .map((i) => ({ ...i }));
+    // 1. Get all OUT transactions to establish the true export quantity and source shelves
+    const allTxs = storageService.getTransactions();
+    const outTxs = allTxs.filter((t) => t.type === 'OUT');
+    const txMap = new Map(outTxs.map((t) => [t.id, t]));
 
-    // Consolidate pending items by voucherCode + partCode (Cộng dồn nhiều đợt xuất)
-    const consolidatedMap = new Map<string, KittingQueueItem>();
-    rawList.forEach((item) => {
+    // 2. Consolidate items by voucherCode + partCode (Cộng dồn nhiều đợt xuất theo đúng số lượng đề nghị ban đầu)
+    const consolidatedMap = new Map<
+      string,
+      KittingQueueItem & { distinctTxIds: Set<string>; hasPendingQueue: boolean }
+    >();
+
+    queue.forEach((item) => {
       const vCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
       const pCode = item.partCode.trim().toLowerCase();
       const groupKey = `${vCode.toLowerCase()}__${pCode}`;
 
       const existing = consolidatedMap.get(groupKey);
       if (existing) {
-        // CỘNG DỒN VÀO SL ĐỀ NGHỊ
-        existing.rawQuantity += item.rawQuantity;
+        if (item.status === 'PENDING_KITTING') {
+          existing.hasPendingQueue = true;
+        }
         if (item.sourceBin && !existing.sourceBin?.includes(item.sourceBin)) {
           existing.sourceBin = existing.sourceBin ? `${existing.sourceBin}, ${item.sourceBin}` : item.sourceBin;
         }
@@ -300,61 +306,63 @@ export const KittingView: React.FC<KittingViewProps> = ({
         if (new Date(item.createdAt).getTime() < new Date(existing.createdAt).getTime()) {
           existing.createdAt = item.createdAt;
         }
+        if (item.transactionId && txMap.has(item.transactionId)) {
+          existing.distinctTxIds.add(item.transactionId);
+        } else {
+          existing.rawQuantity += item.rawQuantity;
+        }
       } else {
+        const distinctTxIds = new Set<string>();
+        if (item.transactionId && txMap.has(item.transactionId)) {
+          distinctTxIds.add(item.transactionId);
+        }
+
         consolidatedMap.set(groupKey, {
           ...item,
           voucherCode: vCode,
+          voucherTitle:
+            item.voucherTitle ||
+            (vCode === 'PHIẾU_XUẤT_LẺ'
+              ? 'Linh kiện xuất lẻ (Chưa gán mã phiếu)'
+              : `Phiếu xuất ${vCode}`),
           allItemIds: [item.id],
           batchCount: 1,
+          distinctTxIds,
+          hasPendingQueue: item.status === 'PENDING_KITTING',
+          rawQuantity: item.transactionId && txMap.has(item.transactionId) ? 0 : item.rawQuantity,
         });
+      }
+    });
+
+    // For any distinct transactions recorded, add their exact transaction quantities
+    consolidatedMap.forEach((entry) => {
+      if (entry.distinctTxIds.size > 0) {
+        let txTotal = 0;
+        entry.distinctTxIds.forEach((tId) => {
+          const t = txMap.get(tId);
+          if (t) {
+            txTotal += Number(t.quantity) || 0;
+            const loc = (t.locationId || '').trim();
+            if (loc && !entry.sourceBin?.includes(loc)) {
+              entry.sourceBin = entry.sourceBin ? `${entry.sourceBin}, ${loc}` : loc;
+            }
+          }
+        });
+        if (txTotal > 0) {
+          entry.rawQuantity = txTotal;
+        }
       }
     });
 
     const pendingList = Array.from(consolidatedMap.values());
 
-    // Aggregate total kitted quantity from completed items, scan logs, buffer racks, and deliveries per partCode
+    // Aggregate total kitted quantity directly from completed items (unified ledger matching Lịch sử bóc tách 100%)
     const kittedHistoryByPart = new Map<string, number>();
 
     completedItems.forEach((item) => {
       const code = item.partCode.trim().toLowerCase();
       const qty = item.kittedQuantity || item.rawQuantity || 0;
       kittedHistoryByPart.set(code, (kittedHistoryByPart.get(code) || 0) + qty);
-    });
-
-    kittingScanLogs.forEach((log) => {
-      const code = log.partCode.trim().toLowerCase();
-      const qty = log.quantity || 0;
-      const current = kittedHistoryByPart.get(code) || 0;
-      if (qty > 0 && current < qty) {
-        kittedHistoryByPart.set(code, qty);
-      }
-    });
-
-    // Also verify against physical buffer shelf stock + completed deliveries
-    buffers.forEach((buf) => {
-      const bItems =
-        buf.items && buf.items.length > 0
-          ? buf.items
-          : buf.partCode && buf.currentStockQty > 0
-          ? [{ partCode: buf.partCode, currentStockQty: buf.currentStockQty }]
-          : [];
-      bItems.forEach((bi) => {
-        if (!bi.currentStockQty || bi.currentStockQty <= 0) return;
-        const code = bi.partCode.trim().toLowerCase();
-        const delQty = materialCalls
-          .filter(
-            (m) =>
-              m.status === 'COMPLETED' &&
-              m.partCode.trim().toLowerCase() === code &&
-              !m.isDirectKitting
-          )
-          .reduce((s, m) => s + m.requestedQty, 0);
-        const physicalTotal = bi.currentStockQty + delQty;
-        const current = kittedHistoryByPart.get(code) || 0;
-        if (physicalTotal > current) {
-          kittedHistoryByPart.set(code, physicalTotal);
-        }
-      });
     });
 
     // Group pending items by partCode
