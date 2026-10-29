@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part, AppSettings } from './types';
-import { storageService } from './storage';
+import { storageService, cleanWarehousePrefix, isRealShelfLocation } from './storage';
 import { LocationCameraScannerModal } from './LocationCameraScannerModal';
 import { findLocationMatch } from './StockInView';
 import {
@@ -92,8 +92,12 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
     return list.length ? list : [currentUserName];
   }, [settings.staffList, currentUserName]);
 
-  // Sync initial state when modal opens
+  // State to trigger re-render if transactions had to be loaded on-demand
+  const [, setLoadTrigger] = useState(0);
+
+  // Sync initial state and ensure part transactions are loaded from Cloud
   useEffect(() => {
+    let isMounted = true;
     if (isOpen && part) {
       const user = storageService.getCurrentUser();
       const userName = user
@@ -112,7 +116,21 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
           qtyInputRef.current.select();
         }
       }, 120);
+
+      // On-demand load transactions from Cloud if not present in memory
+      const history = storageService.getBinCardHistory(part.id);
+      if (history.length === 0) {
+        storageService.fetchHistoricalTransactionsOnDemand({ partCode: part.code, limit: 500 }).then((txs) => {
+          if (isMounted && txs && txs.length > 0) {
+            storageService.reconcilePartStock(part.id);
+            setLoadTrigger((prev) => prev + 1);
+          }
+        });
+      }
     }
+    return () => {
+      isMounted = false;
+    };
   }, [isOpen, part, initialQty]);
 
   if (!isOpen || !part) return null;
@@ -130,16 +148,18 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
     if (fifoNext.contNumber && fifoNext.contNumber.includes('Khởi Tạo')) {
       isBaselineLot = true;
     }
-    // Check if fifoNext has location or find match in activeLocations
-    if (activeLocations.length > 0) {
-      expectedFifoLocationName = activeLocations[0].locationName;
-    } else {
-      expectedFifoLocationName = part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+    // Prioritize the exact shelf location where the oldest FIFO lot arrived
+    if (fifoNext.locationName && isRealShelfLocation(fifoNext.locationName)) {
+      expectedFifoLocationName = cleanWarehousePrefix(fifoNext.locationName);
+    } else if (activeLocations.length > 0 && isRealShelfLocation(activeLocations[0].locationName)) {
+      expectedFifoLocationName = cleanWarehousePrefix(activeLocations[0].locationName);
+    } else if (part.location && isRealShelfLocation(part.location)) {
+      expectedFifoLocationName = cleanWarehousePrefix(part.location.split(',')[0]?.split('(')[0]?.trim()) || 'Kho chính';
     }
-  } else if (activeLocations.length > 0) {
-    expectedFifoLocationName = activeLocations[0].locationName;
-  } else {
-    expectedFifoLocationName = part.location?.split(',')[0]?.split('(')[0]?.trim() || 'Kho chính';
+  } else if (activeLocations.length > 0 && isRealShelfLocation(activeLocations[0].locationName)) {
+    expectedFifoLocationName = cleanWarehousePrefix(activeLocations[0].locationName);
+  } else if (part.location && isRealShelfLocation(part.location)) {
+    expectedFifoLocationName = cleanWarehousePrefix(part.location.split(',')[0]?.split('(')[0]?.trim()) || 'Kho chính';
   }
 
   // Check user selected/scanned location against expected FIFO location
@@ -342,10 +362,34 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
                   [{part.code}]
                 </span>
                 <h3 className="text-base font-extrabold text-slate-900 mt-1">{part.name}</h3>
-                <p className="text-xs text-slate-500 flex items-center space-x-1 mt-0.5">
-                  <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  <span>Vị trí kho hiện tại: <strong className="text-slate-700 font-semibold">{part.location}</strong></span>
-                </p>
+                
+                {activeLocations.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    <span className="text-[11px] font-bold text-slate-500 flex items-center space-x-1">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>Các kệ tồn:</span>
+                    </span>
+                    {activeLocations.map((loc, idx) => (
+                      <span
+                        key={idx}
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-extrabold flex items-center space-x-1 ${
+                          loc.locationName === expectedFifoLocationName
+                            ? 'bg-amber-100 text-amber-950 border border-amber-300 ring-1 ring-amber-300'
+                            : 'bg-slate-100 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        {loc.locationName === expectedFifoLocationName && <span className="text-amber-600">⭐ FIFO:</span>}
+                        <span>Kệ {loc.locationName}</span>
+                        <span className="text-slate-500 font-normal">({loc.quantity.toLocaleString('vi-VN')} {part.unit})</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500 flex items-center space-x-1 mt-0.5">
+                    <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span>Vị trí kho: <strong className="text-slate-700 font-semibold">{part.location || 'Chưa phân vị trí'}</strong></span>
+                  </p>
+                )}
               </div>
             </div>
 
@@ -364,25 +408,26 @@ export const StockOutScanModal: React.FC<StockOutScanModalProps> = ({
                 <Zap className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>GỢI Ý KỆ XUẤT HÀNG THEO NGUYÊN TẮC FIFO (#1 NHẬP TRƯỚC XUẤT TRƯỚC):</span>
               </span>
-              <span className="px-2.5 py-1 bg-amber-300 text-amber-950 font-bold rounded-lg text-xs">
-                📍 {expectedFifoLocationName}
+              <span className="px-3 py-1 bg-amber-400 text-amber-950 font-black rounded-lg text-xs shadow-xs border border-amber-500 flex items-center space-x-1">
+                <span>📍 Kệ {expectedFifoLocationName}</span>
               </span>
             </div>
 
-            <p className="text-amber-900 font-medium leading-relaxed">
+            <div className="text-amber-900 font-medium leading-relaxed">
               {isBaselineLot ? (
-                <span>
+                <p>
                   Linh kiện đang dùng <strong>Lô tồn khởi tạo ban đầu</strong>. Hệ thống cho phép trừ tồn từ kệ <strong>{expectedFifoLocationName}</strong> hoặc các kệ hợp lệ.
-                </span>
+                </p>
               ) : fifoNext ? (
-                <span>
-                  Lô nhập gần nhất chưa xuất hết: <strong>{fifoNext.contNumber}</strong> (Nhập ngày {new Date(fifoNext.importDate).toLocaleDateString('vi-VN')} • Còn tồn <strong>{fifoNext.remainingQty.toLocaleString('vi-VN')} {part.unit}</strong>).
-                  Ưu tiên lấy hàng tại <strong className="text-amber-950 underline font-bold">Kệ {expectedFifoLocationName}</strong>.
-                </span>
+                <p>
+                  Lô nhập cũ nhất chưa xuất hết: <strong>{fifoNext.contNumber}</strong> (Nhập ngày {new Date(fifoNext.importDate).toLocaleDateString('vi-VN')} • Còn tồn <strong className="text-amber-950 font-black underline">{fifoNext.remainingQty.toLocaleString('vi-VN')} {part.unit}</strong> trên kệ <strong className="text-amber-950 font-black">Kệ {expectedFifoLocationName}</strong>).
+                  <br />
+                  👉 <strong className="text-amber-950 font-bold">Bắt buộc lấy hàng tại Kệ {expectedFifoLocationName}</strong> trước khi xuất các vị trí khác!
+                </p>
               ) : (
-                <span>Kệ lưu trữ ưu tiên cho linh kiện này là: <strong>{expectedFifoLocationName}</strong>.</span>
+                <p>Kệ lưu trữ ưu tiên cho linh kiện này là: <strong className="text-amber-950 underline font-bold">Kệ {expectedFifoLocationName}</strong>.</p>
               )}
-            </p>
+            </div>
           </div>
 
           {/* STEP 1: QUANTITY INPUT - BRIGHT LIGHT STYLING */}

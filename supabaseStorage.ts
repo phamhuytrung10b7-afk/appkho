@@ -697,6 +697,41 @@ export const supabaseRelationalStore = {
     }
   },
 
+  /**
+   * Selects ALL transactions from Supabase with fast pagination for complete FIFO & Bin Card accuracy in RAM.
+   */
+  async selectAllTransactions(): Promise<Transaction[]> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return [];
+
+      const allTxs: Transaction[] = [];
+      let page = 0;
+      const pageSize = 1000;
+
+      while (true) {
+        const { data, error } = await client
+          .from('transactions')
+          .select('id, part_id, part_code, part_name, unit, type, quantity, date, person, location_id, production_order, reason_or_purpose, notes, stock_before, stock_after, created_at')
+          .order('date', { ascending: true })
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          logSupabaseError('selectAllTransactions', error);
+          break;
+        }
+        if (!data || data.length === 0) break;
+        allTxs.push(...data.map(mapSupabaseRowToTransaction));
+        if (data.length < pageSize) break;
+        page++;
+      }
+      return allTxs;
+    } catch (err) {
+      logSupabaseError('selectAllTransactions catch', err);
+      return [];
+    }
+  },
+
   async insertTransaction(tx: Transaction): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();

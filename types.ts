@@ -145,6 +145,8 @@ export interface KittingQueueItem {
   operatorName?: string; // Tên nhân viên bóc tách
   kittingProductivity?: number; // PCS/Giờ = kittedQuantity / (durationMinutes / 60)
   createdAt: string;
+  allItemIds?: string[]; // Danh sách các ID lô xuất khi cộng dồn nhiều đợt
+  batchCount?: number; // Số đợt xuất đã cộng dồn
 }
 
 export interface BufferPartItem {

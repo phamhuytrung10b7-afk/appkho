@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { Part, AppSettings, WarehouseLocation } from './types';
-import { storageService, normalizeShelfKey } from './storage';
+import { storageService, normalizeShelfKey, cleanWarehousePrefix, isRealShelfLocation } from './storage';
 import {
   MapPin,
   Plus,
@@ -223,6 +223,17 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   const locationSummaryMap = useMemo(() => {
     const map = new Map<string, { partCount: number; totalQty: number }>();
 
+    const recordKey = (key: string, qty: number) => {
+      if (!key) return;
+      const existing = map.get(key);
+      if (existing) {
+        existing.partCount += 1;
+        existing.totalQty += qty;
+      } else {
+        map.set(key, { partCount: 1, totalQty: qty });
+      }
+    };
+
     for (const part of parts) {
       const stock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
       if (stock <= 0) continue;
@@ -230,27 +241,31 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
       const locs = storageService.getPartLocations(part);
       for (const l of locs) {
         if (!l || typeof l.quantity !== 'number' || l.quantity <= 0) continue;
-        const normKey = normalizeShelfKey(l.locationName) || l.locationName.toLowerCase().trim();
-        const existing = map.get(normKey);
-        if (existing) {
-          existing.partCount += 1;
-          existing.totalQty += l.quantity;
-        } else {
-          map.set(normKey, { partCount: 1, totalQty: l.quantity });
+
+        const recordedKeys = new Set<string>();
+        const normKey = normalizeShelfKey(l.locationName);
+        const strippedName = cleanWarehousePrefix(l.locationName);
+        const strippedKey = normalizeShelfKey(strippedName);
+
+        if (normKey) {
+          recordKey(normKey, l.quantity);
+          recordedKeys.add(normKey);
+        }
+        if (strippedKey && !recordedKeys.has(strippedKey)) {
+          recordKey(strippedKey, l.quantity);
+          recordedKeys.add(strippedKey);
         }
 
-        // Sub-compartment support (e.g. "A01 - Tầng 1" also populates "A01")
+        // Sub-compartment / compound segment support (e.g. "A01 - Tầng 1" or "2BVL - H02")
         const hasSub = /[-/]/.test(l.locationName);
         if (hasSub) {
-          const parentName = l.locationName.split(/\s*[-/]\s*/)[0].trim();
-          const parentKey = normalizeShelfKey(parentName) || parentName.toLowerCase();
-          if (parentKey && parentKey !== normKey) {
-            const pExisting = map.get(parentKey);
-            if (pExisting) {
-              pExisting.partCount += 1;
-              pExisting.totalQty += l.quantity;
-            } else {
-              map.set(parentKey, { partCount: 1, totalQty: l.quantity });
+          const segments = l.locationName.split(/\s*[-/]\s*/);
+          for (const seg of segments) {
+            const segCleaned = cleanWarehousePrefix(seg);
+            const segKey = normalizeShelfKey(segCleaned) || normalizeShelfKey(seg);
+            if (segKey && isRealShelfLocation(segCleaned || seg) && !recordedKeys.has(segKey)) {
+              recordKey(segKey, l.quantity);
+              recordedKeys.add(segKey);
             }
           }
         }
@@ -263,8 +278,14 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   // Instant O(1) summary getter
   const getLocationSummary = useCallback(
     (locName: string) => {
-      const normKey = normalizeShelfKey(locName) || locName.toLowerCase().trim();
-      return locationSummaryMap.get(normKey) || { partCount: 0, totalQty: 0 };
+      const normKey = normalizeShelfKey(locName);
+      const strippedKey = normalizeShelfKey(cleanWarehousePrefix(locName));
+      const rawKey = locName.toLowerCase().trim();
+      return (
+        locationSummaryMap.get(normKey) ||
+        locationSummaryMap.get(strippedKey) ||
+        locationSummaryMap.get(rawKey) || { partCount: 0, totalQty: 0 }
+      );
     },
     [locationSummaryMap]
   );

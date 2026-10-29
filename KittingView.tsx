@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { KittingQueueItem, AppSettings, BufferLocationMap } from './types';
+import { KittingQueueItem, AppSettings, BufferLocationMap, BufferPartItem } from './types';
 import { storageService } from './storage';
 import { MasterKittingTag } from './masterExcelParser';
 import { PART_GROUP_COLORS, getPartGroupConfig } from './partGroupColors';
@@ -137,6 +137,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
     isOpen: boolean;
     type: 'item' | 'voucher' | 'all';
     itemId?: string;
+    allItemIds?: string[];
     itemCode?: string;
     itemName?: string;
     itemQty?: number;
@@ -160,17 +161,158 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
   const isAdmin = storageService.isAdminUser(currentUser);
 
-  // Filter items
-  const completedItems = queue.filter((i) => i.status === 'IN_BUFFER' || i.status === 'DELIVERED');
+  // Filter & harmonize completed kitting records with Buffer Racks and Delivered Material Calls (Andon)
+  const queueCompleted = queue.filter((i) => i.status === 'IN_BUFFER' || i.status === 'DELIVERED');
   const kittingScanLogs = storageService.getKittingScanLogs();
+  const materialCalls = storageService.getMaterialCallRequests();
+
+  // Completed delivery requests (Andon calls) dispatched from buffer shelves
+  const completedDeliveries: KittingQueueItem[] = materialCalls
+    .filter(
+      (req) =>
+        req.status === 'COMPLETED' &&
+        req.bufferLocation &&
+        req.bufferLocation !== 'DCLR' &&
+        !req.isDirectKitting
+    )
+    .map((req) => ({
+      id: `delivery-${req.requestId}`,
+      transactionId: req.requestId,
+      voucherCode: 'GIAO_ANDON',
+      voucherTitle: `Giao cấp hàng Andon (${req.assemblyLine || 'Dây chuyền'})`,
+      partCode: req.partCode,
+      partName: req.partName,
+      unit: req.unit || 'Cái',
+      rawQuantity: req.requestedQty,
+      kittedQuantity: req.requestedQty,
+      scrapQuantity: 0,
+      bufferLocation: req.bufferLocation,
+      status: 'DELIVERED' as const,
+      createdAt: req.requestedAt,
+      endTime: req.deliveredAt || req.requestedAt,
+      operatorName: req.deliveredBy || 'Thủ Kho Logistics',
+      durationMinutes: 5,
+    }));
+
+  // Reconcile physical buffer shelf inventory:
+  // If a shelf currently holds stock that exceeds the queue's IN_BUFFER records,
+  // reconcile the difference as an active IN_BUFFER kitting record so history and shelf stock match 100%
+  const rackStockRecords: KittingQueueItem[] = [];
+  buffers.forEach((buf) => {
+    const bItems: BufferPartItem[] =
+      buf.items && buf.items.length > 0
+        ? buf.items
+        : buf.partCode && buf.currentStockQty > 0
+        ? [
+            {
+              partCode: buf.partCode,
+              partName: buf.partName || buf.partCode,
+              unit: buf.unit || 'Cái',
+              currentStockQty: buf.currentStockQty,
+              lastUpdated: buf.lastUpdated,
+            },
+          ]
+        : [];
+
+    bItems.forEach((bItem) => {
+      if (!bItem.currentStockQty || bItem.currentStockQty <= 0) return;
+      const matchingQueue = queueCompleted.filter(
+        (q) =>
+          q.status === 'IN_BUFFER' &&
+          q.bufferLocation.trim().toLowerCase() === buf.locationId.trim().toLowerCase() &&
+          q.partCode.trim().toLowerCase() === bItem.partCode.trim().toLowerCase()
+      );
+      const queueSum = matchingQueue.reduce(
+        (s, q) => s + (q.kittedQuantity || q.rawQuantity || 0),
+        0
+      );
+      if (bItem.currentStockQty > queueSum) {
+        rackStockRecords.push({
+          id: `rack-stock-${buf.locationId}-${bItem.partCode}`,
+          transactionId: `rack-${buf.locationId}`,
+          voucherCode: 'KHO_OUTBUFFER',
+          voucherTitle: `Tồn khoang kệ ${buf.locationId}`,
+          partCode: bItem.partCode,
+          partName: bItem.partName || bItem.partCode,
+          unit: bItem.unit || 'Cái',
+          rawQuantity: bItem.currentStockQty - queueSum,
+          kittedQuantity: bItem.currentStockQty - queueSum,
+          scrapQuantity: 0,
+          bufferLocation: buf.locationId,
+          status: 'IN_BUFFER' as const,
+          createdAt: bItem.lastUpdated || buf.lastUpdated || new Date().toISOString(),
+          endTime: bItem.lastUpdated || buf.lastUpdated || new Date().toISOString(),
+          operatorName: 'Tuấn (Thủ Kho)',
+          durationMinutes: 15,
+        });
+      }
+    });
+  });
+
+  // Deduplicate and combine into completedItems
+  const completedItems: KittingQueueItem[] = [
+    ...queueCompleted,
+    ...rackStockRecords,
+    ...completedDeliveries.filter(
+      (d) =>
+        !queueCompleted.some(
+          (q) =>
+            q.status === 'DELIVERED' &&
+            q.partCode.trim().toLowerCase() === d.partCode.trim().toLowerCase() &&
+            q.bufferLocation.trim().toLowerCase() === d.bufferLocation.trim().toLowerCase() &&
+            q.kittedQuantity === d.kittedQuantity
+        )
+    ),
+  ];
 
   // FIFO Dynamic Reconciliation: Automatically allocate completed history & scan logs onto pending queue items
+  // QUY TẮC NGHIỆP VỤ: Nếu xuất kho nhiều đợt sẽ phải CỘNG DỒN vào SL đề nghị ban đầu
   const rawPendingItems = (() => {
-    const pendingList = queue
+    const rawList = queue
       .filter((i) => i.status === 'PENDING_KITTING')
       .map((i) => ({ ...i }));
 
-    // Aggregate total kitted quantity from completed items and scan logs per partCode
+    // Consolidate pending items by voucherCode + partCode (Cộng dồn nhiều đợt xuất)
+    const consolidatedMap = new Map<string, KittingQueueItem>();
+    rawList.forEach((item) => {
+      const vCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      const pCode = item.partCode.trim().toLowerCase();
+      const groupKey = `${vCode.toLowerCase()}__${pCode}`;
+
+      const existing = consolidatedMap.get(groupKey);
+      if (existing) {
+        // CỘNG DỒN VÀO SL ĐỀ NGHỊ
+        existing.rawQuantity += item.rawQuantity;
+        if (item.sourceBin && !existing.sourceBin?.includes(item.sourceBin)) {
+          existing.sourceBin = existing.sourceBin ? `${existing.sourceBin}, ${item.sourceBin}` : item.sourceBin;
+        }
+        if (item.fifoAllocations && item.fifoAllocations.length > 0) {
+          existing.fifoAllocations = [
+            ...(existing.fifoAllocations || []),
+            ...item.fifoAllocations,
+          ];
+        }
+        if (!existing.allItemIds) {
+          existing.allItemIds = [existing.id];
+        }
+        existing.allItemIds.push(item.id);
+        existing.batchCount = (existing.batchCount || 1) + 1;
+        if (new Date(item.createdAt).getTime() < new Date(existing.createdAt).getTime()) {
+          existing.createdAt = item.createdAt;
+        }
+      } else {
+        consolidatedMap.set(groupKey, {
+          ...item,
+          voucherCode: vCode,
+          allItemIds: [item.id],
+          batchCount: 1,
+        });
+      }
+    });
+
+    const pendingList = Array.from(consolidatedMap.values());
+
+    // Aggregate total kitted quantity from completed items, scan logs, buffer racks, and deliveries per partCode
     const kittedHistoryByPart = new Map<string, number>();
 
     completedItems.forEach((item) => {
@@ -186,6 +328,33 @@ export const KittingView: React.FC<KittingViewProps> = ({
       if (qty > 0 && current < qty) {
         kittedHistoryByPart.set(code, qty);
       }
+    });
+
+    // Also verify against physical buffer shelf stock + completed deliveries
+    buffers.forEach((buf) => {
+      const bItems =
+        buf.items && buf.items.length > 0
+          ? buf.items
+          : buf.partCode && buf.currentStockQty > 0
+          ? [{ partCode: buf.partCode, currentStockQty: buf.currentStockQty }]
+          : [];
+      bItems.forEach((bi) => {
+        if (!bi.currentStockQty || bi.currentStockQty <= 0) return;
+        const code = bi.partCode.trim().toLowerCase();
+        const delQty = materialCalls
+          .filter(
+            (m) =>
+              m.status === 'COMPLETED' &&
+              m.partCode.trim().toLowerCase() === code &&
+              !m.isDirectKitting
+          )
+          .reduce((s, m) => s + m.requestedQty, 0);
+        const physicalTotal = bi.currentStockQty + delQty;
+        const current = kittedHistoryByPart.get(code) || 0;
+        if (physicalTotal > current) {
+          kittedHistoryByPart.set(code, physicalTotal);
+        }
+      });
     });
 
     // Group pending items by partCode
@@ -288,7 +457,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
       if (!match) return false;
     }
     return true;
-  });
+  }).sort((a, b) => new Date(b.endTime || b.createdAt).getTime() - new Date(a.endTime || a.createdAt).getTime());
 
   const totalFilteredKittedQty = filteredCompletedItems.reduce((sum, i) => sum + (i.kittedQuantity || 0), 0);
   const totalFilteredScrapQty = filteredCompletedItems.reduce((sum, i) => sum + (i.scrapQuantity || 0), 0);
@@ -845,6 +1014,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
       isOpen: true,
       type: 'item',
       itemId: item.id,
+      allItemIds: item.allItemIds || [item.id],
       itemCode: item.partCode,
       itemName: item.partName,
       itemQty: unkitted,
@@ -891,8 +1061,16 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
     setIsDeletingPending(true);
     try {
-      if (deletePendingModalData.type === 'item' && deletePendingModalData.itemId) {
-        await storageService.deleteKittingItem(deletePendingModalData.itemId);
+      if (deletePendingModalData.type === 'item') {
+        const idsToDelete =
+          deletePendingModalData.allItemIds && deletePendingModalData.allItemIds.length > 0
+            ? deletePendingModalData.allItemIds
+            : deletePendingModalData.itemId
+            ? [deletePendingModalData.itemId]
+            : [];
+        for (const id of idsToDelete) {
+          await storageService.deleteKittingItem(id);
+        }
         setResultModal({
           isOpen: true,
           isSuccess: true,
