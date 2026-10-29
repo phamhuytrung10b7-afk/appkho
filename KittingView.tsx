@@ -161,9 +161,65 @@ export const KittingView: React.FC<KittingViewProps> = ({
   const isAdmin = storageService.isAdminUser(currentUser);
 
   // Filter items
-  const rawPendingItems = queue.filter((i) => i.status === 'PENDING_KITTING');
-  const pendingItems = rawPendingItems;
   const completedItems = queue.filter((i) => i.status === 'IN_BUFFER' || i.status === 'DELIVERED');
+  const kittingScanLogs = storageService.getKittingScanLogs();
+
+  // FIFO Dynamic Reconciliation: Automatically allocate completed history & scan logs onto pending queue items
+  const rawPendingItems = (() => {
+    const pendingList = queue
+      .filter((i) => i.status === 'PENDING_KITTING')
+      .map((i) => ({ ...i }));
+
+    // Aggregate total kitted quantity from completed items and scan logs per partCode
+    const kittedHistoryByPart = new Map<string, number>();
+
+    completedItems.forEach((item) => {
+      const code = item.partCode.trim().toLowerCase();
+      const qty = item.kittedQuantity || item.rawQuantity || 0;
+      kittedHistoryByPart.set(code, (kittedHistoryByPart.get(code) || 0) + qty);
+    });
+
+    kittingScanLogs.forEach((log) => {
+      const code = log.partCode.trim().toLowerCase();
+      const qty = log.quantity || 0;
+      const current = kittedHistoryByPart.get(code) || 0;
+      if (qty > 0 && current < qty) {
+        kittedHistoryByPart.set(code, qty);
+      }
+    });
+
+    // Group pending items by partCode
+    const pendingByPartMap = new Map<string, typeof pendingList>();
+    pendingList.forEach((item) => {
+      const code = item.partCode.trim().toLowerCase();
+      if (!pendingByPartMap.has(code)) {
+        pendingByPartMap.set(code, []);
+      }
+      pendingByPartMap.get(code)!.push(item);
+    });
+
+    // FIFO Allocation: Sort by createdAt ASC (oldest stock-out voucher first)
+    pendingByPartMap.forEach((itemsForPart, code) => {
+      itemsForPart.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      let availableHistoryQty = kittedHistoryByPart.get(code) || 0;
+
+      itemsForPart.forEach((pItem) => {
+        const needed = pItem.rawQuantity;
+        if (availableHistoryQty > 0) {
+          const alloc = Math.min(needed, availableHistoryQty);
+          pItem.kittedQuantity = alloc;
+          availableHistoryQty -= alloc;
+        } else {
+          pItem.kittedQuantity = 0;
+        }
+      });
+    });
+
+    return pendingList;
+  })();
+
+  const pendingItems = rawPendingItems;
 
   // Date Filtering State for History Tab (Lịch sử bóc tách) - Defaults to Today
   const getTodayStr = () => {
@@ -274,10 +330,10 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
   });
 
-  // Sort vouchers by createdAt DESC (newest first)
-  const groupedVouchersList: PendingVoucherGroup[] = Array.from(groupedVouchersMap.values()).sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
+  // Filter out vouchers where remainingQty === 0 (fully finished vouchers disappear from pending list)
+  const groupedVouchersList: PendingVoucherGroup[] = Array.from(groupedVouchersMap.values())
+    .filter((v) => v.remainingQty > 0)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const filteredVouchersList = groupedVouchersList.filter((v) => {
     if (!voucherSearchTerm.trim()) return true;
@@ -370,14 +426,14 @@ export const KittingView: React.FC<KittingViewProps> = ({
     const emptyBuf = buffers.find((b) => b.status === 'EMPTY');
     setTargetBuffer(matchingBuf ? matchingBuf.locationId : emptyBuf ? emptyBuf.locationId : 'BUFFER-A1-01');
 
-    // Automatically detect pending vouchers containing this partCode
-    const vouchersForPart = rawPendingItems.filter(
-      (i) => i.partCode.trim().toLowerCase() === (tag.partCode || '').trim().toLowerCase()
-    );
+    // Automatically detect pending vouchers containing this partCode, sorted by newest order first
+    const vouchersForPart = rawPendingItems
+      .filter((i) => i.partCode.trim().toLowerCase() === (tag.partCode || '').trim().toLowerCase())
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     if (vouchersForPart.length > 0) {
-      // Default to the first voucher containing this part
-      const firstVoucherCode = (vouchersForPart[0].voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
-      setSelectedVoucherCode(firstVoucherCode);
+      // Default to the newest order containing this part
+      const newestVoucherCode = (vouchersForPart[0].voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      setSelectedVoucherCode(newestVoucherCode);
     }
 
     // Automatically open popup modal for Kitting Info
@@ -1187,6 +1243,64 @@ export const KittingView: React.FC<KittingViewProps> = ({
               </div>
             </div>
 
+            {/* Overall Statistics Bar for Waiting List */}
+            {groupedVouchersList.length > 0 && (() => {
+              const grandTotalRaw = groupedVouchersList.reduce((sum, v) => sum + v.totalRawQty, 0);
+              const grandTotalKitted = groupedVouchersList.reduce((sum, v) => sum + v.totalKittedQty, 0);
+              const grandTotalRemaining = groupedVouchersList.reduce((sum, v) => sum + v.remainingQty, 0);
+              const grandProgressPctExact = grandTotalRaw > 0 ? (grandTotalKitted / grandTotalRaw) * 100 : 0;
+              const grandProgressPctText =
+                grandProgressPctExact === 0
+                  ? '0%'
+                  : grandProgressPctExact === 100
+                  ? '100%'
+                  : grandProgressPctExact < 0.1
+                  ? '>0%'
+                  : `${(Math.round(grandProgressPctExact * 10) / 10).toFixed(grandProgressPctExact % 1 === 0 ? 0 : 1)}%`;
+
+              return (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Tổng Phiếu Chờ</span>
+                    <div className="flex items-baseline space-x-1 mt-1">
+                      <span className="text-lg font-black text-indigo-950 font-mono">{groupedVouchersList.length}</span>
+                      <span className="text-xs text-slate-500 font-bold">phiếu</span>
+                      <span className="text-xs text-slate-400 font-medium">({rawPendingItems.length} LK)</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Tổng SL Cần Bóc</span>
+                    <div className="flex items-baseline space-x-1 mt-1">
+                      <span className="text-lg font-black text-slate-900 font-mono">{grandTotalRaw.toLocaleString('vi-VN')}</span>
+                      <span className="text-xs text-slate-500 font-medium">cái/bộ</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-emerald-50/70 p-3.5 rounded-2xl border border-emerald-200 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-emerald-800 uppercase block">Đã Bóc Tách</span>
+                      <span className="text-[11px] font-black text-emerald-800 bg-emerald-200/80 px-1.5 py-0.2 rounded font-mono">
+                        {grandProgressPctText}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline space-x-1 mt-1">
+                      <span className="text-lg font-black text-emerald-700 font-mono">{grandTotalKitted.toLocaleString('vi-VN')}</span>
+                      <span className="text-xs text-emerald-800 font-medium">cái/bộ</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-amber-50/70 p-3.5 rounded-2xl border border-amber-200 shadow-2xs">
+                    <span className="text-[10px] font-bold text-amber-800 uppercase block">Còn Tồn Chờ Bóc</span>
+                    <div className="flex items-baseline space-x-1 mt-1">
+                      <span className="text-lg font-black text-amber-900 font-mono">{grandTotalRemaining.toLocaleString('vi-VN')}</span>
+                      <span className="text-xs text-amber-800 font-medium">cái/bộ</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* List of Vouchers */}
             {filteredVouchersList.length === 0 ? (
               <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-3">
@@ -1202,10 +1316,18 @@ export const KittingView: React.FC<KittingViewProps> = ({
               <div className="space-y-4">
                 {filteredVouchersList.map((voucher) => {
                   const isExpanded = expandedVoucherCodes.includes(voucher.voucherCode);
-                  const progressPct =
+                  const progressPctExact =
                     voucher.totalRawQty > 0
-                      ? Math.round((voucher.totalKittedQty / voucher.totalRawQty) * 100)
+                      ? (voucher.totalKittedQty / voucher.totalRawQty) * 100
                       : 0;
+                  const progressPctText =
+                    progressPctExact === 0
+                      ? '0%'
+                      : progressPctExact === 100
+                      ? '100%'
+                      : progressPctExact < 0.1
+                      ? '>0%'
+                      : `${(Math.round(progressPctExact * 10) / 10).toFixed(progressPctExact % 1 === 0 ? 0 : 1)}%`;
 
                   return (
                     <div
@@ -1237,14 +1359,22 @@ export const KittingView: React.FC<KittingViewProps> = ({
                               <h4 className="font-extrabold text-sm text-slate-900">
                                 {voucher.voucherTitle}
                               </h4>
-                              {progressPct > 0 && progressPct < 100 && (
-                                <span className="px-2 py-0.5 bg-amber-100 text-amber-900 text-[10px] font-black rounded-md">
-                                  Đang bóc tách ({progressPct}%)
+                              {progressPctExact === 0 && (
+                                <span className="px-2.5 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 text-xs font-black rounded-lg flex items-center space-x-1">
+                                  <span>⏳ Chưa bóc</span>
+                                  <span className="bg-slate-200 px-1.5 py-0.2 rounded text-[11px] font-mono">0%</span>
                                 </span>
                               )}
-                              {progressPct === 100 && (
-                                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-900 text-[10px] font-black rounded-md">
-                                  Đã hoàn thành 100%
+                              {progressPctExact > 0 && progressPctExact < 100 && (
+                                <span className="px-2.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 text-xs font-black rounded-lg flex items-center space-x-1 animate-pulse">
+                                  <span>⚡ Đang bóc tách</span>
+                                  <span className="bg-amber-200/90 px-1.5 py-0.2 rounded text-[11px] font-mono">{progressPctText}</span>
+                                </span>
+                              )}
+                              {progressPctExact === 100 && (
+                                <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-900 border border-emerald-300 text-xs font-black rounded-lg flex items-center space-x-1">
+                                  <span>✓ Đã bóc xong</span>
+                                  <span className="bg-emerald-200 px-1.5 py-0.2 rounded text-[11px] font-mono">100%</span>
                                 </span>
                               )}
                             </div>
@@ -1267,22 +1397,55 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
                         {/* Progress stats & action buttons */}
                         <div className="flex flex-wrap items-center gap-3 shrink-0">
-                          {/* Progress summary */}
-                          <div className="text-right min-w-[140px]">
-                            <div className="text-xs font-bold text-slate-700">
-                              Đã bóc:{' '}
-                              <strong className="text-emerald-700 font-black">
-                                {voucher.totalKittedQty.toLocaleString('vi-VN')}
-                              </strong>{' '}
-                              /{' '}
-                              <strong className="text-slate-900 font-black">
-                                {voucher.totalRawQty.toLocaleString('vi-VN')}
-                              </strong>
+                          {/* Progress summary with explicit quantity and percentage */}
+                          <div className="bg-white border-2 border-indigo-100/80 rounded-2xl p-2.5 px-3 min-w-[210px] space-y-1.5 shadow-2xs">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider flex items-center space-x-1">
+                                <CheckCircle2 className={`w-3.5 h-3.5 ${progressPctExact === 100 ? 'text-emerald-600' : progressPctExact > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
+                                <span>Tiến độ bóc đơn</span>
+                              </span>
+                              <span className={`px-2 py-0.5 rounded-md text-xs font-black font-mono shadow-2xs ${
+                                progressPctExact === 100
+                                  ? 'bg-emerald-600 text-white'
+                                  : progressPctExact > 0
+                                  ? 'bg-amber-500 text-white'
+                                  : 'bg-slate-200 text-slate-700'
+                              }`}>
+                                {progressPctText}
+                              </span>
                             </div>
-                            <div className="w-32 h-2 bg-slate-200 rounded-full overflow-hidden mt-1 ml-auto">
+
+                            <div className="space-y-0.5 text-xs">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-500 font-medium">Đã bóc:</span>
+                                <span className="font-mono">
+                                  <strong className="text-emerald-700 font-black text-sm">
+                                    {voucher.totalKittedQty.toLocaleString('vi-VN')}
+                                  </strong>
+                                  <span className="text-slate-400 mx-1">/</span>
+                                  <strong className="text-slate-900 font-bold">
+                                    {voucher.totalRawQty.toLocaleString('vi-VN')}
+                                  </strong>
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="text-slate-400">Còn chờ bóc:</span>
+                                <strong className="text-amber-900 font-mono font-bold">
+                                  {voucher.remainingQty.toLocaleString('vi-VN')}
+                                </strong>
+                              </div>
+                            </div>
+
+                            <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200">
                               <div
-                                className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-300"
-                                style={{ width: `${Math.min(100, progressPct)}%` }}
+                                className={`h-full rounded-full transition-all duration-500 ${
+                                  progressPctExact === 100
+                                    ? 'bg-emerald-500'
+                                    : progressPctExact > 0
+                                    ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-amber-500'
+                                    : 'bg-transparent'
+                                }`}
+                                style={{ width: `${Math.min(100, Math.max(0, progressPctExact))}%` }}
                               />
                             </div>
                           </div>
@@ -1365,7 +1528,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                                   <th className="p-3">Tên Linh Kiện</th>
                                   <th className="p-3 text-center">ĐVT</th>
                                   <th className="p-3 text-right">SL Đề Nghị (Ban Đầu)</th>
-                                  <th className="p-3 text-right text-emerald-800 bg-emerald-50">Đã Bóc Tách</th>
+                                  <th className="p-3 text-right text-emerald-800 bg-emerald-50">Đã Bóc Tách (%)</th>
                                   <th className="p-3 text-right text-amber-800 bg-amber-50">Còn Tồn Chờ Bóc</th>
                                   <th className="p-3 text-blue-900 bg-blue-50">Vị Trí Xuất Gốc (BIN)</th>
                                   <th className="p-3 text-center">Trạng Thái</th>
@@ -1373,9 +1536,21 @@ export const KittingView: React.FC<KittingViewProps> = ({
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
-                                {voucher.items.map((item, idx) => {
+                                {voucher.items
+                                  .filter((item) => Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)) > 0)
+                                  .map((item, idx) => {
                                   const unkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
                                   const isDone = unkitted === 0;
+                                  const itemPctExact =
+                                    item.rawQuantity > 0 ? ((item.kittedQuantity || 0) / item.rawQuantity) * 100 : 0;
+                                  const itemPctText =
+                                    itemPctExact === 0
+                                      ? '0%'
+                                      : itemPctExact === 100
+                                      ? '100%'
+                                      : itemPctExact < 0.1
+                                      ? '>0%'
+                                      : `${(Math.round(itemPctExact * 10) / 10).toFixed(itemPctExact % 1 === 0 ? 0 : 1)}%`;
                                   const binDisplay =
                                     item.fifoAllocations && item.fifoAllocations.length > 0
                                       ? item.fifoAllocations.map((a) => a.locationName).join(', ')
@@ -1403,8 +1578,13 @@ export const KittingView: React.FC<KittingViewProps> = ({
                                       <td className="p-3 text-right font-bold text-slate-700">
                                         {item.rawQuantity.toLocaleString('vi-VN')}
                                       </td>
-                                      <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/40">
-                                        {(item.kittedQuantity || 0).toLocaleString('vi-VN')}
+                                      <td className="p-3 text-right bg-emerald-50/40">
+                                        <div className="font-black text-emerald-700">
+                                          {(item.kittedQuantity || 0).toLocaleString('vi-VN')}
+                                        </div>
+                                        <div className="text-[10px] font-black text-emerald-700 bg-emerald-100 inline-block px-1.5 py-0.2 rounded mt-0.5 border border-emerald-300">
+                                          {itemPctText}
+                                        </div>
                                       </td>
                                       <td className="p-3 text-right font-black text-amber-900 bg-amber-50/60">
                                         {unkitted.toLocaleString('vi-VN')}
@@ -1414,16 +1594,16 @@ export const KittingView: React.FC<KittingViewProps> = ({
                                       </td>
                                       <td className="p-3 text-center">
                                         {isDone ? (
-                                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-md">
-                                            ✓ Đã xong
+                                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-black rounded-md border border-emerald-300">
+                                            ✓ Đã xong (100%)
                                           </span>
-                                        ) : item.kittedQuantity > 0 ? (
-                                          <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded-md">
-                                            Đang bóc tách
+                                        ) : (item.kittedQuantity || 0) > 0 ? (
+                                          <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-black rounded-md border border-amber-300">
+                                            Đang bóc ({itemPctText})
                                           </span>
                                         ) : (
-                                          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded-md">
-                                            Chờ bóc
+                                          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded-md border border-slate-200">
+                                            Chờ bóc (0%)
                                           </span>
                                         )}
                                       </td>
@@ -1913,22 +2093,28 @@ export const KittingView: React.FC<KittingViewProps> = ({
               const pendingVouchersForPart = rawPendingItems.filter(
                 (i) => i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase()
               );
-              const voucherMap = new Map<string, { code: string; title: string; remainingQty: number }>();
+              const voucherMap = new Map<string, { code: string; title: string; remainingQty: number; latestCreatedAt: string }>();
               pendingVouchersForPart.forEach((i) => {
                 const code = (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
                 const unkitted = Math.max(0, i.rawQuantity - (i.kittedQuantity || 0));
                 const ex = voucherMap.get(code);
                 if (ex) {
                   ex.remainingQty += unkitted;
+                  if (new Date(i.createdAt).getTime() > new Date(ex.latestCreatedAt).getTime()) {
+                    ex.latestCreatedAt = i.createdAt;
+                  }
                 } else {
                   voucherMap.set(code, {
                     code,
                     title: i.voucherTitle || (code === 'PHIẾU_XUẤT_LẺ' ? 'Linh kiện xuất lẻ' : `Phiếu xuất ${code}`),
                     remainingQty: unkitted,
+                    latestCreatedAt: i.createdAt,
                   });
                 }
               });
-              const voucherList = Array.from(voucherMap.values());
+              const voucherList = Array.from(voucherMap.values()).sort(
+                (a, b) => new Date(b.latestCreatedAt).getTime() - new Date(a.latestCreatedAt).getTime()
+              );
               const currentVoucherInfo =
                 voucherList.find((v) => v.code === selectedVoucherCode) || voucherList[0];
 

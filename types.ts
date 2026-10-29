@@ -279,6 +279,8 @@ export interface BomExportVoucherItem {
   totalQtyOut: number; // Tương thích ngược: tổng đã xuất
   fifoLocation: string;
   status?: 'COMPLETED' | 'PARTIAL' | 'PENDING';
+  isExtraConsumable?: boolean; // Đánh dấu linh kiện tiêu hao thêm ngoài định mức
+  extraNote?: string; // Ghi chú lý do tiêu hao thêm
 }
 
 export interface BomExportVoucher {

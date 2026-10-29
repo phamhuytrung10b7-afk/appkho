@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { Part, AppSettings, BomExportVoucher, BomExportVoucherItem } from './types';
 import { storageService, isLocationMatch } from './storage';
-import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks } from 'lucide-react';
+import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks, Search, Trash2, Sparkles, Filter, Plus } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { QrScannerModal } from './QrScannerModal';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -16,6 +16,53 @@ interface StockOutViewProps {
   settings: AppSettings;
   onSuccess: () => void;
 }
+
+export interface ExtraBomItem {
+  id: string;
+  partId: string;
+  partCode: string;
+  partName: string;
+  unit: string;
+  qty: number;
+  note: string;
+  currentStock: number;
+  location: string;
+}
+
+// Utility for unaccented Vietnamese fuzzy search
+const normalizeVietnamese = (str: string): string => {
+  return (str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'd')
+    .trim();
+};
+
+const matchesFuzzy = (target: string, query: string): boolean => {
+  const normTarget = normalizeVietnamese(target);
+  const normQuery = normalizeVietnamese(query);
+  if (!normQuery) return true;
+  if (normTarget.includes(normQuery)) return true;
+
+  // Split into tokens (e.g. "bang dinh" matches "Băng dính...")
+  const tokens = normQuery.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1 && tokens.every((t) => normTarget.includes(t))) {
+    return true;
+  }
+
+  // Subsequence match (e.g. "sha76" matches "04-29-07-SHA76210KL-0011")
+  let tIdx = 0;
+  for (let i = 0; i < normQuery.length; i++) {
+    const char = normQuery[i];
+    if (char === ' ') continue;
+    tIdx = normTarget.indexOf(char, tIdx);
+    if (tIdx === -1) return false;
+    tIdx++;
+  }
+  return true;
+};
 
 const getNowLocalDateTime = () => {
   const now = new Date();
@@ -105,18 +152,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
     person: string;
     status?: string;
     dispatchRounds?: number;
-    items: Array<{
-      partCode: string;
-      partName: string;
-      unit: string;
-      bomQtyPerSet: number;
-      requiredQty?: number;
-      exportedQty?: number;
-      remainingQty?: number;
-      totalQtyOut?: number;
-      fifoLocation?: string;
-      status?: string;
-    }>;
+    items: BomExportVoucherItem[];
   }) => {
     try {
       const isPartial = voucher.status === 'PARTIAL';
@@ -169,9 +205,9 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         sheetData.push([
           idx + 1,
           item.partCode,
-          item.partName,
+          item.partName + (item.isExtraConsumable ? ` [Tiêu hao thêm${item.extraNote ? `: ${item.extraNote}` : ''}]` : ''),
           item.unit,
-          item.bomQtyPerSet,
+          item.isExtraConsumable ? 'Tiêu hao thêm' : item.bomQtyPerSet,
           req,
           exp,
           rem > 0 ? -rem : 0,
@@ -240,6 +276,15 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
   const [modelQty, setModelQty] = useState<number>(1);
   const [bomChecks, setBomChecks] = useState<Record<string, boolean>>({});
   const [customOutQuantities, setCustomOutQuantities] = useState<Record<string, number>>({});
+
+  // Extra consumable items (Tiêu hao thêm ngoài định mức) states
+  const [extraBomItems, setExtraBomItems] = useState<ExtraBomItem[]>([]);
+  const [isAddExtraModalOpen, setIsAddExtraModalOpen] = useState(false);
+  const [extraSearchQuery, setExtraSearchQuery] = useState('');
+  const [extraCategoryFilter, setExtraCategoryFilter] = useState<'ALL' | 'IN_STOCK' | 'FASTENER' | 'TAPE' | 'CABLE' | 'PACKAGING'>('ALL');
+  const [selectedExtraPart, setSelectedExtraPart] = useState<Part | null>(null);
+  const [extraQuantity, setExtraQuantity] = useState<number>(1);
+  const [extraReason, setExtraReason] = useState<string>('Tiêu hao thêm lắp ráp');
 
   // Stock Out Scan Modal States
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
@@ -564,20 +609,22 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         );
 
         // Compute items to display in the table
-        const displayItems = bomWorkflowMode === 'new'
+        const baseBomItems = bomWorkflowMode === 'new'
           ? (currentBOM
               ? currentBOM.items.map((item) => {
+                  const rowKey = item.partCode;
                   const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
                   const requiredQty = item.quantity * modelQty;
                   const currentStock = sysPart ? sysPart.currentStock : 0;
                   const prevExported = 0;
                   const remainingBeforeRound = requiredQty;
                   const qtyThisRound =
-                    customOutQuantities[item.partCode] !== undefined
-                      ? customOutQuantities[item.partCode]
+                    customOutQuantities[rowKey] !== undefined
+                      ? customOutQuantities[rowKey]
                       : Math.min(Math.max(0, currentStock), remainingBeforeRound);
                   const remainingAfterRound = Math.max(0, remainingBeforeRound - qtyThisRound);
                   return {
+                    rowKey,
                     partCode: item.partCode,
                     partName: item.partName,
                     unit: item.unit,
@@ -588,24 +635,29 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     remainingBeforeRound,
                     qtyThisRound,
                     remainingAfterRound,
-                    isChecked: bomChecks[item.partCode] !== false,
+                    isChecked: bomChecks[rowKey] !== false,
                     sysPart,
+                    isExtraConsumable: false,
+                    extraId: '',
+                    extraNote: '',
                   };
                 })
               : [])
           : (selectedBackorderVoucher
               ? selectedBackorderVoucher.items.map((item) => {
+                  const rowKey = item.partCode;
                   const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
                   const requiredQty = item.requiredQty ?? (item.bomQtyPerSet * (selectedBackorderVoucher.modelQty || 1));
                   const currentStock = sysPart ? sysPart.currentStock : 0;
                   const prevExported = item.exportedQty ?? item.totalQtyOut ?? 0;
                   const remainingBeforeRound = item.remainingQty ?? Math.max(0, requiredQty - prevExported);
                   const qtyThisRound =
-                    customOutQuantities[item.partCode] !== undefined
-                      ? customOutQuantities[item.partCode]
+                    customOutQuantities[rowKey] !== undefined
+                      ? customOutQuantities[rowKey]
                       : (remainingBeforeRound > 0 ? Math.min(Math.max(0, currentStock), remainingBeforeRound) : 0);
                   const remainingAfterRound = Math.max(0, remainingBeforeRound - qtyThisRound);
                   return {
+                    rowKey,
                     partCode: item.partCode,
                     partName: item.partName,
                     unit: item.unit,
@@ -616,11 +668,51 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     remainingBeforeRound,
                     qtyThisRound,
                     remainingAfterRound,
-                    isChecked: bomChecks[item.partCode] !== false,
+                    isChecked: bomChecks[rowKey] !== false,
                     sysPart,
+                    isExtraConsumable: !!item.isExtraConsumable,
+                    extraId: '',
+                    extraNote: item.extraNote || '',
                   };
                 })
               : []);
+
+        // Also append extra consumable items in new BOM mode
+        const extraDisplayItems = bomWorkflowMode === 'new'
+          ? extraBomItems.map((ex) => {
+              const rowKey = ex.id;
+              const sysPart = parts.find((p) => p.id === ex.partId || p.code.toLowerCase() === ex.partCode.toLowerCase());
+              const requiredQty = ex.qty;
+              const currentStock = sysPart ? sysPart.currentStock : ex.currentStock;
+              const prevExported = 0;
+              const remainingBeforeRound = requiredQty;
+              const qtyThisRound =
+                customOutQuantities[rowKey] !== undefined
+                  ? customOutQuantities[rowKey]
+                  : Math.min(Math.max(0, currentStock), remainingBeforeRound);
+              const remainingAfterRound = Math.max(0, remainingBeforeRound - qtyThisRound);
+              return {
+                rowKey,
+                partCode: ex.partCode,
+                partName: ex.partName,
+                unit: ex.unit,
+                bomQtyPerSet: 0,
+                requiredQty,
+                currentStock,
+                prevExported,
+                remainingBeforeRound,
+                qtyThisRound,
+                remainingAfterRound,
+                isChecked: bomChecks[rowKey] !== false,
+                sysPart,
+                isExtraConsumable: true,
+                extraId: ex.id,
+                extraNote: ex.note,
+              };
+            })
+          : [];
+
+        const displayItems = [...baseBomItems, ...extraDisplayItems];
 
         const checkedItems = displayItems.filter((i) => i.isChecked);
         const totalSelectedPartsCount = checkedItems.length;
@@ -648,12 +740,18 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               return;
             }
 
-            // Verify physical stock: cannot export more than actual stock
+            // Verify aggregated physical stock across all checked items (prevent over-export if same part selected multiple times)
+            const requestedByPartId: Record<string, number> = {};
             for (const item of checkedItems) {
-              if (item.qtyThisRound > item.currentStock) {
+              if (item.sysPart && item.qtyThisRound > 0) {
+                requestedByPartId[item.sysPart.id] = (requestedByPartId[item.sysPart.id] || 0) + item.qtyThisRound;
+              }
+            }
+            for (const item of checkedItems) {
+              if (item.sysPart && requestedByPartId[item.sysPart.id] > item.sysPart.currentStock) {
                 setMessage({
                   type: 'error',
-                  text: `Linh kiện [${item.partCode}] có số lượng xuất đợt này (${item.qtyThisRound}) vượt quá tồn kho thực tế (${item.currentStock})!`,
+                  text: `Tổng số lượng xuất cho [${item.partCode}] (${requestedByPartId[item.sysPart.id]} ${item.unit}) vượt quá tồn kho thực tế (${item.sysPart.currentStock} ${item.unit})!`,
                 });
                 return;
               }
@@ -691,11 +789,13 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   date: new Date(dateTime).toISOString(),
                   person: person.trim() || 'Thủ kho',
                   productionOrder: currentBOM.name,
-                  reasonOrPurpose: 'Sản xuất theo Model (BOM)',
-                  notes: `[Đợt 1] Model ${currentBOM.name} (${modelQty} bộ) ${item.remainingAfterRound > 0 ? `(Nợ: ${item.remainingAfterRound} ${item.unit})` : '(Đủ)'}`,
+                  reasonOrPurpose: item.isExtraConsumable ? `Tiêu hao thêm Model BOM: ${currentBOM.name}` : 'Sản xuất theo Model (BOM)',
+                  notes: item.isExtraConsumable
+                    ? `[Tiêu hao thêm] Model ${currentBOM.name} (${item.extraNote || 'Tiêu hao ngoài định mức'})`
+                    : `[Đợt 1] Model ${currentBOM.name} (${modelQty} bộ) ${item.remainingAfterRound > 0 ? `(Nợ: ${item.remainingAfterRound} ${item.unit})` : '(Đủ)'}`,
                   locationId: locationName,
                   voucherCode: bomVoucherCode,
-                  voucherTitle: `Model BOM: ${currentBOM.name}`,
+                  voucherTitle: `Model BOM: ${currentBOM.name}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`,
                   sourceBin: locationName,
                 });
 
@@ -728,6 +828,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                 totalQtyOut: item.qtyThisRound,
                 fifoLocation: fullFifoLocStr,
                 status: item.remainingAfterRound === 0 ? 'COMPLETED' : item.qtyThisRound > 0 ? 'PARTIAL' : 'PENDING',
+                isExtraConsumable: item.isExtraConsumable,
+                extraNote: item.extraNote,
               });
             });
 
@@ -787,6 +889,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               items: savedVoucher.items,
             });
 
+            setExtraBomItems([]);
+            setCustomOutQuantities({});
             onSuccess();
           } else {
             // 'backorder' mode
@@ -1009,6 +1113,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     value={selectedBOMId}
                     onChange={(val) => {
                       setSelectedBOMId(val);
+                      setExtraBomItems([]);
+                      setCustomOutQuantities({});
                     }}
                     placeholder="-- Tìm kiếm hoặc chọn Model (BOM) --"
                     allowCustom={false}
@@ -1090,23 +1196,40 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     </h3>
                   </div>
 
-                  <div className="flex items-center space-x-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {bomWorkflowMode === 'new' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExtraSearchQuery('');
+                          setSelectedExtraPart(null);
+                          setExtraQuantity(1);
+                          setExtraReason('Tiêu hao thêm lắp ráp');
+                          setIsAddExtraModalOpen(true);
+                        }}
+                        className="flex items-center space-x-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white rounded-xl font-bold shadow-md cursor-pointer transition-all active:scale-95"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-purple-200 animate-pulse" />
+                        <span>+ Thêm Linh Kiện Tiêu Hao (Fuzzy)</span>
+                      </button>
+                    )}
+
                     <span className="bg-pink-100 text-pink-900 px-2.5 py-1 rounded-lg font-bold">
                       {checkedItems.length} / {displayItems.length} linh kiện chọn xuất
                     </span>
                     <button
                       type="button"
                       onClick={() => {
-                        const allChecked = displayItems.every((i) => bomChecks[i.partCode]);
+                        const allChecked = displayItems.every((i) => bomChecks[i.rowKey]);
                         const newChecks: Record<string, boolean> = {};
                         displayItems.forEach((i) => {
-                          newChecks[i.partCode] = !allChecked;
+                          newChecks[i.rowKey] = !allChecked;
                         });
                         setBomChecks(newChecks);
                       }}
                       className="px-2.5 py-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg font-semibold cursor-pointer transition-colors"
                     >
-                      {displayItems.every((i) => bomChecks[i.partCode]) ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                      {displayItems.every((i) => bomChecks[i.rowKey]) ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
                     </button>
                   </div>
                 </div>
@@ -1119,11 +1242,11 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                           <input
                             type="checkbox"
                             className="w-4 h-4 rounded text-pink-600 focus:ring-pink-500 cursor-pointer"
-                            checked={displayItems.length > 0 && displayItems.every((i) => bomChecks[i.partCode])}
+                            checked={displayItems.length > 0 && displayItems.every((i) => bomChecks[i.rowKey])}
                             onChange={(e) => {
                               const newChecks: Record<string, boolean> = {};
                               displayItems.forEach((i) => {
-                                newChecks[i.partCode] = e.target.checked;
+                                newChecks[i.rowKey] = e.target.checked;
                               });
                               setBomChecks(newChecks);
                             }}
@@ -1144,21 +1267,22 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                           Chờ Xuất Bù (Còn Thiếu)
                         </th>
                         <th className="p-3 text-center">Trạng Thái Đợt Này</th>
+                        <th className="p-3 text-center w-12">Thao Tác</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {displayItems.map((item, idx) => {
-                        const isChecked = bomChecks[item.partCode] || false;
+                        const isChecked = bomChecks[item.rowKey] || false;
                         const isZeroStock = item.currentStock <= 0;
                         const isPartiallyMet = item.qtyThisRound > 0 && item.remainingAfterRound > 0;
                         const isFullyMet = item.remainingAfterRound === 0;
 
                         return (
                           <tr
-                            key={idx}
+                            key={item.rowKey || idx}
                             className={`hover:bg-slate-50/80 transition-colors ${
-                              !isChecked ? 'opacity-40 grayscale bg-slate-50/40' : ''
-                            }`}
+                              item.isExtraConsumable ? 'bg-purple-50/30' : ''
+                            } ${!isChecked ? 'opacity-40 grayscale bg-slate-50/40' : ''}`}
                           >
                             <td className="p-3 text-center">
                               <input
@@ -1168,17 +1292,37 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                 onChange={(e) => {
                                   setBomChecks((prev) => ({
                                     ...prev,
-                                    [item.partCode]: e.target.checked,
+                                    [item.rowKey]: e.target.checked,
                                   }));
                                 }}
                               />
                             </td>
-                            <td className="p-3 font-mono font-bold text-slate-800">{item.partCode}</td>
+                            <td className="p-3 font-mono font-bold text-slate-800">
+                              <div className="flex items-center space-x-1.5">
+                                <span>{item.partCode}</span>
+                                {item.isExtraConsumable && (
+                                  <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-[10px] font-black rounded-md border border-purple-300 shadow-2xs">
+                                    Tiêu hao
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="p-3 text-slate-700 max-w-[220px] truncate" title={item.partName}>
                               {item.partName}
+                              {item.isExtraConsumable && item.extraNote && (
+                                <span className="block text-[10px] text-purple-600 italic">
+                                  ({item.extraNote})
+                                </span>
+                              )}
                             </td>
                             <td className="p-3 text-right font-medium text-slate-500">
-                              {item.bomQtyPerSet} {item.unit}
+                              {item.isExtraConsumable ? (
+                                <span className="text-purple-600 font-bold italic" title={item.extraNote || 'Tiêu hao thêm'}>
+                                  + Tiêu hao
+                                </span>
+                              ) : (
+                                `${item.bomQtyPerSet} ${item.unit}`
+                              )}
                             </td>
                             <td className="p-3 text-right font-black text-slate-800">
                               {item.requiredQty.toLocaleString('vi-VN')} {item.unit}
@@ -1217,7 +1361,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                     const clamped = Math.max(0, Math.min(val, item.currentStock));
                                     setCustomOutQuantities((prev) => ({
                                       ...prev,
-                                      [item.partCode]: clamped,
+                                      [item.rowKey]: clamped,
                                     }));
                                   }}
                                   className={`w-24 px-2 py-1 text-right text-xs font-black rounded-xl border focus:ring-2 focus:ring-pink-500 outline-hidden transition-all ${
@@ -1265,6 +1409,34 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300">
                                   ⚠️ Hết tồn kho / Nợ bù
                                 </span>
+                              )}
+                            </td>
+
+                            {/* CỘT THAO TÁC */}
+                            <td className="p-3 text-center">
+                              {item.isExtraConsumable ? (
+                                <button
+                                  type="button"
+                                  title="Xóa linh kiện tiêu hao thêm này"
+                                  onClick={() => {
+                                    setExtraBomItems((prev) => prev.filter((ex) => ex.id !== item.extraId));
+                                    setCustomOutQuantities((prev) => {
+                                      const updated = { ...prev };
+                                      delete updated[item.rowKey];
+                                      return updated;
+                                    });
+                                    setBomChecks((prev) => {
+                                      const updated = { ...prev };
+                                      delete updated[item.rowKey];
+                                      return updated;
+                                    });
+                                  }}
+                                  className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              ) : (
+                                <span className="text-slate-300 text-[10px]">—</span>
                               )}
                             </td>
                           </tr>
@@ -2137,10 +2309,32 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                       return (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors">
                           <td className="p-3 text-center font-bold text-slate-500">{idx + 1}</td>
-                          <td className="p-3 font-mono font-bold text-blue-700">{item.partCode}</td>
-                          <td className="p-3 font-semibold text-slate-900">{item.partName}</td>
+                          <td className="p-3 font-mono font-bold text-blue-700">
+                            <div className="flex items-center space-x-1">
+                              <span>{item.partCode}</span>
+                              {item.isExtraConsumable && (
+                                <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-[10px] font-black rounded border border-purple-200">
+                                  Tiêu hao
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-3 font-semibold text-slate-900">
+                            {item.partName}
+                            {item.isExtraConsumable && item.extraNote && (
+                              <span className="block text-[10px] text-purple-600 italic">
+                                ({item.extraNote})
+                              </span>
+                            )}
+                          </td>
                           <td className="p-3 text-center text-slate-600">{item.unit}</td>
-                          <td className="p-3 text-right font-medium text-slate-600">{item.bomQtyPerSet}</td>
+                          <td className="p-3 text-right font-medium text-slate-600">
+                            {item.isExtraConsumable ? (
+                              <span className="text-purple-600 font-bold italic">Tiêu hao</span>
+                            ) : (
+                              item.bomQtyPerSet
+                            )}
+                          </td>
                           <td className="p-3 text-right font-bold text-slate-800">{req.toLocaleString('vi-VN')}</td>
                           <td className="p-3 text-right font-black text-emerald-700 bg-emerald-50/50">
                             {exp.toLocaleString('vi-VN')}
@@ -2244,9 +2438,9 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                 <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background-color: #f8fafc;' : ''}">
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; font-weight: bold;">${idx + 1}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; font-family: monospace; font-weight: bold; color: #1d4ed8;">${item.partCode}</td>
-                                  <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight: 600;">${item.partName}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight: 600;">${item.partName} ${item.isExtraConsumable ? `<span style="font-size: 9px; padding: 1px 4px; background-color: #f3e8ff; color: #7e22ce; border-radius: 4px; font-weight: bold; margin-left: 4px;">Tiêu hao</span>` : ''}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center;">${item.unit}</td>
-                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${item.bomQtyPerSet}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${item.isExtraConsumable ? '<span style="color: #7e22ce; font-style: italic;">Tiêu hao</span>' : item.bomQtyPerSet}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold;">${req.toLocaleString('vi-VN')}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: #15803d; background-color: #f0fdf4;">${exp.toLocaleString('vi-VN')}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: ${rem > 0 ? '#be123c' : '#15803d'}; background-color: ${rem > 0 ? '#fff1f2' : '#f0fdf4'};">${rem > 0 ? `-${rem.toLocaleString('vi-VN')}` : '0 (Đủ)'}</td>
@@ -2398,6 +2592,325 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
           </div>
         </div>
       )}
+
+      {/* MODAL THÊM LINH KIỆN TIÊU HAO NGOÀI ĐỊNH MỨC (BOM) VỚI FUZZY SEARCH */}
+      {isAddExtraModalOpen && (() => {
+        let filteredParts = parts;
+        if (extraCategoryFilter === 'IN_STOCK') {
+          filteredParts = filteredParts.filter((p) => p.currentStock > 0);
+        } else if (extraCategoryFilter === 'FASTENER') {
+          filteredParts = filteredParts.filter((p) => matchesFuzzy(`${p.code} ${p.name}`, 'oc vit bulong'));
+        } else if (extraCategoryFilter === 'TAPE') {
+          filteredParts = filteredParts.filter((p) => matchesFuzzy(`${p.code} ${p.name}`, 'bang dinh bang keo'));
+        } else if (extraCategoryFilter === 'CABLE') {
+          filteredParts = filteredParts.filter((p) => matchesFuzzy(`${p.code} ${p.name}`, 'day cap giac jack'));
+        } else if (extraCategoryFilter === 'PACKAGING') {
+          filteredParts = filteredParts.filter((p) => matchesFuzzy(`${p.code} ${p.name}`, 'thung bao bi mang hop'));
+        }
+
+        if (extraSearchQuery.trim()) {
+          filteredParts = filteredParts.filter((p) => {
+            const target = `${p.code} ${p.name} ${p.location || ''} ${p.unit}`;
+            return matchesFuzzy(target, extraSearchQuery);
+          });
+        }
+
+        const displayedMatchingParts = filteredParts.slice(0, 50);
+
+        const handleConfirmAddExtra = () => {
+          if (!selectedExtraPart) {
+            setMessage({ type: 'error', text: 'Vui lòng chọn linh kiện cần thêm tiêu hao!' });
+            return;
+          }
+          if (extraQuantity <= 0) {
+            setMessage({ type: 'error', text: 'Số lượng tiêu hao thêm phải lớn hơn 0!' });
+            return;
+          }
+          if (extraQuantity > selectedExtraPart.currentStock) {
+            setMessage({
+              type: 'error',
+              text: `Số lượng tiêu hao thêm (${extraQuantity} ${selectedExtraPart.unit}) vượt quá tồn kho hiện tại (${selectedExtraPart.currentStock} ${selectedExtraPart.unit})!`,
+            });
+            return;
+          }
+
+          const newExtraItem: ExtraBomItem = {
+            id: 'extra-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+            partId: selectedExtraPart.id,
+            partCode: selectedExtraPart.code,
+            partName: selectedExtraPart.name,
+            unit: selectedExtraPart.unit,
+            qty: extraQuantity,
+            note: extraReason.trim() || 'Tiêu hao thêm ngoài định mức',
+            currentStock: selectedExtraPart.currentStock,
+            location: selectedExtraPart.location || 'Kho chính',
+          };
+
+          setExtraBomItems((prev) => [...prev, newExtraItem]);
+          setBomChecks((prev) => ({ ...prev, [newExtraItem.id]: true }));
+          setCustomOutQuantities((prev) => ({ ...prev, [newExtraItem.id]: extraQuantity }));
+          setIsAddExtraModalOpen(false);
+          setSelectedExtraPart(null);
+          setExtraSearchQuery('');
+
+          setMessage({
+            type: 'success',
+            text: `✅ Đã thêm linh kiện tiêu hao [${selectedExtraPart.code}] ${selectedExtraPart.name} (+${extraQuantity} ${selectedExtraPart.unit}) vào danh sách xuất BOM!`,
+          });
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto">
+            <div className="bg-white rounded-3xl max-w-2xl w-full p-5 sm:p-6 shadow-2xl border border-slate-200 space-y-4 animate-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center shadow-xs">
+                    <Sparkles className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-slate-900 text-base flex items-center space-x-2">
+                      <span>THÊM LINH KIỆN TIÊU HAO NGOÀI ĐỊNH MỨC</span>
+                      <span className="px-2 py-0.5 bg-purple-100 text-purple-800 text-[10px] font-black rounded-full uppercase">
+                        BOM Model
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Tìm kiếm thông minh (Fuzzy Search không dấu) linh kiện từ toàn kho để bổ sung tiêu hao thêm.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAddExtraModalOpen(false)}
+                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full cursor-pointer transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Fuzzy Search Box & Category Filters */}
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    autoFocus
+                    value={extraSearchQuery}
+                    onChange={(e) => setExtraSearchQuery(e.target.value)}
+                    placeholder="Gõ tìm kiếm fuzzy: mã, tên, vị trí... (Ví dụ: bang dinh, oc vit, sha76, adapter...)"
+                    className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-purple-500 outline-hidden transition-all"
+                  />
+                  {extraSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setExtraSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick Filters */}
+                <div className="flex flex-wrap gap-1.5 text-[11px]">
+                  {[
+                    { id: 'ALL', label: 'Tất cả' },
+                    { id: 'IN_STOCK', label: '⚡ Còn tồn kho' },
+                    { id: 'FASTENER', label: 'Ốc / Bulong' },
+                    { id: 'TAPE', label: 'Băng dính / Keo' },
+                    { id: 'CABLE', label: 'Dây / Giắc cắm' },
+                    { id: 'PACKAGING', label: 'Bao bì / Thùng' },
+                  ].map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setExtraCategoryFilter(cat.id as any)}
+                      className={`px-2.5 py-1 rounded-lg font-bold cursor-pointer transition-all ${
+                        extraCategoryFilter === cat.id
+                          ? 'bg-purple-600 text-white shadow-2xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                  <span className="ml-auto text-slate-400 font-semibold self-center">
+                    Tìm thấy: {filteredParts.length} linh kiện
+                  </span>
+                </div>
+              </div>
+
+              {/* Search Results List */}
+              <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl p-1.5 max-h-48 divide-y divide-slate-100 bg-slate-50/50">
+                {displayedMatchingParts.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-slate-400 font-medium">
+                    Không tìm thấy linh kiện nào phù hợp với từ khóa "{extraSearchQuery}"
+                  </div>
+                ) : (
+                  displayedMatchingParts.map((part) => {
+                    const isSelected = selectedExtraPart?.id === part.id;
+                    const isZeroStock = part.currentStock <= 0;
+                    return (
+                      <div
+                        key={part.id}
+                        onClick={() => setSelectedExtraPart(part)}
+                        className={`p-2.5 rounded-xl cursor-pointer transition-all flex items-center justify-between gap-3 ${
+                          isSelected
+                            ? 'bg-purple-100/70 border border-purple-400 shadow-xs'
+                            : 'hover:bg-white border border-transparent'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono font-black text-xs text-purple-900 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                              {part.code}
+                            </span>
+                            <span className="font-bold text-xs text-slate-900 truncate">
+                              {part.name}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5 flex items-center space-x-2">
+                            <span>Vị trí: <strong>{part.location || 'Kho chính'}</strong></span>
+                            <span>•</span>
+                            <span>ĐVT: <strong>{part.unit}</strong></span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <span
+                            className={`px-2 py-1 rounded-lg text-xs font-mono font-black ${
+                              isZeroStock
+                                ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                                : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            }`}
+                          >
+                            Tồn: {part.currentStock.toLocaleString('vi-VN')} {part.unit}
+                          </span>
+                          <button
+                            type="button"
+                            className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                              isSelected
+                                ? 'bg-purple-700 text-white'
+                                : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+                            }`}
+                          >
+                            {isSelected ? 'Đã Chọn' : 'Chọn'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Selected Part Details & Extra Quantity Configuration */}
+              {selectedExtraPart && (
+                <div className="p-3.5 bg-purple-50/70 rounded-2xl border border-purple-300 space-y-3 animate-in fade-in">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[11px] font-bold text-purple-700 block">Linh kiện đã chọn:</span>
+                      <strong className="text-xs sm:text-sm font-black text-slate-900">
+                        [{selectedExtraPart.code}] {selectedExtraPart.name}
+                      </strong>
+                    </div>
+                    <span className="text-xs font-black text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-xl border border-emerald-300">
+                      Tồn kho: {selectedExtraPart.currentStock.toLocaleString('vi-VN')} {selectedExtraPart.unit}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-purple-200">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-700">
+                          Số lượng tiêu hao thêm <span className="text-red-500">*</span>
+                        </label>
+                        <div className="flex space-x-1">
+                          {[1, 5, 10].map((step) => (
+                            <button
+                              key={step}
+                              type="button"
+                              onClick={() => setExtraQuantity((prev) => Math.min(selectedExtraPart.currentStock, (prev || 0) + step))}
+                              className="px-1.5 py-0.5 bg-white hover:bg-purple-100 text-purple-700 border border-purple-300 rounded text-[10px] font-bold cursor-pointer"
+                            >
+                              +{step}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setExtraQuantity(selectedExtraPart.currentStock)}
+                            className="px-1.5 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold cursor-pointer"
+                          >
+                            Max
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={selectedExtraPart.currentStock}
+                          value={extraQuantity}
+                          onChange={(e) => setExtraQuantity(Math.max(1, Math.min(selectedExtraPart.currentStock, Number(e.target.value) || 1)))}
+                          className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl text-sm font-bold text-center text-purple-900 focus:ring-2 focus:ring-purple-500 outline-hidden"
+                        />
+                        <span className="text-xs font-bold text-slate-600 shrink-0 w-8">
+                          {selectedExtraPart.unit}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Lý do / Hạng mục tiêu hao:
+                      </label>
+                      <input
+                        type="text"
+                        value={extraReason}
+                        onChange={(e) => setExtraReason(e.target.value)}
+                        placeholder="Vd: Tiêu hao thêm lắp ráp, Hỏng hóc sx, Bù hao hụt..."
+                        className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-purple-500 outline-hidden"
+                      />
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {['Tiêu hao thêm lắp ráp', 'Bù hỏng hóc sản xuất', 'Vật tư đóng gói thêm'].map((tag) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => setExtraReason(tag)}
+                            className="text-[10px] font-medium text-purple-700 bg-white hover:bg-purple-100 px-2 py-0.5 rounded border border-purple-200 cursor-pointer"
+                          >
+                            {tag}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="pt-2 flex items-center justify-end space-x-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddExtraModalOpen(false)}
+                  className="px-4 py-2.5 text-slate-600 hover:bg-slate-100 rounded-xl text-xs font-bold cursor-pointer transition-colors"
+                >
+                  Hủy / Đóng
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedExtraPart || extraQuantity <= 0 || extraQuantity > (selectedExtraPart?.currentStock || 0)}
+                  onClick={handleConfirmAddExtra}
+                  className="px-5 py-2.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition-all flex items-center space-x-2 active:scale-95"
+                >
+                  <PlusCircle className="w-4 h-4 text-purple-200" />
+                  <span>+ Xác Nhận Thêm Vào Phiếu Xuất BOM</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
