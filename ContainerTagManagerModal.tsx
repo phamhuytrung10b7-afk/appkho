@@ -58,8 +58,15 @@ export const ContainerTagManagerModal: React.FC<ContainerTagManagerModalProps> =
     if (isOpen) {
       const saved = storageService.getMasterContainerTags();
       setTags(saved);
-      // Select all by default
       setSelectedTagIds(new Set(saved.map((t) => t.id)));
+
+      // On-demand fresh fetch from Supabase Cloud
+      storageService.fetchMasterContainerTagsOnDemand().then((fresh) => {
+        if (fresh && fresh.length > 0) {
+          setTags(fresh);
+          setSelectedTagIds(new Set(fresh.map((t) => t.id)));
+        }
+      });
     }
   }, [isOpen]);
 

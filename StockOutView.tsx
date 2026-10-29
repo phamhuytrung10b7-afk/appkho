@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { Part, AppSettings, BomExportVoucher, BomExportVoucherItem } from './types';
 import { storageService, isLocationMatch } from './storage';
 import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks } from 'lucide-react';
@@ -93,6 +94,143 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
 
   const refreshSavedVouchers = () => {
     setSavedVouchers(storageService.getBomExportVouchers());
+  };
+
+  // Xuất phiếu xuất kho theo model BOM ra file Excel (.xlsx) với cấu trúc cột y chang bản in
+  const handleExportVoucherExcel = (voucher: {
+    voucherCode?: string;
+    modelName: string;
+    modelQty: number;
+    dateTime: string;
+    person: string;
+    status?: string;
+    dispatchRounds?: number;
+    items: Array<{
+      partCode: string;
+      partName: string;
+      unit: string;
+      bomQtyPerSet: number;
+      requiredQty?: number;
+      exportedQty?: number;
+      remainingQty?: number;
+      totalQtyOut?: number;
+      fifoLocation?: string;
+      status?: string;
+    }>;
+  }) => {
+    try {
+      const isPartial = voucher.status === 'PARTIAL';
+      const statusText = isPartial ? 'ĐANG XUẤT BÙ' : 'ĐÃ HOÀN THÀNH 100%';
+      const formattedDate = voucher.dateTime
+        ? new Date(voucher.dateTime).toLocaleString('vi-VN')
+        : new Date().toLocaleString('vi-VN');
+
+      // 1. Tiêu đề và thông tin chung y chang bản in
+      const sheetData: any[][] = [
+        ['PHIẾU XUẤT KHO & SOẠN HÀNG THEO MODEL (BOM)'],
+        ['Mã Phiếu:', voucher.voucherCode || 'N/A', '', 'Trạng Thái:', statusText],
+        ['Tên Model (Lệnh SX):', voucher.modelName, '', 'Số Lượng Sản Xuất:', `${voucher.modelQty} Bộ`],
+        ['Thời Gian Thực Hiện:', formattedDate, '', 'Người Lập / Soạn Hàng:', voucher.person],
+        ['Số Đợt Xuất:', `Đợt ${voucher.dispatchRounds || 1}`, '', 'Ghi Chú:', 'Quản Lý Kho Linh Kiện - Cơ Chế Xuất Kho Từng Phần / Xuất Bù FIFO'],
+        [],
+        [
+          'STT',
+          'Mã Linh Kiện',
+          'Tên Linh Kiện',
+          'ĐVT',
+          'Định Mức (ĐM/Bộ)',
+          'Cần Xuất',
+          'Đã Thực Xuất',
+          'Chờ Xuất Bù',
+          'Vị Trí Kệ (FIFO)',
+          'Trạng Thái',
+        ],
+      ];
+
+      // 2. Dữ liệu từng dòng linh kiện y chang bảng hiển thị in
+      let totalReq = 0;
+      let totalExp = 0;
+      let totalRem = 0;
+
+      (voucher.items || []).forEach((item, idx) => {
+        const req = item.requiredQty ?? (item.bomQtyPerSet * (voucher.modelQty || 1));
+        const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
+        const rem = item.remainingQty ?? Math.max(0, req - exp);
+
+        totalReq += req;
+        totalExp += exp;
+        totalRem += rem;
+
+        let statusTextItem = 'Đủ 100%';
+        if (rem > 0) {
+          statusTextItem = exp > 0 ? 'Xuất 1 phần' : 'Nợ 100%';
+        }
+
+        sheetData.push([
+          idx + 1,
+          item.partCode,
+          item.partName,
+          item.unit,
+          item.bomQtyPerSet,
+          req,
+          exp,
+          rem > 0 ? -rem : 0,
+          item.fifoLocation || 'Kho chính',
+          statusTextItem,
+        ]);
+      });
+
+      // 3. Dòng tổng cộng
+      sheetData.push([
+        'TỔNG CỘNG',
+        '',
+        '',
+        '',
+        '',
+        totalReq,
+        totalExp,
+        totalRem > 0 ? -totalRem : 0,
+        '',
+        totalRem === 0 ? 'Đã xuất đủ 100%' : `Còn thiếu ${totalRem.toLocaleString('vi-VN')}`,
+      ]);
+
+      // 4. Khối chữ ký y chang bản in
+      sheetData.push([]);
+      sheetData.push(['Người Soạn Hàng', '', '', 'Thủ Kho Xuất Hàng', '', '', '', 'Đơn Vị Nhận Hàng (SX)']);
+      sheetData.push(['(Ký & ghi rõ họ tên)', '', '', '(Ký & ghi rõ họ tên)', '', '', '', '(Ký & ghi rõ họ tên)']);
+      sheetData.push([]);
+      sheetData.push([]);
+      sheetData.push([voucher.person, '', '', '', '', '', '', '']);
+
+      const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+      // Độ rộng các cột chuẩn để khi mở Excel nhìn đẹp và không bị che khuất
+      ws['!cols'] = [
+        { wch: 6 },  // STT
+        { wch: 22 }, // Mã Linh Kiện
+        { wch: 38 }, // Tên Linh Kiện
+        { wch: 8 },  // ĐVT
+        { wch: 18 }, // Định Mức (ĐM/Bộ)
+        { wch: 14 }, // Cần Xuất
+        { wch: 16 }, // Đã Thực Xuất
+        { wch: 16 }, // Chờ Xuất Bù
+        { wch: 24 }, // Vị Trí Kệ (FIFO)
+        { wch: 16 }, // Trạng Thái
+      ];
+
+      const wb = XLSX.utils.book_new();
+      const safeSheetName = (voucher.voucherCode || 'Phieu_Xuat').replace(/[:\/\\?*\[\]]/g, '_').slice(-31);
+      XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
+
+      const safeCode = (voucher.voucherCode || 'PXK-BOM').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeModel = (voucher.modelName || 'MODEL').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `Phieu_Xuat_Kho_${safeCode}_${safeModel}.xlsx`;
+
+      XLSX.writeFile(wb, fileName);
+    } catch (err: any) {
+      console.error('Lỗi khi xuất file Excel:', err);
+      setMessage({ type: 'error', text: 'Lỗi khi xuất file Excel: ' + (err.message || 'Lỗi không xác định') });
+    }
   };
 
   // BOM Partial & Backorder Workflow states
@@ -1426,6 +1564,16 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                     <Printer className="w-3.5 h-3.5" />
                                     <span>In Phiếu</span>
                                   </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleExportVoucherExcel(v)}
+                                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1 shadow-xs active:scale-95"
+                                    title="Xuất phiếu xuất kho ra file Excel (.xlsx) với cấu trúc cột y chang bản in"
+                                  >
+                                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                                    <span>Xuất Excel</span>
+                                  </button>
                                 </div>
                               </div>
                             </div>
@@ -2036,6 +2184,15 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   className="px-4 py-2.5 text-slate-600 hover:bg-slate-200 rounded-xl font-bold cursor-pointer transition-colors"
                 >
                   Đóng
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportVoucherExcel(bomPrintModalData)}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold cursor-pointer transition-all flex items-center space-x-2 shadow-md active:scale-95"
+                  title="Xuất bảng soạn hàng ra file Excel (.xlsx) với cấu trúc cột y chang bản in"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+                  <span>📊 XUẤT EXCEL (.XLSX)</span>
                 </button>
                 <button
                   type="button"

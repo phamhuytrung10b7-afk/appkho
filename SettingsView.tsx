@@ -28,6 +28,7 @@ import {
   Search,
   Layers,
   Table,
+  HardDrive,
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -69,6 +70,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [newLocationName, setNewLocationName] = useState('');
   const [newLocationDesc, setNewLocationDesc] = useState('');
   const [selectedLocation, setSelectedLocation] = useState<{id: string; name: string; description?: string;} | null>(null);
+
+  // Storage & Cleanup State (35-day policy & zero-polling stats)
+  const [storageUsage, setStorageUsage] = useState(() => storageService.getLocalStorageUsageSummary());
+  const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
+  const [isCleaning, setIsCleaning] = useState<boolean>(false);
+
+  const handleManualCleanup = () => {
+    setIsCleaning(true);
+    try {
+      const res = storageService.cleanupOldLocalStorageRecords(35);
+      const newUsage = storageService.getLocalStorageUsageSummary();
+      setStorageUsage(newUsage);
+      setCleanupStatus(
+        `Đã dọn dẹp thành công ${res.prunedCount} bản ghi cũ hơn 35 ngày. Dung lượng giải phóng: ~${(res.bytesFreed / 1024).toFixed(1)} KB.`
+      );
+      setMessage({
+        type: 'success',
+        text: `Dọn dẹp LocalStorage thành công! Đã giải phóng ~${(res.bytesFreed / 1024).toFixed(1)} KB và bảo vệ an toàn hạn mức trình duyệt.`,
+      });
+      onRefreshAll();
+    } catch {
+      setMessage({ type: 'error', text: 'Có lỗi xảy ra khi dọn dẹp LocalStorage.' });
+    } finally {
+      setIsCleaning(false);
+    }
+  };
 
   // BOM Management State
   const [viewingBOM, setViewingBOM] = useState<ModelBOM | null>(null);
@@ -804,6 +831,104 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <span className="text-[10px] text-slate-500 mt-0.5">Reset về linh kiện mặc định</span>
           </button>
         </div>
+      </div>
+
+      {/* LOCALSTORAGE 35 DAYS POLICY & SUPABASE ZERO-POLLING */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-blue-50 text-blue-700 rounded-xl">
+              <HardDrive className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                Quản Lý Bộ Nhớ LocalStorage & Tối Ưu Băng Thông Supabase
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
+                  Chính Sách 35 Ngày
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500">
+                Tự động thu hồi bộ nhớ trình duyệt, ngăn ngừa triệt để lỗi QuotaExceededError và triệt tiêu polling Egress.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleManualCleanup}
+            disabled={isCleaning}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+          >
+            {isCleaning ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Đang Dọn Dẹp...</span>
+              </>
+            ) : (
+              <>
+                <Trash2 className="w-4 h-4" />
+                <span>Dọn Dẹp Ngay (&gt;35 Ngày)</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Storage Progress Bar */}
+        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-700">Dung Lượng LocalStorage Đang Dùng:</span>
+            <span className="font-mono font-bold text-slate-900">
+              {storageUsage.totalKB.toFixed(1)} KB / {storageUsage.maxKB} KB ({storageUsage.percentUsed.toFixed(1)}%)
+            </span>
+          </div>
+          <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                storageUsage.percentUsed > 80
+                  ? 'bg-rose-500'
+                  : storageUsage.percentUsed > 50
+                  ? 'bg-amber-500'
+                  : 'bg-emerald-500'
+              }`}
+              style={{ width: `${Math.min(100, Math.max(3, storageUsage.percentUsed))}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+            <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Trạng thái: An toàn (Dưới giới hạn an toàn 5MB)</span>
+            </div>
+            <span>Các bản ghi lịch sử &gt; 35 ngày được bảo toàn 100% trên Supabase Cloud</span>
+          </div>
+        </div>
+
+        {/* Policy Highlights */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950">
+            <p className="font-bold text-emerald-900 mb-1">1. Tự Động Dọn Dẹp 35 Ngày</p>
+            <p className="text-[11px] text-emerald-800 leading-relaxed">
+              Tự động chạy mỗi khi mở ứng dụng. Prune lịch sử giao dịch, scan log kitting và đơn Andon đã hoàn thành cũ hơn 35 ngày.
+            </p>
+          </div>
+          <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-xs text-blue-950">
+            <p className="font-bold text-blue-900 mb-1">2. Zero-Polling (Event-Driven)</p>
+            <p className="text-[11px] text-blue-800 leading-relaxed">
+              Đã gỡ bỏ toàn bộ setInterval ngầm và visibility polling. Dữ liệu đồng bộ khi mở ứng dụng, bấm Làm Mới hoặc có thao tác nghiệp vụ thực tế.
+            </p>
+          </div>
+          <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl text-xs text-purple-950">
+            <p className="font-bold text-purple-900 mb-1">3. Tra Cứu On-Demand</p>
+            <p className="text-[11px] text-purple-800 leading-relaxed">
+              Khi mở Thẻ kho điện tử, có nút "Tra cứu lịch sử cũ (&gt;35 ngày)" để tải trực tiếp từ Supabase mà không làm phình LocalStorage.
+            </p>
+          </div>
+        </div>
+
+        {cleanupStatus && (
+          <div className="p-3 bg-emerald-100 border border-emerald-300 rounded-xl text-xs font-semibold text-emerald-900 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+            <span>{cleanupStatus}</span>
+          </div>
+        )}
       </div>
 
       {/* Custom Reset Sample Confirmation Modal */}

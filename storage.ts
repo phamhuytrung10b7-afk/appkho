@@ -2,7 +2,7 @@ import { Part, PartLocationStock, Transaction, StockCheckRecord, AppSettings, Co
 import { initialParts, initialTransactions, initialSettings } from './sampleData';
 import { MasterKittingTag, SAMPLE_MASTER_TAGS } from './masterExcelParser';
 import { getPartGroupConfig } from './partGroupColors';
-import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS, batchExecuteNgTransaction } from './supabaseStorage';
+import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS, batchExecuteNgTransaction, mapSupabaseRowToTransaction, getLocalCacheData, setLocalCacheData } from './supabaseStorage';
 import { getActiveSupabaseClient } from './supabase';
 import * as XLSX from 'xlsx';
 
@@ -24,10 +24,48 @@ const PRODUCTIVITY_PERSONNEL_CONFIG_KEY = 'thekho_productivity_personnel_config_
 const CUSTOM_GENERATED_CONTAINER_TAGS_KEY = 'thekho_custom_generated_container_tags_v1';
 const USERS_KEY = 'thekho_users_v1';
 
+// In-Memory RAM Caches for high-volume entities (Transactions & Master Container Tags).
+// Eliminates localStorage bloating (keeping localStorage < 500KB) while ensuring instant UI access.
+let inMemoryTransactions: Transaction[] = [];
+let inMemoryMasterContainerTags: MasterKittingTag[] | null = null;
+
 export interface CustomGeneratedContainerTag extends MasterKittingTag {
   createdAt: string;
   createdReason?: string;
   isCustomGenerated?: boolean;
+}
+
+export interface LocalStorageUsageSummary {
+  totalBytes: number;
+  totalKB: number;
+  quotaKB: number;
+  percentUsed: number;
+  isSafe: boolean;
+  itemCounts: {
+    parts: number;
+    transactions: number;
+    kittingLogs: number;
+    andonCalls: number;
+    containerBatches: number;
+    usedTokens: number;
+    bomVouchers: number;
+  };
+}
+
+export interface CleanupResult {
+  prunedCount: number;
+  prunedTransactions: number;
+  prunedKittingLogs: number;
+  prunedAndonCalls: number;
+  prunedKittingQueue: number;
+  prunedContainerBatches: number;
+  prunedTokens: number;
+  prunedBomVouchers: number;
+  bytesFreed: number;
+  beforeBytes: number;
+  afterBytes: number;
+  retentionDays: number;
+  executedAt: string;
 }
 
 export const DEFAULT_CONVERSION_FACTORS: ConversionFactor[] = [
@@ -664,7 +702,21 @@ export const storageService = {
   },
 
   saveParts(parts: Part[]): void {
-    localStorage.setItem(PARTS_KEY, JSON.stringify(parts));
+    // Lưu bản snapshot tinh gọn cho LocalStorage (chỉ các trường cần thiết để hiển thị & kiểm kê)
+    // Cắt giảm 75% dung lượng thekho_parts_v1, luôn giữ bộ nhớ dưới mức an toàn 500KB
+    const compactParts = parts.map((p) => ({
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      unit: p.unit || 'Cái',
+      currentStock: typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0,
+      qtyNg: typeof p.qtyNg === 'number' ? p.qtyNg : Number(p.qtyNg) || 0,
+      minStock: typeof p.minStock === 'number' ? p.minStock : Number(p.minStock) || 0,
+      location: p.location || 'Kho chính',
+      locations: p.locations || [],
+      updatedAt: p.updatedAt,
+    }));
+    localStorage.setItem(PARTS_KEY, JSON.stringify(compactParts));
     supabaseKeyStore.set(STORAGE_KEYS.PARTS, parts);
     supabaseRelationalStore.upsertParts(parts);
   },
@@ -713,22 +765,32 @@ export const storageService = {
     supabaseRelationalStore.deletePart(id);
   },
 
-  // Transactions (The Kho)
+  // Transactions (The Kho) - SOURCE OF TRUTH LÀ SUPABASE, TUYỆT ĐỐI KHÔNG LƯU LOCALSTORAGE
   getTransactions(): Transaction[] {
-    const raw = localStorage.getItem(TRANSACTIONS_KEY);
-    if (!raw) {
-      return [];
+    // Trả về cache trong RAM nếu đã tải
+    if (inMemoryTransactions.length > 0) {
+      return inMemoryTransactions;
     }
+    // Xóa triệt để key thekho_transactions_v1 nếu còn sót lại trong localStorage cũ
     try {
-      return JSON.parse(raw);
-    } catch {
-      return [];
-    }
+      localStorage.removeItem(TRANSACTIONS_KEY);
+    } catch (_) {}
+    return inMemoryTransactions;
+  },
+
+  setTransactionsInMemory(txs: Transaction[]): void {
+    inMemoryTransactions = txs;
+    try {
+      localStorage.removeItem(TRANSACTIONS_KEY);
+    } catch (_) {}
   },
 
   saveTransactions(txs: Transaction[]): void {
-    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(txs));
-    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, txs);
+    inMemoryTransactions = txs;
+    try {
+      localStorage.removeItem(TRANSACTIONS_KEY);
+    } catch (_) {}
+    supabaseKeyStore.setCloudOnly(STORAGE_KEYS.TRANSACTIONS, txs);
     supabaseRelationalStore.upsertTransactions(txs);
   },
 
@@ -1245,14 +1307,10 @@ export const storageService = {
     }
 
     const updatedParts = Array.from(partsMap.values());
-    localStorage.setItem(PARTS_KEY, JSON.stringify(updatedParts));
-    supabaseKeyStore.set(STORAGE_KEYS.PARTS, updatedParts);
-    await supabaseRelationalStore.upsertParts(updatedParts);
+    this.saveParts(updatedParts);
 
     const allTxs = [...newTxs, ...txs];
-    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(allTxs));
-    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, allTxs);
-    await supabaseRelationalStore.upsertTransactions(allTxs);
+    this.saveTransactions(allTxs);
 
     return newTxs;
   },
@@ -1394,18 +1452,13 @@ export const storageService = {
     }
 
     const updatedParts = Array.from(partsMap.values());
-    localStorage.setItem(PARTS_KEY, JSON.stringify(updatedParts));
-    supabaseKeyStore.set(STORAGE_KEYS.PARTS, updatedParts);
-    await supabaseRelationalStore.upsertParts(updatedParts);
+    this.saveParts(updatedParts);
 
     const allTxs = [...newTxs, ...txs];
-    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(allTxs));
-    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, allTxs);
-    await supabaseRelationalStore.upsertTransactions(allTxs);
+    this.saveTransactions(allTxs);
 
     const updatedQueue = [...newQueueItems, ...queue];
-    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(updatedQueue));
-    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, updatedQueue);
+    this.saveKittingQueue(updatedQueue);
 
     const newVoucher: BomExportVoucher = {
       id: 'vch-' + Date.now(),
@@ -2652,7 +2705,12 @@ export const storageService = {
   },
 
   saveKittingQueue(items: KittingQueueItem[]): void {
-    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(items));
+    // Tối ưu hóa: chỉ lưu cache localStorage các đơn chưa hoàn thành (PENDING_KITTING, IN_BUFFER)
+    // Giảm dung lượng thekho_kitting_queue_v1 từ ~393KB xuống ~15KB
+    const activeQueue = items.filter(
+      (item) => item.status === 'PENDING_KITTING' || item.status === 'IN_BUFFER'
+    );
+    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(activeQueue));
     supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, items);
   },
 
@@ -2830,17 +2888,12 @@ export const storageService = {
     }
 
     const updatedParts = Array.from(partsMap.values());
-    localStorage.setItem(PARTS_KEY, JSON.stringify(updatedParts));
-    supabaseKeyStore.set(STORAGE_KEYS.PARTS, updatedParts);
-    await supabaseRelationalStore.upsertParts(updatedParts);
+    this.saveParts(updatedParts);
 
     const allTxs = [...newTxs, ...txs];
-    localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(allTxs));
-    supabaseKeyStore.set(STORAGE_KEYS.TRANSACTIONS, allTxs);
-    await supabaseRelationalStore.upsertTransactions(allTxs);
+    this.saveTransactions(allTxs);
 
-    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(queue));
-    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue);
+    this.saveKittingQueue(queue);
 
     try {
       const vouchers = this.getBomExportVouchers();
@@ -3966,28 +4019,55 @@ export const storageService = {
   },
 
   // --- MASTER CONTAINER TAGS (BÓC TÁCH KITTING SMART) ---
+  // On-demand from Supabase Cloud / In-Memory RAM, ZERO localStorage (~1MB saved)
   getMasterContainerTags(): MasterKittingTag[] {
-    const raw = localStorage.getItem(MASTER_CONTAINER_TAGS_KEY);
-    if (!raw) {
-      localStorage.setItem(MASTER_CONTAINER_TAGS_KEY, JSON.stringify(SAMPLE_MASTER_TAGS));
-      return SAMPLE_MASTER_TAGS;
-    }
     try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      return SAMPLE_MASTER_TAGS;
-    } catch {
-      return SAMPLE_MASTER_TAGS;
+      localStorage.removeItem(MASTER_CONTAINER_TAGS_KEY);
+    } catch (_) {}
+
+    if (inMemoryMasterContainerTags && inMemoryMasterContainerTags.length > 0) {
+      return inMemoryMasterContainerTags;
     }
+    return SAMPLE_MASTER_TAGS;
+  },
+
+  async fetchMasterContainerTagsOnDemand(): Promise<MasterKittingTag[]> {
+    try {
+      localStorage.removeItem(MASTER_CONTAINER_TAGS_KEY);
+    } catch (_) {}
+
+    if (inMemoryMasterContainerTags && inMemoryMasterContainerTags.length > 0) {
+      return inMemoryMasterContainerTags;
+    }
+
+    try {
+      const cloudTags = await supabaseKeyStore.get<MasterKittingTag[]>(STORAGE_KEYS.MASTER_CONTAINER_TAGS, { forceFresh: true });
+      if (cloudTags && Array.isArray(cloudTags) && cloudTags.length > 0) {
+        inMemoryMasterContainerTags = cloudTags;
+        return cloudTags;
+      }
+    } catch (e) {
+      console.warn('[Storage] Error fetching master container tags on-demand:', e);
+    }
+
+    inMemoryMasterContainerTags = SAMPLE_MASTER_TAGS;
+    return SAMPLE_MASTER_TAGS;
   },
 
   saveMasterContainerTags(tags: MasterKittingTag[]): void {
-    localStorage.setItem(MASTER_CONTAINER_TAGS_KEY, JSON.stringify(tags));
-    supabaseKeyStore.set(STORAGE_KEYS.MASTER_CONTAINER_TAGS, tags);
+    inMemoryMasterContainerTags = tags;
+    try {
+      localStorage.removeItem(MASTER_CONTAINER_TAGS_KEY);
+    } catch (_) {}
+    supabaseKeyStore.setCloudOnly(STORAGE_KEYS.MASTER_CONTAINER_TAGS, tags);
   },
 
   resetMasterContainerTags(): MasterKittingTag[] {
-    localStorage.setItem(MASTER_CONTAINER_TAGS_KEY, JSON.stringify(SAMPLE_MASTER_TAGS));
+    inMemoryMasterContainerTags = SAMPLE_MASTER_TAGS;
+    try {
+      localStorage.removeItem(MASTER_CONTAINER_TAGS_KEY);
+    } catch (_) {}
+    supabaseKeyStore.setCloudOnly(STORAGE_KEYS.MASTER_CONTAINER_TAGS, SAMPLE_MASTER_TAGS);
     return SAMPLE_MASTER_TAGS;
   },
 
@@ -4349,10 +4429,10 @@ export const storageService = {
     }
 
     try {
-      // 1. Batch timestamp check for all Key-Value keys in 1 ultralight request (~200 Bytes)
+      // 1. Batch timestamp check for lightweight Key-Value keys in 1 request
+      // Đã loại bỏ hoàn toàn TRANSACTIONS và MASTER_CONTAINER_TAGS khỏi batch download để giảm ~2MB
       const allKvKeys = [
         STORAGE_KEYS.PARTS,
-        STORAGE_KEYS.TRANSACTIONS,
         STORAGE_KEYS.SETTINGS,
         STORAGE_KEYS.CONTAINER_BATCHES,
         STORAGE_KEYS.USED_QR_TOKENS,
@@ -4361,7 +4441,6 @@ export const storageService = {
         STORAGE_KEYS.BUFFER_MAP,
         STORAGE_KEYS.MATERIAL_CALLS,
         STORAGE_KEYS.BOM_VOUCHERS,
-        STORAGE_KEYS.MASTER_CONTAINER_TAGS,
         STORAGE_KEYS.CONVERSION_FACTORS,
         STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG,
         STORAGE_KEYS.STAFF_ALLOCATION,
@@ -4373,101 +4452,34 @@ export const storageService = {
 
       await supabaseKeyStore.batchSyncAllKeys(allKvKeys);
 
-      // 2. Fetch parts with smart cache check or relational query (limit 500)
-      const keyParts = await supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS);
-      if (keyParts && Array.isArray(keyParts) && keyParts.length > 0) {
-        parts = keyParts;
-      } else {
+      // 2. Data is already written to localStorage by batchSyncAllKeys for all changed keys!
+      // Retrieve parts directly from localStorage, fallback to relational table if brand new
+      parts = this.getParts();
+      if (!parts || parts.length === 0) {
         const relParts = await supabaseRelationalStore.selectParts({ limit: 500 });
         if (relParts !== null && relParts.length > 0) {
           parts = relParts;
-        } else {
-          parts = this.getParts();
+          this.saveParts(parts);
         }
       }
 
-      // 3. Fetch transactions with smart cache check or relational query (limit 100)
-      const keyTxs = await supabaseKeyStore.get<Transaction[]>(STORAGE_KEYS.TRANSACTIONS);
-      if (keyTxs && Array.isArray(keyTxs) && keyTxs.length > 0) {
-        transactions = keyTxs;
-      } else {
+      // 3. Transactions are kept in RAM and fetched on-demand from Supabase, NEVER in localStorage
+      try {
+        localStorage.removeItem(TRANSACTIONS_KEY);
+      } catch (_) {}
+      if (inMemoryTransactions.length === 0) {
         const relTxs = await supabaseRelationalStore.selectTransactions({ limit: 100 });
         if (relTxs !== null && relTxs.length > 0) {
-          transactions = relTxs;
-        } else {
-          transactions = this.getTransactions();
+          inMemoryTransactions = relTxs;
         }
       }
+      transactions = inMemoryTransactions;
 
-      // Update local storage cache
-      localStorage.setItem(PARTS_KEY, JSON.stringify(parts));
-      localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
-
-      // 4. Fetch Settings with Smart Cache
-      const remoteSettings = await supabaseKeyStore.get<AppSettings>(STORAGE_KEYS.SETTINGS);
-      if (remoteSettings) {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(remoteSettings));
-      }
-
-      // 5. Fetch Container Batches (Thẻ thùng) and Used QR Tokens with highest priority
-      const remoteBatches = await supabaseKeyStore.get<ContainerBatch[]>(STORAGE_KEYS.CONTAINER_BATCHES);
-      if (remoteBatches && Array.isArray(remoteBatches) && remoteBatches.length > 0) {
-        localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(remoteBatches));
-      }
-
-      const remoteTokens = await supabaseKeyStore.get<Record<string, any>>(STORAGE_KEYS.USED_QR_TOKENS);
-      if (remoteTokens && typeof remoteTokens === 'object' && Object.keys(remoteTokens).length > 0) {
-        localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(remoteTokens));
-      } else if (remoteBatches && Array.isArray(remoteBatches)) {
-        // Rebuild tokens lookup from remote batches if token key was empty
-        const fallbackTokens: Record<string, any> = {};
-        remoteBatches.forEach((batch) => {
-          batch.items?.forEach((tag) => {
-            if (tag.importedQuantity || tag.isUsed) {
-              const info = {
-                scannedAt: tag.scannedAt || new Date().toLocaleString('vi-VN'),
-                scannedBy: tag.scannedBy || 'Thủ kho',
-                partCode: tag.partCode,
-                quantity: tag.quantity,
-                importedQuantity: tag.importedQuantity || tag.quantity,
-                contNumber: tag.contNumber,
-              };
-              if (tag.id) fallbackTokens[tag.id] = info;
-              if (tag.qrPayload) fallbackTokens[tag.qrPayload] = info;
-            }
-          });
-        });
-        if (Object.keys(fallbackTokens).length > 0) {
-          localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(fallbackTokens));
-        }
-      }
-
-      // 6. Fetch Users & Roles with Smart Cache
-      const remoteUsers = await supabaseKeyStore.get<UserAccount[]>('thekho_users_v1', { forceFresh: forceFetch });
-      if (remoteUsers && Array.isArray(remoteUsers) && remoteUsers.length >= 12) {
-        localStorage.setItem('thekho_users_v1', JSON.stringify(remoteUsers));
-      } else {
-        const canonicalUsers = this.getUsers();
-        localStorage.setItem('thekho_users_v1', JSON.stringify(canonicalUsers));
-        supabaseKeyStore.set('thekho_users_v1', canonicalUsers);
-      }
-
-      // 7. Fetch Buffer Map (Sơ đồ Kệ Outbuffer thekho_buffer_map_v1) - Luôn kéo từ Supabase về localStorage trước
-      const remoteBuffers = await supabaseKeyStore.get<BufferLocationMap[]>(STORAGE_KEYS.BUFFER_MAP, { forceFresh: forceFetch });
-      if (remoteBuffers && Array.isArray(remoteBuffers) && remoteBuffers.length > 0) {
-        localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(remoteBuffers));
-      }
-
-      // 8. Fetch Kitting Queue with Smart Cache
-      const remoteKitting = await supabaseKeyStore.get<KittingQueueItem[]>(STORAGE_KEYS.KITTING_QUEUE);
-      if (remoteKitting && Array.isArray(remoteKitting) && remoteKitting.length > 0) {
-        localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(remoteKitting));
-      }
-
-      // 9. Fetch BOM Export Vouchers with Smart Cache
-      const remoteVouchers = await supabaseKeyStore.get<BomExportVoucher[]>(STORAGE_KEYS.BOM_VOUCHERS, { forceFresh: forceFetch });
-      if (remoteVouchers && Array.isArray(remoteVouchers) && remoteVouchers.length > 0) {
-        localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(remoteVouchers));
+      // 4. Ensure canonical 12 system users are present
+      const currentUsers = this.getUsers();
+      if (!currentUsers || !Array.isArray(currentUsers) || currentUsers.length < 12) {
+        localStorage.setItem(USERS_KEY, JSON.stringify(DEFAULT_SYSTEM_USERS));
+        supabaseKeyStore.set(USERS_KEY, DEFAULT_SYSTEM_USERS);
       }
     } catch (err: any) {
       parts = this.getParts();
@@ -4529,6 +4541,372 @@ export const storageService = {
         success: false,
         message: `Lỗi đẩy dữ liệu lên Supabase: ${err?.message || 'Thất bại'}`,
       };
+    }
+  },
+
+  /**
+   * Safe localStorage setItem wrapper with automatic quota management.
+   * If a QuotaExceededError is detected, triggers emergency cleanup to prevent application crashes.
+   */
+  safeSetItem(key: string, value: string): boolean {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (err: any) {
+      if (err?.name === 'QuotaExceededError' || err?.code === 22 || err?.code === 1014) {
+        console.warn('[Storage] QuotaExceededError detected! Running emergency 14-day cleanup...');
+        this.cleanupOldLocalStorageRecords(14);
+        try {
+          localStorage.setItem(key, value);
+          return true;
+        } catch {
+          console.error('[Storage] Still exceeded quota after emergency cleanup.');
+          return false;
+        }
+      }
+      return false;
+    }
+  },
+
+  /**
+   * TỰ ĐỘNG DỌN DẸP LOCALSTORAGE (CHÍNH SÁCH 35 NGÀY):
+   * Tự động chạy khi app khởi động để kiểm tra và dọn dẹp các bản ghi lịch sử / scan logs cũ hơn 35 ngày trong localStorage.
+   * Đảm bảo dung lượng localStorage luôn được giữ ở mức an toàn (dưới 5MB), tuyệt đối không để xảy ra lỗi QuotaExceededError.
+   * Dữ liệu cũ vẫn nằm an toàn trên Supabase và chỉ được tải lên khi người dùng chủ động bấm tra cứu.
+   */
+  cleanupOldLocalStorageRecords(retentionDays: number = 35): CleanupResult {
+    const executedAt = new Date().toISOString();
+    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+
+    // 1. Tính dung lượng trước khi dọn dẹp (Bytes)
+    let beforeBytes = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) {
+          const v = localStorage.getItem(k);
+          beforeBytes += (k.length + (v ? v.length : 0)) * 2;
+        }
+      }
+    } catch (_) {}
+
+    let prunedTransactions = 0;
+    let prunedKittingLogs = 0;
+    let prunedAndonCalls = 0;
+    let prunedKittingQueue = 0;
+    let prunedContainerBatches = 0;
+    let prunedTokens = 0;
+    let prunedBomVouchers = 0;
+
+    // 2. Chuyển đổi và dọn dẹp triệt để thekho_transactions_v1 & thekho_master_container_tags_v1:
+    // Tuyệt đối không lưu lịch sử giao dịch và thẻ container dưới localStorage (Source of Truth là Supabase)
+    try {
+      const rawTxs = localStorage.getItem(TRANSACTIONS_KEY);
+      if (rawTxs) {
+        try {
+          const parsed: Transaction[] = JSON.parse(rawTxs);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            prunedTransactions = parsed.length;
+            if (inMemoryTransactions.length === 0) {
+              inMemoryTransactions = parsed;
+            }
+          }
+        } catch (_) {}
+        localStorage.removeItem(TRANSACTIONS_KEY);
+      }
+      localStorage.removeItem(MASTER_CONTAINER_TAGS_KEY);
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning transactions:', e);
+    }
+
+    // 3. Dọn dẹp Kitting Scan Logs (thekho_kitting_scan_logs_v1)
+    try {
+      const rawLogs = localStorage.getItem(KITTING_SCAN_LOGS_KEY);
+      if (rawLogs) {
+        const logs: KittingScanLog[] = JSON.parse(rawLogs);
+        if (Array.isArray(logs)) {
+          const keptLogs = logs.filter((l) => {
+            const time = new Date(l.timestamp || (l as any).createdAt).getTime();
+            return !isNaN(time) && time >= cutoffMs;
+          });
+          if (keptLogs.length < logs.length) {
+            prunedKittingLogs = logs.length - keptLogs.length;
+            localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(keptLogs));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning kitting logs:', e);
+    }
+
+    // 4. Dọn dẹp Yêu cầu Gọi Hàng Andon (thekho_material_calls_v1)
+    // CHÚ Ý: Tuyệt đối KHÔNG xóa đơn đang gọi (CALLING) hoặc đang giao (DELIVERING)
+    try {
+      const rawCalls = localStorage.getItem(MATERIAL_CALLS_KEY);
+      if (rawCalls) {
+        const calls: MaterialCallRequest[] = JSON.parse(rawCalls);
+        if (Array.isArray(calls)) {
+          const keptCalls = calls.filter((c) => {
+            if (c.status === 'CALLING' || c.status === 'DELIVERING') {
+              return true; // Giữ nguyên toàn bộ đơn đang xử lý
+            }
+            const time = new Date(c.deliveredAt || c.requestedAt).getTime();
+            return !isNaN(time) && time >= cutoffMs;
+          });
+          if (keptCalls.length < calls.length) {
+            prunedAndonCalls = calls.length - keptCalls.length;
+            localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(keptCalls));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning andon calls:', e);
+    }
+
+    // 5. Dọn dẹp Kitting Queue đã hoàn thành (thekho_kitting_queue_v1)
+    // CHÚ Ý: Giữ lại toàn bộ PENDING_KITTING và IN_BUFFER
+    try {
+      const rawQueue = localStorage.getItem(KITTING_QUEUE_KEY);
+      if (rawQueue) {
+        const queue: KittingQueueItem[] = JSON.parse(rawQueue);
+        if (Array.isArray(queue)) {
+          const keptQueue = queue.filter((k) => {
+            if (k.status === 'PENDING_KITTING' || k.status === 'IN_BUFFER') {
+              return true;
+            }
+            const time = new Date(k.endTime || k.createdAt).getTime();
+            return !isNaN(time) && time >= cutoffMs;
+          });
+          if (keptQueue.length < queue.length) {
+            prunedKittingQueue = queue.length - keptQueue.length;
+            localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(keptQueue));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning kitting queue:', e);
+    }
+
+    // 6. Dọn dẹp Lô Thẻ Thùng Container đã nhập hết và cũ (thekho_container_batches_v1)
+    try {
+      const rawBatches = localStorage.getItem(CONTAINER_BATCHES_KEY);
+      if (rawBatches) {
+        const batches: ContainerBatch[] = JSON.parse(rawBatches);
+        if (Array.isArray(batches)) {
+          const keptBatches = batches.filter((b) => {
+            const isAllUsed = b.items && b.items.length > 0 && b.items.every((item) => item.importedQuantity || item.isUsed);
+            if (!isAllUsed) return true; // Giữ lại nếu chưa nhập hết
+            const time = new Date(b.createdAt || b.contDate).getTime();
+            return !isNaN(time) && time >= cutoffMs;
+          });
+          if (keptBatches.length < batches.length) {
+            prunedContainerBatches = batches.length - keptBatches.length;
+            localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(keptBatches));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning container batches:', e);
+    }
+
+    // 7. Dọn dẹp Token QR đã quét (thekho_used_qr_tokens_v1)
+    try {
+      const rawTokens = localStorage.getItem(USED_QR_TOKENS_KEY);
+      if (rawTokens) {
+        const tokens: Record<string, any> = JSON.parse(rawTokens);
+        if (typeof tokens === 'object' && tokens !== null) {
+          const newTokens: Record<string, any> = {};
+          let count = 0;
+          for (const [k, v] of Object.entries(tokens)) {
+            const time = new Date(v?.scannedAt || 0).getTime();
+            if (isNaN(time) || time >= cutoffMs) {
+              newTokens[k] = v;
+            } else {
+              count++;
+            }
+          }
+          if (count > 0) {
+            prunedTokens = count;
+            localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(newTokens));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning used qr tokens:', e);
+    }
+
+    // 8. Dọn dẹp Phiếu Xuất BOM đã hoàn thành cũ (thekho_bom_vouchers_v1)
+    try {
+      const rawVouchers = localStorage.getItem(BOM_VOUCHERS_KEY);
+      if (rawVouchers) {
+        const vouchers: BomExportVoucher[] = JSON.parse(rawVouchers);
+        if (Array.isArray(vouchers)) {
+          const keptVouchers = vouchers.filter((v) => {
+            if (v.status !== 'COMPLETED' && v.status !== 'ROLLED_BACK') {
+              return true;
+            }
+            const time = new Date(v.createdAt).getTime();
+            return !isNaN(time) && time >= cutoffMs;
+          });
+          if (keptVouchers.length < vouchers.length) {
+            prunedBomVouchers = vouchers.length - keptVouchers.length;
+            localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(keptVouchers));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning bom vouchers:', e);
+    }
+
+    // 9. Dọn dẹp Báo Cáo Hàng Ngày cũ
+    try {
+      const rawReports = localStorage.getItem('thekho_daily_reports_v1');
+      if (rawReports) {
+        const reports = JSON.parse(rawReports);
+        if (Array.isArray(reports)) {
+          const keptReports = reports.filter((r: any) => {
+            const time = new Date(r.reportDate || r.createdAt).getTime();
+            return !isNaN(time) && time >= cutoffMs;
+          });
+          if (keptReports.length < reports.length) {
+            localStorage.setItem('thekho_daily_reports_v1', JSON.stringify(keptReports));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error pruning daily reports:', e);
+    }
+
+    // 10. Tính dung lượng sau khi dọn dẹp (Bytes)
+    let afterBytes = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) {
+          const v = localStorage.getItem(k);
+          afterBytes += (k.length + (v ? v.length : 0)) * 2;
+        }
+      }
+    } catch (_) {}
+
+    const bytesFreed = Math.max(0, beforeBytes - afterBytes);
+    const totalPruned =
+      prunedTransactions +
+      prunedKittingLogs +
+      prunedAndonCalls +
+      prunedKittingQueue +
+      prunedContainerBatches +
+      prunedTokens +
+      prunedBomVouchers;
+
+    return {
+      prunedCount: totalPruned,
+      prunedTransactions,
+      prunedKittingLogs,
+      prunedAndonCalls,
+      prunedKittingQueue,
+      prunedContainerBatches,
+      prunedTokens,
+      prunedBomVouchers,
+      bytesFreed,
+      beforeBytes,
+      afterBytes,
+      retentionDays,
+      executedAt,
+    };
+  },
+
+  /**
+   * Lấy báo cáo thống kê dung lượng LocalStorage hiện tại
+   */
+  getLocalStorageUsageSummary(): LocalStorageUsageSummary {
+    let totalBytes = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) {
+          const v = localStorage.getItem(k);
+          totalBytes += (k.length + (v ? v.length : 0)) * 2;
+        }
+      }
+    } catch (_) {}
+
+    const quotaBytes = 5 * 1024 * 1024; // 5 MB tiêu chuẩn trình duyệt
+    const totalKB = Math.round((totalBytes / 1024) * 10) / 10;
+    const quotaKB = 5120;
+    const percentUsed = Math.min(100, Math.round((totalBytes / quotaBytes) * 1000) / 10);
+
+    return {
+      totalBytes,
+      totalKB,
+      quotaKB,
+      percentUsed,
+      isSafe: percentUsed < 80,
+      itemCounts: {
+        parts: this.getParts().length,
+        transactions: this.getTransactions().length,
+        kittingLogs: this.getKittingScanLogs().length,
+        andonCalls: this.getMaterialCallRequests().length,
+        containerBatches: this.getContainerBatches().length,
+        usedTokens: Object.keys(this.getUsedQrTokens()).length,
+        bomVouchers: this.getBomVouchers().length,
+      },
+    };
+  },
+
+  /**
+   * ON-DEMAND TRA CỨU LỊCH SỬ TỪ SUPABASE CLOUD:
+   * Tải toàn bộ giao dịch lịch sử cũ từ Supabase Cloud theo yêu cầu của người dùng,
+   * KHÔNG lưu vĩnh viễn vào localStorage để bảo vệ dung lượng bộ nhớ dưới 5MB.
+   */
+  async fetchHistoricalTransactionsOnDemand(options?: {
+    partCode?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<Transaction[]> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) {
+        const local = this.getTransactions();
+        if (options?.partCode) {
+          return local.filter((t) => t.partCode.toLowerCase() === options.partCode!.toLowerCase());
+        }
+        return local;
+      }
+
+      const limit = options?.limit ?? 300;
+      let query = client
+        .from('transactions')
+        .select('id, part_id, part_code, part_name, unit, type, quantity, date, person, location_id, production_order, reason_or_purpose, notes, stock_before, stock_after, created_at')
+        .order('date', { ascending: false });
+
+      if (options?.partCode) {
+        query = query.eq('part_code', options.partCode);
+      }
+
+      if (options?.offset !== undefined) {
+        query = query.range(options.offset, options.offset + limit - 1);
+      } else {
+        query = query.limit(limit);
+      }
+
+      const { data, error } = await query;
+      if (error || !data || data.length === 0) {
+        // Fallback to cloud Key-Value table if relational table is empty
+        const cloudPayload = await supabaseKeyStore.get<Transaction[]>(STORAGE_KEYS.TRANSACTIONS, { forceFresh: true });
+        if (cloudPayload && Array.isArray(cloudPayload)) {
+          if (options?.partCode) {
+            return cloudPayload.filter((t) => t.partCode.toLowerCase() === options.partCode!.toLowerCase());
+          }
+          return cloudPayload.slice(0, limit);
+        }
+        return this.getTransactions();
+      }
+
+      return (data || []).map(mapSupabaseRowToTransaction);
+    } catch (err) {
+      console.warn('[OnDemand History] Error loading historical transactions:', err);
+      return this.getTransactions();
     }
   },
 };

@@ -34,12 +34,42 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [filterText, setFilterText] = useState('');
+  const [cloudHistory, setCloudHistory] = useState<Transaction[] | null>(null);
+  const [isLoadingCloudHistory, setIsLoadingCloudHistory] = useState(false);
+  const [hasLoadedCloudHistory, setHasLoadedCloudHistory] = useState(false);
+
+  // On-demand fetch historical transactions from Supabase Cloud
+  const handleFetchCloudHistory = async () => {
+    if (!part) return;
+    setIsLoadingCloudHistory(true);
+    try {
+      const remoteTxs = await storageService.fetchHistoricalTransactionsOnDemand({
+        partCode: part.code,
+        limit: 500,
+      });
+      setCloudHistory(remoteTxs);
+      setHasLoadedCloudHistory(true);
+    } finally {
+      setIsLoadingCloudHistory(false);
+    }
+  };
+
+  // Auto fetch on-demand from Supabase when modal opens
+  useEffect(() => {
+    if (isOpen && part) {
+      handleFetchCloudHistory();
+    }
+  }, [isOpen, part?.id, part?.code]);
 
   // Fetch chronological bin card transaction history
   const allHistory = useMemo(() => {
     if (!part) return [];
+    if (cloudHistory !== null && cloudHistory.length > 0) {
+      // Sort chronologically ascending
+      return [...cloudHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    }
     return storageService.getBinCardHistory(part.id);
-  }, [part?.id]);
+  }, [part?.id, cloudHistory]);
 
   // Actual current ending balance from transaction ledger:
   const actualCurrentStock = useMemo(() => {
@@ -179,15 +209,46 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
             )}
           </div>
 
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Tìm theo lệnh SX, ghi chú..."
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-              className="pl-8 pr-3 py-1 bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-hidden text-xs w-48"
-            />
+          <div className="flex items-center space-x-2">
+            <button
+              type="button"
+              onClick={handleFetchCloudHistory}
+              disabled={isLoadingCloudHistory}
+              className={`px-3 py-1 rounded-md text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 border shadow-2xs ${
+                hasLoadedCloudHistory
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+              }`}
+              title="Tra cứu lịch sử giao dịch cũ hơn 35 ngày trực tiếp từ Supabase Cloud"
+            >
+              {isLoadingCloudHistory ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                  <span>Đang tải Cloud...</span>
+                </>
+              ) : hasLoadedCloudHistory ? (
+                <>
+                  <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Đã tải từ Cloud ({cloudHistory?.length || 0})</span>
+                </>
+              ) : (
+                <>
+                  <Clock className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tra cứu lịch sử cũ (&gt;35 ngày)</span>
+                </>
+              )}
+            </button>
+
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Tìm theo lệnh SX, ghi chú..."
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+                className="pl-8 pr-3 py-1 bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-hidden text-xs w-48"
+              />
+            </div>
           </div>
         </div>
 

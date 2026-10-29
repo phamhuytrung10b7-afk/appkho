@@ -40,9 +40,6 @@ export const STORAGE_KEYS = {
   USERS: 'thekho_users_v1',
 };
 
-// Local storage cache timestamp prefix
-const CACHE_TS_PREFIX = '_thekho_cache_ts_';
-
 // Egress bandwidth savings tracker (for diagnostics & verification)
 export const egressStats = {
   cacheHits: 0,
@@ -153,7 +150,6 @@ export function mapSupabaseRowToTransaction(row: any): Transaction {
 const loggedErrorKeys = new Set<string>();
 
 function logSupabaseError(context: string, error: any) {
-  // Suppress spammy log outputs in client console
   if (!error) return;
   const errMsg =
     typeof error === 'object' && error !== null
@@ -164,14 +160,16 @@ function logSupabaseError(context: string, error: any) {
   loggedErrorKeys.add(key);
   if (loggedErrorKeys.size > 20) loggedErrorKeys.clear();
 
-  // Only emit single debug notice if not in production
   if (typeof window !== 'undefined' && (window as any).__SUPABASE_DEBUG__) {
     console.debug(`[Supabase Connection Notice] ${context}:`, errMsg);
   }
 }
 
+// Local storage cache timestamp prefix
+export const CACHE_TS_PREFIX = '_thekho_cache_ts_';
+
 // Helper for localStorage cached data
-function getLocalCacheData<T>(key: string): { data: T | null; timestamp: string | null } {
+export function getLocalCacheData<T>(key: string): { data: T | null; timestamp: string | null } {
   try {
     const ts = localStorage.getItem(`${CACHE_TS_PREFIX}${key}`);
     const rawData = localStorage.getItem(key);
@@ -184,16 +182,57 @@ function getLocalCacheData<T>(key: string): { data: T | null; timestamp: string 
   }
 }
 
-function setLocalCacheData<T>(key: string, data: T, timestamp: string): void {
+export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): void {
+  // CRITICAL ARCHITECTURE RULE: thekho_transactions_v1 and thekho_master_container_tags_v1
+  // MUST NEVER be saved to localStorage (Source of Truth is Supabase Cloud).
+  if (key === STORAGE_KEYS.TRANSACTIONS || key === STORAGE_KEYS.MASTER_CONTAINER_TAGS || key === 'thekho_transactions_v1' || key === 'thekho_master_container_tags_v1') {
+    try {
+      localStorage.removeItem(key);
+      localStorage.removeItem(`${CACHE_TS_PREFIX}${key}`);
+    } catch (_) {}
+    return;
+  }
+
   try {
+    const ts = timestamp || new Date().toISOString();
+
+    // Compact thekho_kitting_queue_v1: only cache active queue items (PENDING_KITTING, IN_BUFFER)
+    if (key === STORAGE_KEYS.KITTING_QUEUE && Array.isArray(data)) {
+      const activeQueue = (data as any[]).filter(
+        (item) => item.status === 'PENDING_KITTING' || item.status === 'IN_BUFFER'
+      );
+      localStorage.setItem(key, JSON.stringify(activeQueue));
+      localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
+      return;
+    }
+
+    // Compact thekho_parts_v1: cache slim stock snapshot to keep storage well under 2MB
+    if (key === STORAGE_KEYS.PARTS && Array.isArray(data)) {
+      const compactParts = (data as any[]).map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        unit: p.unit || 'Cái',
+        currentStock: typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0,
+        qtyNg: typeof p.qtyNg === 'number' ? p.qtyNg : Number(p.qtyNg) || 0,
+        minStock: typeof p.minStock === 'number' ? p.minStock : Number(p.minStock) || 0,
+        location: p.location || 'Kho chính',
+        locations: p.locations || [],
+        updatedAt: p.updatedAt,
+      }));
+      localStorage.setItem(key, JSON.stringify(compactParts));
+      localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
+      return;
+    }
+
     localStorage.setItem(key, JSON.stringify(data));
-    localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, timestamp);
+    localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
   } catch {
     // QuotaExceeded or private browsing mode safe fallback
   }
 }
 
-function removeLocalCacheData(key: string): void {
+export function removeLocalCacheData(key: string): void {
   try {
     localStorage.removeItem(key);
     localStorage.removeItem(`${CACHE_TS_PREFIX}${key}`);
@@ -388,7 +427,7 @@ export const supabaseKeyStore = {
   async set<T>(key: string, value: T): Promise<boolean> {
     const nowIso = new Date().toISOString();
 
-    // 1. Update localStorage immediately with latest timestamp
+    // 1. Update localStorage immediately with latest timestamp (unless key is blacklisted)
     setLocalCacheData(key, value, nowIso);
 
     try {
@@ -411,6 +450,35 @@ export const supabaseKeyStore = {
       return true;
     } catch (err) {
       logSupabaseError(`KeyStore.set(${key}) catch`, err);
+      return false;
+    }
+  },
+
+  /**
+   * UPSERT DUY NHẤT LÊN SUPABASE CLOUD, tuyệt đối không lưu vào localStorage.
+   * Chuyên dùng cho Transactions và Master Container Tags để bảo vệ dung lượng bộ nhớ.
+   */
+  async setCloudOnly<T>(key: string, value: T): Promise<boolean> {
+    const nowIso = new Date().toISOString();
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return true;
+
+      const { error } = await client
+        .from('thekho_app_data')
+        .upsert(
+          { key, data: value, updated_at: nowIso },
+          { onConflict: 'key' }
+        );
+
+      if (error) {
+        logSupabaseError(`KeyStore.setCloudOnly(${key})`, error);
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      logSupabaseError(`KeyStore.setCloudOnly(${key}) catch`, err);
       return false;
     }
   },
@@ -457,7 +525,7 @@ export const supabaseKeyStore = {
 export const supabaseRelationalStore = {
   // --- PARTS CRUD ---
   /**
-   * Selects parts with specific columns and pagination to save Egress.
+   * Selects parts with explicit column selection (tuyệt đối không dùng SELECT *) and pagination to save Egress.
    */
   async selectParts(options?: { limit?: number; offset?: number; search?: string }): Promise<Part[] | null> {
     try {
@@ -467,7 +535,7 @@ export const supabaseRelationalStore = {
       const limit = options?.limit ?? 500;
       let query = client
         .from('parts')
-        .select('*')
+        .select('id, code, name, group_name, unit, current_stock, qty_ng, min_stock, max_stock, location, locations, unit_price, supplier, notes, created_at, updated_at')
         .order('created_at', { ascending: false });
 
       if (options?.search) {
@@ -739,22 +807,11 @@ export async function batchExecuteNgTransaction({
     }
   }
 
-  const rawTxs = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS) || localStorage.getItem('thekho_transactions_v1');
-  let currentTxs: Transaction[] = [];
-  try {
-    currentTxs = rawTxs ? JSON.parse(rawTxs) : [];
-  } catch {
-    currentTxs = [];
-  }
-
-  const mergedTxs = [...transactionsToInsert, ...currentTxs];
-
-  // Save to local storage
-  localStorage.setItem('thekho_parts_v1', JSON.stringify(mergedParts));
-  localStorage.setItem('thekho_transactions_v1', JSON.stringify(mergedTxs));
+  // Enforce zero localStorage for transactions (Stored on Cloud only)
+  localStorage.removeItem('thekho_transactions_v1');
+  localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
   const nowIso = new Date().toISOString();
   setLocalCacheData(STORAGE_KEYS.PARTS, mergedParts, nowIso);
-  setLocalCacheData(STORAGE_KEYS.TRANSACTIONS, mergedTxs, nowIso);
 
   // 2. Batch Processing to Supabase Cloud
   if (isConfigured && client) {
@@ -786,11 +843,10 @@ export async function batchExecuteNgTransaction({
         }
       }
 
-      // 2.3 Cập nhật đồng bộ thêm bảng thekho_app_data trong 1 lệnh upsert gom mảng duy nhất:
+      // 2.3 Cập nhật đồng bộ thêm bảng thekho_app_data trong 1 lệnh upsert duy nhất (Cloud Source of Truth):
       await client.from('thekho_app_data').upsert(
         [
           { key: STORAGE_KEYS.PARTS, data: mergedParts, updated_at: nowIso },
-          { key: STORAGE_KEYS.TRANSACTIONS, data: mergedTxs, updated_at: nowIso },
         ],
         { onConflict: 'key' }
       );

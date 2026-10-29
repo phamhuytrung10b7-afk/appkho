@@ -163,5 +163,42 @@ CREATE POLICY "Allow public access on kitting_queue" ON public.kitting_queue FOR
 -- -------------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_parts_code ON public.parts(code);
 CREATE INDEX IF NOT EXISTS idx_transactions_part_id ON public.transactions(part_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_part_code ON public.transactions(part_code);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(date);
 CREATE INDEX IF NOT EXISTS idx_kitting_part_code ON public.kitting_queue(part_code);
+
+-- -------------------------------------------------------------------------
+-- 9. RPC FUNCTION: TỔNG HỢP BÁO CÁO XUẤT - NHẬP - TỒN (XNT) TẠI SERVER
+-- Triệt tiêu hoàn toàn việc kéo toàn bộ transactions về client để cộng trừ.
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.get_xnt_summary(
+    p_from_date TIMESTAMPTZ DEFAULT NULL,
+    p_to_date TIMESTAMPTZ DEFAULT NULL,
+    p_part_code VARCHAR DEFAULT NULL
+)
+RETURNS TABLE (
+    total_in NUMERIC,
+    total_out NUMERIC,
+    total_transactions BIGINT,
+    distinct_parts BIGINT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        COALESCE(SUM(CASE WHEN t.type IN ('IN', 'IMPORT_NG') THEN t.quantity ELSE 0 END), 0)::NUMERIC AS total_in,
+        COALESCE(SUM(CASE WHEN t.type IN ('OUT', 'EXPORT_NG_RTV', 'EXPORT_NG_SCRAP') THEN t.quantity ELSE 0 END), 0)::NUMERIC AS total_out,
+        COUNT(*)::BIGINT AS total_transactions,
+        COUNT(DISTINCT t.part_code)::BIGINT AS distinct_parts
+    FROM public.transactions t
+    WHERE (p_from_date IS NULL OR t.date >= p_from_date)
+      AND (p_to_date IS NULL OR t.date <= p_to_date)
+      AND (p_part_code IS NULL OR t.part_code = p_part_code);
+END;
+$$;
+
+-- Cấp quyền gọi hàm cho client
+GRANT EXECUTE ON FUNCTION public.get_xnt_summary TO anon, authenticated, service_role;
+

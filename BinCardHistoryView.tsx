@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Transaction, AppSettings } from './types';
 import { storageService } from './storage';
 import { QRCodeSVG } from 'qrcode.react';
@@ -19,6 +19,9 @@ import {
   AlertTriangle,
   XCircle,
   Layers,
+  CloudDownload,
+  RefreshCw,
+  CheckCircle,
 } from 'lucide-react';
 
 interface BinCardHistoryViewProps {
@@ -48,12 +51,41 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
   const [binCardFilterText, setBinCardFilterText] = useState<string>('');
+  const [cloudHistory, setCloudHistory] = useState<Transaction[] | null>(null);
+  const [isLoadingCloudHistory, setIsLoadingCloudHistory] = useState<boolean>(false);
+  const [hasLoadedCloudHistory, setHasLoadedCloudHistory] = useState<boolean>(false);
 
   // Selected Part object
   const selectedPart = useMemo(() => {
     if (!selectedPartId) return null;
     return parts.find((p) => p.id === selectedPartId) || null;
   }, [parts, selectedPartId]);
+
+  // On-demand fetch historical transactions from Supabase Cloud
+  const handleFetchCloudHistory = async () => {
+    if (!selectedPart) return;
+    setIsLoadingCloudHistory(true);
+    try {
+      const remoteTxs = await storageService.fetchHistoricalTransactionsOnDemand({
+        partCode: selectedPart.code,
+        limit: 500,
+      });
+      setCloudHistory(remoteTxs);
+      setHasLoadedCloudHistory(true);
+    } finally {
+      setIsLoadingCloudHistory(false);
+    }
+  };
+
+  // Auto fetch from Supabase when a part is selected
+  useEffect(() => {
+    if (selectedPart) {
+      handleFetchCloudHistory();
+    } else {
+      setCloudHistory(null);
+      setHasLoadedCloudHistory(false);
+    }
+  }, [selectedPart?.id, selectedPart?.code]);
 
   // Filtered Parts List for Search View
   const filteredParts = useMemo(() => {
@@ -71,8 +103,11 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
   // History for Selected Part
   const partHistory = useMemo(() => {
     if (!selectedPart) return [];
+    if (cloudHistory !== null && cloudHistory.length > 0) {
+      return [...cloudHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    }
     return storageService.getBinCardHistory(selectedPart.id);
-  }, [selectedPart]);
+  }, [selectedPart, cloudHistory]);
 
   // Filtered History for Selected Part
   const filteredHistory = useMemo(() => {
@@ -403,6 +438,35 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
                   className="w-full pl-8 pr-3 py-1 bg-white border border-slate-300 rounded-lg font-medium focus:ring-2 focus:ring-blue-500 outline-hidden text-xs"
                 />
               </div>
+
+              <button
+                type="button"
+                onClick={handleFetchCloudHistory}
+                disabled={isLoadingCloudHistory}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition-all border shrink-0 ${
+                  hasLoadedCloudHistory
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                    : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200 cursor-pointer'
+                }`}
+                title="Tải toàn bộ lịch sử giao dịch từ Supabase Cloud (kể cả các bản ghi cũ hơn 35 ngày đã được giải phóng khỏi LocalStorage)"
+              >
+                {isLoadingCloudHistory ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Đang tải Supabase...
+                  </>
+                ) : hasLoadedCloudHistory ? (
+                  <>
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                    Đã nạp {cloudHistory?.length || 0} bản ghi Cloud
+                  </>
+                ) : (
+                  <>
+                    <CloudDownload className="w-3.5 h-3.5 text-indigo-600" />
+                    Tra cứu lịch sử cũ (&gt;35 ngày)
+                  </>
+                )}
+              </button>
             </div>
 
             {/* BIN CARD HISTORY TABLE */}

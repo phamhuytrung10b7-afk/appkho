@@ -21,6 +21,7 @@ import {
   Users,
   LogOut,
   User,
+  RefreshCw,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -36,6 +37,9 @@ interface SidebarProps {
   onCloseMobile?: () => void;
   currentUser?: UserAccount | null;
   onLogout?: () => void;
+  onSyncCloud?: () => void;
+  isSyncingCloud?: boolean;
+  lastSyncTime?: Date | null;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -51,6 +55,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile,
   currentUser,
   onLogout,
+  onSyncCloud,
+  isSyncingCloud = false,
+  lastSyncTime,
 }) => {
   const allMenuItems: { id: ViewTab; label: string; icon: React.ElementType; badge?: number; badgeColor?: string; section?: string }[] = [
     { id: 'dashboard', label: 'Trang chủ', icon: Home },
@@ -200,6 +207,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </nav>
+
+      {/* Cloud Sync Status & Action Button */}
+      {onSyncCloud && (
+        <div className="p-3 border-t border-slate-100 bg-slate-50/60">
+          <button
+            type="button"
+            onClick={onSyncCloud}
+            disabled={isSyncingCloud}
+            className={`w-full py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-between transition-all cursor-pointer border shadow-2xs ${
+              isSyncingCloud
+                ? 'bg-blue-100 text-blue-800 border-blue-300'
+                : 'bg-white hover:bg-blue-50 text-blue-700 border-blue-200 hover:border-blue-300'
+            }`}
+            title="Đồng bộ toàn bộ dữ liệu từ Supabase Cloud"
+          >
+            <div className="flex items-center space-x-2">
+              <RefreshCw className={`w-4 h-4 text-blue-600 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+              <span>{isSyncingCloud ? 'Đang đồng bộ...' : 'Đồng bộ Supabase'}</span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono font-medium">
+              {lastSyncTime
+                ? lastSyncTime.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+                : 'Vừa xong'}
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* User Account Profile Footer */}
       {currentUser && (
