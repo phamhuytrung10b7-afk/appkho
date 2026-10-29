@@ -1618,6 +1618,7 @@ export const storageService = {
       date: params.date || new Date().toISOString(),
       person: params.person,
       productionOrder: params.productionOrder || '',
+      voucherCode: params.voucherCode || undefined,
       reasonOrPurpose: params.reasonOrPurpose || 'Xuất sản xuất',
       notes: params.notes || '',
       locationId: txLocation,
@@ -2784,6 +2785,20 @@ export const storageService = {
 
     if (existingPending) {
       existingPending.rawQuantity += tx.quantity;
+      if (!existingPending.allItemIds) {
+        existingPending.allItemIds = [existingPending.id];
+      }
+      existingPending.batchCount = (existingPending.batchCount || 1) + 1;
+
+      if (tx.id) {
+        if (!existingPending.transactionIds) {
+          existingPending.transactionIds = existingPending.transactionId ? [existingPending.transactionId] : [];
+        }
+        if (!existingPending.transactionIds.includes(tx.id)) {
+          existingPending.transactionIds.push(tx.id);
+        }
+      }
+
       if (meta?.sourceBin || tx.locationId) {
         const newBin = (meta?.sourceBin || tx.locationId || '').trim();
         if (newBin && !existingPending.sourceBin?.includes(newBin)) {
@@ -2808,6 +2823,7 @@ export const storageService = {
     const newItem: KittingQueueItem = {
       id: 'kit-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       transactionId: tx.id,
+      transactionIds: tx.id ? [tx.id] : [],
       voucherCode: meta?.voucherCode,
       voucherTitle: meta?.voucherTitle,
       sourceBin: meta?.sourceBin || tx.locationId || 'Kho chính',

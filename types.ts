@@ -43,6 +43,7 @@ export interface Transaction {
   person: string; // Người thực hiện (Người nhập hoặc Người lấy)
   locationId?: string; // Nơi lưu trữ thực tế
   productionOrder?: string; // Lệnh sản xuất (e.g. LSX-2026-088)
+  voucherCode?: string; // Mã phiếu xuất kho (e.g. PXK-BOM-20261029-001)
   reasonOrPurpose?: string; // Lý do nhập / Mục đích xuất / Lý do lỗi
   ngReason?: string; // Do Nhà Cung Cấp / Do Thao Tác Nội Bộ / etc.
   ngType?: 'VENDOR' | 'INTERNAL' | 'OTHER';
@@ -122,6 +123,7 @@ export interface UserAccount {
 export interface KittingQueueItem {
   id: string;
   transactionId: string; // liên kết phiếu Xuất Kho thô gốc
+  transactionIds?: string[]; // Danh sách ID các giao dịch xuất kho đã cộng dồn
   voucherCode?: string; // Mã phiếu xuất kho (e.g. "PXK-EXCEL-001" hoặc người dùng tự đặt)
   voucherTitle?: string; // Tên / Mô tả phiếu xuất kho
   sourceBin?: string; // BIN / Vị trí kho đã xuất trước đó để rollback chính xác

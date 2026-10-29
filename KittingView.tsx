@@ -308,13 +308,22 @@ export const KittingView: React.FC<KittingViewProps> = ({
         }
         if (item.transactionId && txMap.has(item.transactionId)) {
           existing.distinctTxIds.add(item.transactionId);
-        } else {
-          existing.rawQuantity += item.rawQuantity;
         }
+        if (item.transactionIds && Array.isArray(item.transactionIds)) {
+          item.transactionIds.forEach((tId) => {
+            if (txMap.has(tId)) existing.distinctTxIds.add(tId);
+          });
+        }
+        existing.rawQuantity += item.rawQuantity;
       } else {
         const distinctTxIds = new Set<string>();
         if (item.transactionId && txMap.has(item.transactionId)) {
           distinctTxIds.add(item.transactionId);
+        }
+        if (item.transactionIds && Array.isArray(item.transactionIds)) {
+          item.transactionIds.forEach((tId) => {
+            if (txMap.has(tId)) distinctTxIds.add(tId);
+          });
         }
 
         consolidatedMap.set(groupKey, {
@@ -329,15 +338,120 @@ export const KittingView: React.FC<KittingViewProps> = ({
           batchCount: 1,
           distinctTxIds,
           hasPendingQueue: item.status === 'PENDING_KITTING',
-          rawQuantity: item.transactionId && txMap.has(item.transactionId) ? 0 : item.rawQuantity,
+          rawQuantity: item.rawQuantity,
         });
       }
     });
 
-    // For any distinct transactions recorded, add their exact transaction quantities
-    consolidatedMap.forEach((entry) => {
+    // Match transactions directly from outTxs for voucherCode and partCode
+    const txByVoucherAndPart = new Map<string, number>();
+    outTxs.forEach((tx) => {
+      let vCode = tx.voucherCode || '';
+      if (!vCode && tx.notes && tx.notes.includes('PXK-')) {
+        const match = tx.notes.match(/PXK-[A-Z0-9-]+/i);
+        if (match) vCode = match[0].trim();
+      }
+      if (!vCode && tx.reasonOrPurpose && tx.reasonOrPurpose.includes('PXK-')) {
+        const match = tx.reasonOrPurpose.match(/PXK-[A-Z0-9-]+/i);
+        if (match) vCode = match[0].trim();
+      }
+      if (!vCode && tx.productionOrder && tx.productionOrder.startsWith('PXK-')) {
+        vCode = tx.productionOrder.trim();
+      }
+      if (vCode) {
+        const key = `${vCode.toLowerCase()}__${tx.partCode.trim().toLowerCase()}`;
+        txByVoucherAndPart.set(key, (txByVoucherAndPart.get(key) || 0) + (Number(tx.quantity) || 0));
+      }
+    });
+
+    // Synthesize entries for any OUT transactions matching a voucherCode that aren't yet in consolidatedMap
+    txByVoucherAndPart.forEach((txSum, groupKey) => {
+      if (!consolidatedMap.has(groupKey) && txSum > 0) {
+        const [vCodeLower, pCodeLower] = groupKey.split('__');
+        const matchingTxs = outTxs.filter((tx) => {
+          const txVCode = (tx.voucherCode || tx.notes?.match(/PXK-[A-Z0-9-]+/i)?.[0] || tx.reasonOrPurpose?.match(/PXK-[A-Z0-9-]+/i)?.[0] || tx.productionOrder || '').trim().toLowerCase();
+          return txVCode === vCodeLower && tx.partCode.trim().toLowerCase() === pCodeLower;
+        });
+
+        if (matchingTxs.length > 0) {
+          const sampleTx = matchingTxs[0];
+          const vCode = matchingTxs.map(t => t.voucherCode || t.notes?.match(/PXK-[A-Z0-9-]+/i)?.[0] || t.reasonOrPurpose?.match(/PXK-[A-Z0-9-]+/i)?.[0] || t.productionOrder).find(Boolean) || vCodeLower.toUpperCase();
+          const sourceBins = Array.from(new Set(matchingTxs.map(t => t.locationId).filter(Boolean))).join(', ') || 'Kho chính';
+
+          consolidatedMap.set(groupKey, {
+            id: 'kit-synth-' + sampleTx.id,
+            transactionId: sampleTx.id,
+            transactionIds: matchingTxs.map(t => t.id),
+            voucherCode: vCode,
+            voucherTitle: `Phiếu xuất ${vCode}`,
+            sourceBin: sourceBins,
+            partCode: sampleTx.partCode,
+            partName: sampleTx.partName,
+            unit: sampleTx.unit,
+            rawQuantity: txSum,
+            kittedQuantity: 0,
+            scrapQuantity: 0,
+            bufferLocation: 'BUFFER-A1-01',
+            status: 'PENDING_KITTING',
+            createdAt: sampleTx.date,
+            operatorName: sampleTx.person || 'Lê Hoàng Nam',
+            allItemIds: matchingTxs.map(t => t.id),
+            batchCount: matchingTxs.length,
+            distinctTxIds: new Set(matchingTxs.map(t => t.id)),
+            hasPendingQueue: true,
+          });
+        }
+      }
+    });
+
+    // Reconcile with saved BomExportVouchers (storageService.getBomExportVouchers)
+    // Ensures that 100% of exported items in a voucher (e.g. 87 items) are always present in consolidatedMap
+    const bomVouchers = storageService.getBomExportVouchers();
+    bomVouchers.forEach((v) => {
+      if (v.status !== 'ROLLED_BACK' && Array.isArray(v.items)) {
+        v.items.forEach((vItem) => {
+          const expQty = Number(vItem.exportedQty ?? vItem.totalQtyOut) || 0;
+          if (expQty > 0) {
+            const groupKey = `${v.voucherCode.trim().toLowerCase()}__${vItem.partCode.trim().toLowerCase()}`;
+            const existing = consolidatedMap.get(groupKey);
+            if (existing) {
+              existing.rawQuantity = Math.max(existing.rawQuantity, expQty);
+              if (vItem.fifoLocation && !existing.sourceBin?.includes(vItem.fifoLocation)) {
+                existing.sourceBin = existing.sourceBin ? `${existing.sourceBin}, ${vItem.fifoLocation}` : vItem.fifoLocation;
+              }
+            } else {
+              consolidatedMap.set(groupKey, {
+                id: 'kit-vch-' + v.id + '-' + vItem.partCode,
+                transactionId: 'tx-vch-' + v.id,
+                transactionIds: [],
+                voucherCode: v.voucherCode,
+                voucherTitle: `Model BOM: ${v.modelName}`,
+                sourceBin: vItem.fifoLocation || 'Kho chính',
+                partCode: vItem.partCode,
+                partName: vItem.partName,
+                unit: vItem.unit || 'Cái',
+                rawQuantity: expQty,
+                kittedQuantity: 0,
+                scrapQuantity: 0,
+                bufferLocation: 'BUFFER-A1-01',
+                status: 'PENDING_KITTING',
+                createdAt: v.createdAt || v.dateTime || new Date().toISOString(),
+                operatorName: v.person || 'Lê Hoàng Nam',
+                allItemIds: ['kit-vch-' + v.id + '-' + vItem.partCode],
+                batchCount: 1,
+                distinctTxIds: new Set<string>(),
+                hasPendingQueue: true,
+              });
+            }
+          }
+        });
+      }
+    });
+
+    // Reconcile rawQuantity so it always reflects the maximum of accumulated queue quantity or transaction sum
+    consolidatedMap.forEach((entry, key) => {
+      let txTotal = 0;
       if (entry.distinctTxIds.size > 0) {
-        let txTotal = 0;
         entry.distinctTxIds.forEach((tId) => {
           const t = txMap.get(tId);
           if (t) {
@@ -348,9 +462,12 @@ export const KittingView: React.FC<KittingViewProps> = ({
             }
           }
         });
-        if (txTotal > 0) {
-          entry.rawQuantity = txTotal;
-        }
+      }
+
+      const txVoucherTotal = txByVoucherAndPart.get(key) || 0;
+      const trueMaxQty = Math.max(entry.rawQuantity, txTotal, txVoucherTotal);
+      if (trueMaxQty > 0) {
+        entry.rawQuantity = trueMaxQty;
       }
     });
 
