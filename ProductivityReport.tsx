@@ -169,7 +169,7 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const initPartEntry = (pCode: string, pName: string) => {
     const codeKey = pCode.trim().toUpperCase();
     if (!partMap.has(codeKey)) {
-      const factor = factorMap.get(codeKey) || 1.0;
+      const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
       const khsx = personnelConfig.khsxMap?.[pCode] || 550;
       partMap.set(codeKey, {
         id: codeKey,

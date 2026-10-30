@@ -106,7 +106,7 @@ export const ProductivityExportModal: React.FC<ProductivityExportModalProps> = (
       else if (hour >= 19 && hour < 20) slotKey = '19h-20h';
 
       if (!partMap.has(codeKey)) {
-        const factor = factorMap.get(codeKey) || 1.0;
+        const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
         const khsx = config.khsxMap?.[log.partCode] || 550;
         partMap.set(codeKey, {
           partCode: log.partCode,

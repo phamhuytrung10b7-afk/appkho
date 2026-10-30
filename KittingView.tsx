@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { KittingQueueItem, AppSettings, BufferLocationMap, BufferPartItem } from './types';
 import { storageService } from './storage';
+import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { MasterKittingTag } from './masterExcelParser';
 import { PART_GROUP_COLORS, getPartGroupConfig } from './partGroupColors';
 import { ContainerTagManagerModal } from './ContainerTagManagerModal';
@@ -3217,31 +3218,30 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
             <div className="space-y-4 text-xs">
               <div>
-                <label className="block font-bold text-slate-800 mb-1.5">
-                  CHỌN LINH KIỆN CẦN THÊM <span className="text-rose-500">*</span>
-                </label>
-                <select
+                <SearchableSelect
+                  label="CHỌN LINH KIỆN CẦN THÊM"
+                  required
+                  options={storageService.getParts().map((p) => ({
+                    value: p.code,
+                    label: `[${p.code}] ${p.name}`,
+                    sublabel: `Tồn kho: ${p.currentStock.toLocaleString('vi-VN')} ${p.unit || 'Cái'} | Kệ: ${p.location || 'Kho chính'}`,
+                    badge: `Tồn: ${p.currentStock.toLocaleString('vi-VN')}`,
+                  }))}
                   value={addPartPendingModalData.selectedPartCode}
-                  onChange={(e) => {
-                    const code = e.target.value;
+                  onChange={(code) => {
                     const allParts = storageService.getParts();
-                    const p = allParts.find((part) => part.code === code);
+                    const p = allParts.find((part) => part.code === code) || allParts.find((part) => part.id === code);
                     setAddPartPendingModalData((prev) => ({
                       ...prev,
-                      selectedPartCode: code,
+                      selectedPartCode: p ? p.code : code,
                       selectedPartName: p ? p.name : code,
                       unit: p ? p.unit || 'Cái' : 'Cái',
                       sourceBin: p ? p.location || 'Kho chính' : 'Kho chính',
                     }));
                   }}
-                  className="w-full px-3.5 py-2.5 bg-white border-2 border-slate-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
-                >
-                  {storageService.getParts().map((p) => (
-                    <option key={p.id} value={p.code}>
-                      [{p.code}] {p.name} ({p.unit}) — Tồn: {p.currentStock}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Gõ tìm kiếm thông minh fuzzy (mã, tên không dấu, vị trí kệ...)..."
+                  allowCustom={true}
+                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3282,7 +3282,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
               </div>
 
               <p className="text-[11px] text-slate-500">
-                * Linh kiện thêm vào sẽ hiển thị trong phiếu chờ bóc tách [{addPartPendingModalData.voucherCode}] và cho phép quét thẻ thùng kitting bình thường.
+                * Linh kiện thêm vào sẽ hiển thị trong phiếu chờ bóc tách [{addPartPendingModalData.voucherCode}] và cho phép quét thẻ thùng kitting bình thường. <strong>Thao tác thêm này KHÔNG trừ tồn kho thực tế trên các vị trí kệ.</strong>
               </p>
             </div>
 
