@@ -389,60 +389,83 @@ export const KittingView: React.FC<KittingViewProps> = ({
     });
 
     // Match transactions directly from outTxs for voucherCode and partCode
+    const bomVouchers = storageService.getBomExportVouchers();
+    const modelToVoucher = new Map<string, { voucherCode: string; modelName: string }>();
+    bomVouchers.forEach((v) => {
+      if (v.modelName && v.voucherCode) {
+        modelToVoucher.set(v.modelName.trim().toUpperCase(), {
+          voucherCode: v.voucherCode.trim(),
+          modelName: v.modelName.trim(),
+        });
+      }
+    });
+
+    const getTxVoucherInfo = (tx: any): { vCode: string; vTitle: string } => {
+      const explicitVc = (tx.voucherCode || tx.voucher_code || '').trim();
+      if (explicitVc) {
+        return { vCode: explicitVc, vTitle: `Phiếu xuất ${explicitVc}` };
+      }
+      const str = `${tx.notes || ''} ${tx.reasonOrPurpose || tx.reason_or_purpose || ''} ${tx.productionOrder || tx.production_order || ''}`;
+      const pxkMatch = str.match(/PXK-[A-Z0-9-]+/i);
+      if (pxkMatch) {
+        const vc = pxkMatch[0].trim();
+        return { vCode: vc, vTitle: `Phiếu xuất ${vc}` };
+      }
+      for (const [model, info] of modelToVoucher.entries()) {
+        if (str.toUpperCase().includes(model)) {
+          return { vCode: info.voucherCode, vTitle: `Model BOM: ${info.modelName}` };
+        }
+      }
+      return { vCode: 'PHIẾU_XUẤT_LẺ', vTitle: 'Linh kiện xuất lẻ (Chưa gán mã phiếu)' };
+    };
+
     const txByVoucherAndPart = new Map<string, number>();
+    const txInfoByGroupKey = new Map<string, { vCode: string; vTitle: string; sampleTx: any; txs: any[] }>();
+
     outTxs.forEach((tx) => {
-      let vCode = tx.voucherCode || '';
-      if (!vCode && tx.notes && tx.notes.includes('PXK-')) {
-        const match = tx.notes.match(/PXK-[A-Z0-9-]+/i);
-        if (match) vCode = match[0].trim();
-      }
-      if (!vCode && tx.reasonOrPurpose && tx.reasonOrPurpose.includes('PXK-')) {
-        const match = tx.reasonOrPurpose.match(/PXK-[A-Z0-9-]+/i);
-        if (match) vCode = match[0].trim();
-      }
-      if (!vCode && tx.productionOrder && tx.productionOrder.startsWith('PXK-')) {
-        vCode = tx.productionOrder.trim();
-      }
-      if (vCode) {
-        const key = `${vCode.toLowerCase()}__${tx.partCode.trim().toLowerCase()}`;
-        txByVoucherAndPart.set(key, (txByVoucherAndPart.get(key) || 0) + (Number(tx.quantity) || 0));
+      const { vCode, vTitle } = getTxVoucherInfo(tx);
+      const pCode = (tx.partCode || (tx as any).part_code || '').trim().toLowerCase();
+      if (!pCode) return;
+      const key = `${vCode.toLowerCase()}__${pCode}`;
+      txByVoucherAndPart.set(key, (txByVoucherAndPart.get(key) || 0) + (Number(tx.quantity) || 0));
+
+      const existingInfo = txInfoByGroupKey.get(key);
+      if (existingInfo) {
+        existingInfo.txs.push(tx);
+      } else {
+        txInfoByGroupKey.set(key, { vCode, vTitle, sampleTx: tx, txs: [tx] });
       }
     });
 
     // Synthesize entries for any OUT transactions matching a voucherCode that aren't yet in consolidatedMap
     txByVoucherAndPart.forEach((txSum, groupKey) => {
       if (!consolidatedMap.has(groupKey) && txSum > 0) {
-        const [vCodeLower, pCodeLower] = groupKey.split('__');
-        const matchingTxs = outTxs.filter((tx) => {
-          const txVCode = (tx.voucherCode || tx.notes?.match(/PXK-[A-Z0-9-]+/i)?.[0] || tx.reasonOrPurpose?.match(/PXK-[A-Z0-9-]+/i)?.[0] || tx.productionOrder || '').trim().toLowerCase();
-          return txVCode === vCodeLower && tx.partCode.trim().toLowerCase() === pCodeLower;
-        });
-
-        if (matchingTxs.length > 0) {
-          const sampleTx = matchingTxs[0];
-          const vCode = matchingTxs.map(t => t.voucherCode || t.notes?.match(/PXK-[A-Z0-9-]+/i)?.[0] || t.reasonOrPurpose?.match(/PXK-[A-Z0-9-]+/i)?.[0] || t.productionOrder).find(Boolean) || vCodeLower.toUpperCase();
-          const sourceBins = Array.from(new Set(matchingTxs.map(t => t.locationId).filter(Boolean))).join(', ') || 'Kho chính';
+        const info = txInfoByGroupKey.get(groupKey);
+        if (info) {
+          const sampleTx: any = info.sampleTx;
+          const matchingTxs = info.txs;
+          const sourceBins = Array.from(new Set(matchingTxs.map((t: any) => t.locationId || t.location_id).filter(Boolean))).join(', ') || 'Kho chính';
 
           consolidatedMap.set(groupKey, {
             id: 'kit-synth-' + sampleTx.id,
             transactionId: sampleTx.id,
-            transactionIds: matchingTxs.map(t => t.id),
-            voucherCode: vCode,
-            voucherTitle: `Phiếu xuất ${vCode}`,
+            transactionIds: matchingTxs.map((t: any) => t.id),
+            voucherCode: info.vCode,
+            voucherTitle: info.vTitle,
             sourceBin: sourceBins,
-            partCode: sampleTx.partCode,
-            partName: sampleTx.partName,
-            unit: sampleTx.unit,
+            partCode: sampleTx.partCode || sampleTx.part_code,
+            partName: sampleTx.partName || sampleTx.part_name || sampleTx.partCode,
+            unit: sampleTx.unit || 'Cái',
             rawQuantity: txSum,
             kittedQuantity: 0,
             scrapQuantity: 0,
             bufferLocation: 'BUFFER-A1-01',
             status: 'PENDING_KITTING',
-            createdAt: sampleTx.date,
+            createdAt: sampleTx.date || sampleTx.created_at || new Date().toISOString(),
             operatorName: sampleTx.person || 'Lê Hoàng Nam',
-            allItemIds: matchingTxs.map(t => t.id),
+            allItemIds: matchingTxs.map((t: any) => t.id),
             batchCount: matchingTxs.length,
-            distinctTxIds: new Set(matchingTxs.map(t => t.id)),
+            distinctTxIds: new Set(matchingTxs.map((t: any) => t.id)),
             hasPendingQueue: true,
           });
         }
@@ -451,7 +474,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
     // Reconcile with saved BomExportVouchers (storageService.getBomExportVouchers)
     // Ensures that 100% of exported items in a voucher (e.g. 87 items) are always present in consolidatedMap
-    const bomVouchers = storageService.getBomExportVouchers();
     bomVouchers.forEach((v) => {
       if (v.status !== 'ROLLED_BACK' && Array.isArray(v.items)) {
         v.items.forEach((vItem) => {
@@ -518,41 +540,84 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
     const pendingList = Array.from(consolidatedMap.values());
 
-    // Aggregate total kitted quantity directly from completed items (unified ledger matching Lịch sử bóc tách 100%)
-    const kittedHistoryByPart = new Map<string, number>();
+    // 1. Group completed kittings by voucherCode and partCode
+    // Completed items that have an explicit voucher code belong to that specific voucher.
+    // Completed items that have no voucher or 'PHIẾU_XUẤT_LẺ' or 'GIAO_ANDON' or 'KHO_OUTBUFFER' belong to general / xuất lẻ.
+    const explicitKittedByVoucherAndPart = new Map<string, number>();
+    const generalKittedByPart = new Map<string, number>();
 
     completedItems.forEach((item) => {
-      const code = item.partCode.trim().toLowerCase();
+      const vCode = (item.voucherCode || '').trim();
+      const pCode = item.partCode.trim().toLowerCase();
       const qty = item.kittedQuantity || item.rawQuantity || 0;
-      kittedHistoryByPart.set(code, (kittedHistoryByPart.get(code) || 0) + qty);
-    });
+      if (qty <= 0) return;
 
-    // Group pending items by partCode
-    const pendingByPartMap = new Map<string, typeof pendingList>();
-    pendingList.forEach((item) => {
-      const code = item.partCode.trim().toLowerCase();
-      if (!pendingByPartMap.has(code)) {
-        pendingByPartMap.set(code, []);
+      const isExplicitBomVoucher =
+        vCode.toUpperCase().startsWith('PXK-') ||
+        (vCode && vCode !== 'PHIẾU_XUẤT_LẺ' && vCode !== 'GIAO_ANDON' && vCode !== 'KHO_OUTBUFFER');
+
+      if (isExplicitBomVoucher) {
+        const key = `${vCode.toLowerCase()}__${pCode}`;
+        explicitKittedByVoucherAndPart.set(key, (explicitKittedByVoucherAndPart.get(key) || 0) + qty);
+      } else {
+        generalKittedByPart.set(pCode, (generalKittedByPart.get(pCode) || 0) + qty);
       }
-      pendingByPartMap.get(code)!.push(item);
     });
 
-    // FIFO Allocation: Sort by createdAt ASC (oldest stock-out voucher first)
-    pendingByPartMap.forEach((itemsForPart, code) => {
-      itemsForPart.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    // 2. Assign explicit kittings directly to their respective vouchers
+    pendingList.forEach((pItem) => {
+      const vCode = (pItem.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      const pCode = pItem.partCode.trim().toLowerCase();
+      const key = `${vCode.toLowerCase()}__${pCode}`;
 
-      let availableHistoryQty = kittedHistoryByPart.get(code) || 0;
+      const explicitQty = explicitKittedByVoucherAndPart.get(key) || 0;
+      const queueItemKitted = pItem.kittedQuantity || 0;
+      pItem.kittedQuantity = Math.min(pItem.rawQuantity, Math.max(explicitQty, queueItemKitted));
+    });
 
-      itemsForPart.forEach((pItem) => {
-        const needed = pItem.rawQuantity;
-        if (availableHistoryQty > 0) {
-          const alloc = Math.min(needed, availableHistoryQty);
-          pItem.kittedQuantity = alloc;
-          availableHistoryQty -= alloc;
-        } else {
-          pItem.kittedQuantity = 0;
+    // 3. For general / xuất lẻ kittings:
+    // First, credit them to 'PHIẾU_XUẤT_LẺ'.
+    // If there is an excess beyond 'PHIẾU_XUẤT_LẺ', distribute via FIFO to older vouchers that still have unkitted balance.
+    const pendingByPartMap = new Map<string, typeof pendingList>();
+    pendingList.forEach((pItem) => {
+      const pCode = pItem.partCode.trim().toLowerCase();
+      if (!pendingByPartMap.has(pCode)) {
+        pendingByPartMap.set(pCode, []);
+      }
+      pendingByPartMap.get(pCode)!.push(pItem);
+    });
+
+    pendingByPartMap.forEach((itemsForPart, pCode) => {
+      let unassignedHistory = generalKittedByPart.get(pCode) || 0;
+      if (unassignedHistory <= 0) return;
+
+      // First priority: credit to PHIẾU_XUẤT_LẺ
+      const xuatLeItem = itemsForPart.find(
+        (i) => (i.voucherCode || '').trim().toLowerCase() === 'phiếu_xuất_lẻ'
+      );
+      if (xuatLeItem) {
+        const needed = Math.max(0, xuatLeItem.rawQuantity - (xuatLeItem.kittedQuantity || 0));
+        const alloc = Math.min(needed, unassignedHistory);
+        xuatLeItem.kittedQuantity = (xuatLeItem.kittedQuantity || 0) + alloc;
+        unassignedHistory -= alloc;
+      }
+
+      // If still unassigned history remaining, allocate FIFO to oldest pending items
+      if (unassignedHistory > 0) {
+        const sortedItems = [...itemsForPart]
+          .filter((i) => (i.voucherCode || '').trim().toLowerCase() !== 'phiếu_xuất_lẻ')
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+        for (const pItem of sortedItems) {
+          if (unassignedHistory <= 0) break;
+          const needed = Math.max(0, pItem.rawQuantity - (pItem.kittedQuantity || 0));
+          if (needed > 0) {
+            const alloc = Math.min(needed, unassignedHistory);
+            pItem.kittedQuantity = (pItem.kittedQuantity || 0) + alloc;
+            unassignedHistory -= alloc;
+          }
         }
-      });
+      }
     });
 
     return pendingList;
@@ -2579,6 +2644,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
               pendingVouchersForPart.forEach((i) => {
                 const code = (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
                 const unkitted = Math.max(0, i.rawQuantity - (i.kittedQuantity || 0));
+                if (unkitted <= 0) return; // Hide vouchers that have 0 remaining for this part
+
                 const ex = voucherMap.get(code);
                 if (ex) {
                   ex.remainingQty += unkitted;
@@ -2594,9 +2661,11 @@ export const KittingView: React.FC<KittingViewProps> = ({
                   });
                 }
               });
-              const voucherList = Array.from(voucherMap.values()).sort(
-                (a, b) => new Date(b.latestCreatedAt).getTime() - new Date(a.latestCreatedAt).getTime()
-              );
+              const voucherList = Array.from(voucherMap.values())
+                .filter((v) => v.remainingQty > 0)
+                .sort(
+                  (a, b) => new Date(b.latestCreatedAt).getTime() - new Date(a.latestCreatedAt).getTime()
+                );
               const currentVoucherInfo =
                 voucherList.find((v) => v.code === selectedVoucherCode) || voucherList[0];
 
@@ -2616,12 +2685,12 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
                   {voucherList.length === 0 ? (
                     <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold">
-                      ⚠️ Linh kiện này chưa có trong bất kỳ mã phiếu xuất kho nào đang chờ bóc tách!
+                      ⚠️ Linh kiện này chưa có hoặc đã bóc tách hết (tồn = 0) trong tất cả phiếu xuất kho!
                     </div>
                   ) : (
                     <div>
                       <select
-                        value={selectedVoucherCode || (voucherList[0]?.code || '')}
+                        value={currentVoucherInfo?.code || ''}
                         onChange={(e) => setSelectedVoucherCode(e.target.value)}
                         className="w-full px-3.5 py-2.5 bg-white border-2 border-indigo-300 rounded-xl font-bold text-indigo-950 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
                       >

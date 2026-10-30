@@ -3686,6 +3686,52 @@ export const storageService = {
 
     // If completed and stock was not already deducted at creation time, deduct now
     if (status === 'COMPLETED' && !current.isStockDeducted) {
+      // 1. ALWAYS CONSUME / DEDUCT FROM PENDING KITTING QUEUE (Danh Sách Chờ Bóc Tách) via FIFO
+      const queue = this.getKittingQueue();
+      const pendingIndices: number[] = [];
+      queue.forEach((item, index) => {
+        if (
+          item.status === 'PENDING_KITTING' &&
+          item.partCode.trim().toLowerCase() === current.partCode.trim().toLowerCase()
+        ) {
+          pendingIndices.push(index);
+        }
+      });
+
+      pendingIndices.sort((a, b) => new Date(queue[a].createdAt).getTime() - new Date(queue[b].createdAt).getTime());
+
+      let remainingToDeduct = current.requestedQty;
+      const nowIso = new Date().toISOString();
+
+      for (const pIdx of pendingIndices) {
+        if (remainingToDeduct <= 0) break;
+        const pItem = queue[pIdx];
+        const unkitted = Math.max(0, pItem.rawQuantity - (pItem.kittedQuantity || 0));
+        if (unkitted <= 0) continue;
+
+        if (unkitted <= remainingToDeduct) {
+          remainingToDeduct -= unkitted;
+          queue[pIdx] = {
+            ...pItem,
+            kittedQuantity: pItem.rawQuantity,
+            status: 'DELIVERED',
+            bufferLocation: current.bufferLocation || 'Giao DCLR',
+            operatorName: deliveredBy || current.deliveredBy || 'Thủ Kho Logistics',
+            endTime: nowIso,
+            durationMinutes: 5,
+          };
+        } else {
+          const consumedPortion = remainingToDeduct;
+          queue[pIdx] = {
+            ...pItem,
+            kittedQuantity: (pItem.kittedQuantity || 0) + consumedPortion,
+          };
+          remainingToDeduct = 0;
+        }
+      }
+      this.saveKittingQueue(queue);
+
+      // 2. IF NOT DIRECT (from Outbuffer Shelf), ALSO DEDUCT FROM OUTBUFFER SHELF STOCK
       const isDirect =
         current.isDirectKitting ||
         current.bufferLocation === 'DCLR' ||
@@ -3693,67 +3739,7 @@ export const storageService = {
         current.bufferLocation?.toUpperCase().includes('DCLR') ||
         current.bufferLocation?.toUpperCase().includes('KITTING');
 
-      if (isDirect) {
-        // CONSUME / DEDUCT FROM PENDING KITTING QUEUE (Danh Sách Chờ Bóc Tách)
-        const queue = this.getKittingQueue();
-        const pendingIndices: number[] = [];
-        queue.forEach((item, index) => {
-          if (
-            item.status === 'PENDING_KITTING' &&
-            item.partCode.trim().toLowerCase() === current.partCode.trim().toLowerCase()
-          ) {
-            pendingIndices.push(index);
-          }
-        });
-
-        pendingIndices.sort((a, b) => new Date(queue[a].createdAt).getTime() - new Date(queue[b].createdAt).getTime());
-
-        let remainingToDeduct = current.requestedQty;
-        const nowIso = new Date().toISOString();
-
-        for (const pIdx of pendingIndices) {
-          if (remainingToDeduct <= 0) break;
-          const pItem = queue[pIdx];
-          if (pItem.rawQuantity <= remainingToDeduct) {
-            remainingToDeduct -= pItem.rawQuantity;
-            queue[pIdx] = {
-              ...pItem,
-              kittedQuantity: pItem.rawQuantity,
-              status: 'DELIVERED',
-              bufferLocation: 'Giao trực tiếp DCLR',
-              operatorName: deliveredBy || current.deliveredBy || 'Logistics (Giao Trực Tiếp DCLR)',
-              endTime: nowIso,
-              durationMinutes: 5,
-            };
-          } else {
-            const consumedPortion = remainingToDeduct;
-            queue[pIdx] = {
-              ...pItem,
-              rawQuantity: pItem.rawQuantity - consumedPortion,
-            };
-            queue.push({
-              id: 'kit-dclr-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
-              transactionId: pItem.transactionId,
-              partCode: pItem.partCode,
-              partName: pItem.partName,
-              unit: pItem.unit,
-              rawQuantity: consumedPortion,
-              kittedQuantity: consumedPortion,
-              scrapQuantity: 0,
-              bufferLocation: 'Giao trực tiếp DCLR',
-              status: 'DELIVERED',
-              operatorName: deliveredBy || current.deliveredBy || 'Logistics (Giao Trực Tiếp DCLR)',
-              createdAt: pItem.createdAt,
-              endTime: nowIso,
-              durationMinutes: 5,
-            });
-            remainingToDeduct = 0;
-          }
-        }
-        this.saveKittingQueue(queue);
-        updated.isStockDeducted = true;
-      } else {
-        // DEDUCT FROM OUTBUFFER SHELF STOCK
+      if (!isDirect) {
         const buffers = this.getBufferLocations();
         const bIdx = buffers.findIndex((b) => b.locationId === current.bufferLocation);
         if (bIdx >= 0) {
@@ -3780,22 +3766,23 @@ export const storageService = {
             lastUpdated: new Date().toISOString(),
           };
           this.saveBufferLocations(buffers);
-          updated.isStockDeducted = true;
         }
 
-        // Update kitting queue status to DELIVERED if matching item exists
-        const queue = this.getKittingQueue();
-        const kIdx = queue.findIndex(
+        // Update kitting queue status to DELIVERED if matching IN_BUFFER item exists
+        const refreshedQueue = this.getKittingQueue();
+        const kIdx = refreshedQueue.findIndex(
           (k) =>
             k.bufferLocation === current.bufferLocation &&
             k.partCode.trim().toLowerCase() === current.partCode.trim().toLowerCase() &&
             k.status === 'IN_BUFFER'
         );
         if (kIdx >= 0) {
-          queue[kIdx].status = 'DELIVERED';
-          this.saveKittingQueue(queue);
+          refreshedQueue[kIdx].status = 'DELIVERED';
+          this.saveKittingQueue(refreshedQueue);
         }
       }
+
+      updated.isStockDeducted = true;
     }
 
     return updated;
