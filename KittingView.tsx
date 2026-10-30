@@ -12,6 +12,8 @@ import { normalizeLocationStr } from './StockOutScanModal';
 import {
   Scissors,
   CheckCircle2,
+  Pencil,
+  Plus,
   Clock,
   User,
   Package,
@@ -147,6 +149,48 @@ export const KittingView: React.FC<KittingViewProps> = ({
     totalQty?: number;
   }>({ isOpen: false, type: 'item' });
   const [isDeletingPending, setIsDeletingPending] = useState<boolean>(false);
+
+  // Admin Edit Pending Quantity Modal State
+  const [editPendingModalData, setEditPendingModalData] = useState<{
+    isOpen: boolean;
+    voucherCode: string;
+    partCode: string;
+    partName: string;
+    unit: string;
+    currentRawQty: number;
+    newRawQty: number;
+  }>({
+    isOpen: false,
+    voucherCode: '',
+    partCode: '',
+    partName: '',
+    unit: 'Cái',
+    currentRawQty: 0,
+    newRawQty: 0,
+  });
+  const [isSavingEditPending, setIsSavingEditPending] = useState<boolean>(false);
+
+  // Admin Add Part To Pending Voucher Modal State
+  const [addPartPendingModalData, setAddPartPendingModalData] = useState<{
+    isOpen: boolean;
+    voucherCode: string;
+    voucherTitle: string;
+    selectedPartCode: string;
+    selectedPartName: string;
+    unit: string;
+    rawQty: number;
+    sourceBin: string;
+  }>({
+    isOpen: false,
+    voucherCode: '',
+    voucherTitle: '',
+    selectedPartCode: '',
+    selectedPartName: '',
+    unit: 'Cái',
+    rawQty: 100,
+    sourceBin: 'Kho chính',
+  });
+  const [isSavingAddPartPending, setIsSavingAddPartPending] = useState<boolean>(false);
 
   useEffect(() => {
     const loaded = storageService.getMasterContainerTags();
@@ -1268,6 +1312,117 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
   };
 
+  const handleRequestEditPendingItem = (item: KittingQueueItem, voucherCode: string) => {
+    if (!isAdmin) {
+      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền chỉnh sửa số lượng linh kiện!');
+      return;
+    }
+    setEditPendingModalData({
+      isOpen: true,
+      voucherCode: voucherCode || item.voucherCode || 'PHIẾU_XUẤT_LẺ',
+      partCode: item.partCode,
+      partName: item.partName,
+      unit: item.unit || 'Cái',
+      currentRawQty: item.rawQuantity,
+      newRawQty: item.rawQuantity,
+    });
+  };
+
+  const handleConfirmEditPendingQuantity = async () => {
+    if (!isAdmin) return;
+    if (editPendingModalData.newRawQty < 0) {
+      alert('Số lượng không thể nhỏ hơn 0!');
+      return;
+    }
+    setIsSavingEditPending(true);
+    try {
+      await storageService.updatePendingKittingQuantity(
+        editPendingModalData.voucherCode,
+        editPendingModalData.partCode,
+        editPendingModalData.newRawQty,
+        operator
+      );
+      setResultModal({
+        isOpen: true,
+        isSuccess: true,
+        title: 'CẬP NHẬT SỐ LƯỢNG THÀNH CÔNG',
+        message: `✅ ĐÃ CẬP NHẬT SỐ LƯỢNG!\nLinh kiện [${editPendingModalData.partCode}] trong phiếu [${editPendingModalData.voucherCode}] đã được cập nhật thành ${editPendingModalData.newRawQty.toLocaleString('vi-VN')} ${editPendingModalData.unit}.\nDữ liệu đã được tự động lưu trữ và đồng bộ tức thời lên Supabase Cloud database!`,
+      });
+      setEditPendingModalData((prev) => ({ ...prev, isOpen: false }));
+      onRefresh();
+    } catch (err: any) {
+      setResultModal({
+        isOpen: true,
+        isSuccess: false,
+        title: 'LỖI CẬP NHẬT SỐ LƯỢNG',
+        message: err?.message || 'Lỗi khi lưu số lượng mới!',
+      });
+    } finally {
+      setIsSavingEditPending(false);
+    }
+  };
+
+  const handleRequestAddPartPending = (voucher: PendingVoucherGroup) => {
+    if (!isAdmin) {
+      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền thêm linh kiện vào phiếu!');
+      return;
+    }
+    const allParts = storageService.getParts();
+    const firstPart = allParts[0];
+    setAddPartPendingModalData({
+      isOpen: true,
+      voucherCode: voucher.voucherCode,
+      voucherTitle: voucher.voucherTitle,
+      selectedPartCode: firstPart ? firstPart.code : '',
+      selectedPartName: firstPart ? firstPart.name : '',
+      unit: firstPart ? firstPart.unit || 'Cái' : 'Cái',
+      rawQty: 100,
+      sourceBin: firstPart ? firstPart.location || 'Kho chính' : 'Kho chính',
+    });
+  };
+
+  const handleConfirmAddPartPending = async () => {
+    if (!isAdmin) return;
+    if (!addPartPendingModalData.selectedPartCode) {
+      alert('Vui lòng chọn hoặc nhập mã linh kiện!');
+      return;
+    }
+    if (addPartPendingModalData.rawQty <= 0) {
+      alert('Số lượng linh kiện thêm vào phải lớn hơn 0!');
+      return;
+    }
+    setIsSavingAddPartPending(true);
+    try {
+      await storageService.addPendingKittingPart({
+        voucherCode: addPartPendingModalData.voucherCode,
+        voucherTitle: addPartPendingModalData.voucherTitle,
+        partCode: addPartPendingModalData.selectedPartCode,
+        partName: addPartPendingModalData.selectedPartName,
+        unit: addPartPendingModalData.unit,
+        rawQuantity: addPartPendingModalData.rawQty,
+        operatorName: operator,
+        sourceBin: addPartPendingModalData.sourceBin,
+      });
+      setResultModal({
+        isOpen: true,
+        isSuccess: true,
+        title: 'THÊM LINH KIỆN VÀO PHIẾU THÀNH CÔNG',
+        message: `✅ ĐÃ THÊM LINH KIỆN!\nĐã thêm ${addPartPendingModalData.rawQty.toLocaleString('vi-VN')} ${addPartPendingModalData.unit} [${addPartPendingModalData.selectedPartCode}] vào phiếu [${addPartPendingModalData.voucherCode}].\nDữ liệu đã được lưu trữ và đồng bộ tức thời lên Supabase Cloud database!`,
+      });
+      setAddPartPendingModalData((prev) => ({ ...prev, isOpen: false }));
+      onRefresh();
+    } catch (err: any) {
+      setResultModal({
+        isOpen: true,
+        isSuccess: false,
+        title: 'LỖI THÊM LINH KIỆN VÀO PHIẾU',
+        message: err?.message || 'Lỗi khi thêm linh kiện!',
+      });
+    } finally {
+      setIsSavingAddPartPending(false);
+    }
+  };
+
   const isQtyDifference = actualQty !== standardQty;
 
   return (
@@ -1782,6 +1937,19 @@ export const KittingView: React.FC<KittingViewProps> = ({
                             <span>Rollback Hoàn Kho</span>
                           </button>
 
+                          {/* Action Button: Thêm LK Vào Phiếu (Admin Only) */}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleRequestAddPartPending(voucher)}
+                              className="px-3.5 py-2 text-xs font-bold rounded-xl border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 flex items-center space-x-1.5 transition-all cursor-pointer shadow-2xs active:scale-95"
+                              title="Thêm linh kiện mới vào mã phiếu này (Chỉ Quản trị viên)"
+                            >
+                              <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                              <span>Thêm LK</span>
+                            </button>
+                          )}
+
                           {/* Action Button: Xóa Phiếu Chờ (Admin Only) */}
                           {isAdmin && (
                             <button
@@ -1927,14 +2095,24 @@ export const KittingView: React.FC<KittingViewProps> = ({
                                             <span className="text-slate-400 text-xs">---</span>
                                           )}
                                           {isAdmin && (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleRequestDeleteItem(item)}
-                                              className="p-1.5 text-rose-500 hover:bg-rose-100 hover:text-rose-700 rounded-lg cursor-pointer transition-colors"
-                                              title="Xóa linh kiện này khỏi danh sách chờ bóc tách & đồng bộ Supabase (Chỉ Quản trị viên)"
-                                            >
-                                              <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRequestEditPendingItem(item, voucher.voucherCode)}
+                                                className="p-1.5 text-amber-600 hover:bg-amber-100 hover:text-amber-800 rounded-lg cursor-pointer transition-colors"
+                                                title="Sửa số lượng đề nghị ban đầu (Chỉ Quản trị viên)"
+                                              >
+                                                <Pencil className="w-3.5 h-3.5" />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRequestDeleteItem(item)}
+                                                className="p-1.5 text-rose-500 hover:bg-rose-100 hover:text-rose-700 rounded-lg cursor-pointer transition-colors"
+                                                title="Xóa linh kiện này khỏi danh sách chờ bóc tách & đồng bộ Supabase (Chỉ Quản trị viên)"
+                                              >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                              </button>
+                                            </>
                                           )}
                                         </div>
                                       </td>
@@ -2908,6 +3086,224 @@ export const KittingView: React.FC<KittingViewProps> = ({
                 <Trash2 className="w-4 h-4 text-white" />
                 <span>
                   {isDeletingPending ? 'ĐANG XÓA & ĐỒNG BỘ SUPABASE...' : 'XÁC NHẬN XÓA & ĐỒNG BỘ SUPABASE'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN EDIT PENDING ITEM QUANTITY MODAL */}
+      {editPendingModalData.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border-2 border-amber-500 my-8 space-y-5 relative">
+            <button
+              type="button"
+              disabled={isSavingEditPending}
+              onClick={() => setEditPendingModalData((prev) => ({ ...prev, isOpen: false }))}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 bg-slate-100 rounded-full cursor-pointer transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-amber-100 text-amber-800 text-xs font-black rounded-lg uppercase tracking-wider">
+                <ShieldCheck className="w-4 h-4 text-amber-700" />
+                <span>Quyền Quản Trị Viên (ADMIN)</span>
+              </div>
+              <h2 className="text-lg sm:text-xl font-black text-slate-900 flex items-center space-x-2">
+                <Pencil className="w-5 h-5 text-amber-600 shrink-0" />
+                <span>SỬA SỐ LƯỢNG ĐỀ NGHỊ BÓC TÁCH</span>
+              </h2>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-amber-50/60 border border-amber-200 space-y-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600 font-bold">Mã phiếu xuất kho:</span>
+                <span className="font-mono font-black text-indigo-950 bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200">
+                  📦 {editPendingModalData.voucherCode}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600 font-bold">Mã linh kiện:</span>
+                <span className="font-mono font-black text-sm text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                  {editPendingModalData.partCode}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600 font-bold">Tên linh kiện:</span>
+                <span className="font-bold text-slate-900 text-right max-w-[240px] truncate">
+                  {editPendingModalData.partName}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block text-xs font-black text-slate-800 uppercase tracking-wide">
+                SỐ LƯỢNG ĐỀ NGHỊ MỚI ({editPendingModalData.unit}) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={editPendingModalData.newRawQty}
+                onChange={(e) =>
+                  setEditPendingModalData((prev) => ({
+                    ...prev,
+                    newRawQty: Number(e.target.value),
+                  }))
+                }
+                className="w-full px-4 py-3 bg-amber-50 border-2 border-amber-300 rounded-2xl font-mono font-black text-amber-950 text-lg focus:ring-2 focus:ring-amber-500 outline-hidden"
+              />
+              <p className="text-[11px] text-slate-500">
+                * Số lượng mới sẽ cập nhật trực tiếp vào danh sách chờ bóc tách, các lượt quét thẻ thùng tiếp theo sẽ ghi nhận theo số lượng này và đồng bộ lên Supabase Cloud.
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                disabled={isSavingEditPending}
+                onClick={() => setEditPendingModalData((prev) => ({ ...prev, isOpen: false }))}
+                className="w-full sm:w-auto px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer"
+              >
+                HỦY BỎ
+              </button>
+              <button
+                type="button"
+                disabled={isSavingEditPending}
+                onClick={handleConfirmEditPendingQuantity}
+                className="w-full sm:w-auto px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-black text-xs shadow-md transition-all cursor-pointer flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+              >
+                <Check className="w-4 h-4 text-white" />
+                <span>
+                  {isSavingEditPending ? 'ĐANG LƯU & ĐỒNG BỘ SUPABASE...' : 'LƯU VÀ ĐỒNG BỘ SUPABASE'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN ADD PART TO PENDING VOUCHER MODAL */}
+      {addPartPendingModalData.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xs animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl border-2 border-indigo-500 my-8 space-y-5 relative">
+            <button
+              type="button"
+              disabled={isSavingAddPartPending}
+              onClick={() => setAddPartPendingModalData((prev) => ({ ...prev, isOpen: false }))}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 bg-slate-100 rounded-full cursor-pointer transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-indigo-100 text-indigo-900 text-xs font-black rounded-lg uppercase tracking-wider">
+                <ShieldCheck className="w-4 h-4 text-indigo-700" />
+                <span>Quyền Quản Trị Viên (ADMIN)</span>
+              </div>
+              <h2 className="text-lg sm:text-xl font-black text-slate-900 flex items-center space-x-2">
+                <Plus className="w-5 h-5 text-indigo-600 shrink-0" />
+                <span>THÊM LINH KIỆN VÀO PHIẾU CHỜ BÓC TÁCH</span>
+              </h2>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-200 text-xs flex items-center justify-between">
+              <span className="text-slate-600 font-bold">Thêm vào Mã phiếu xuất:</span>
+              <span className="font-mono font-black text-indigo-950 bg-white px-3 py-1 rounded-xl border border-indigo-300 shadow-2xs">
+                📦 {addPartPendingModalData.voucherCode}
+              </span>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-800 mb-1.5">
+                  CHỌN LINH KIỆN CẦN THÊM <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={addPartPendingModalData.selectedPartCode}
+                  onChange={(e) => {
+                    const code = e.target.value;
+                    const allParts = storageService.getParts();
+                    const p = allParts.find((part) => part.code === code);
+                    setAddPartPendingModalData((prev) => ({
+                      ...prev,
+                      selectedPartCode: code,
+                      selectedPartName: p ? p.name : code,
+                      unit: p ? p.unit || 'Cái' : 'Cái',
+                      sourceBin: p ? p.location || 'Kho chính' : 'Kho chính',
+                    }));
+                  }}
+                  className="w-full px-3.5 py-2.5 bg-white border-2 border-slate-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
+                >
+                  {storageService.getParts().map((p) => (
+                    <option key={p.id} value={p.code}>
+                      [{p.code}] {p.name} ({p.unit}) — Tồn: {p.currentStock}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block font-bold text-slate-800 mb-1">
+                    SỐ LƯỢNG YÊU CẦU ({addPartPendingModalData.unit}) <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={addPartPendingModalData.rawQty}
+                    onChange={(e) =>
+                      setAddPartPendingModalData((prev) => ({
+                        ...prev,
+                        rawQty: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full px-3.5 py-2.5 bg-indigo-50 border-2 border-indigo-300 rounded-xl font-mono font-black text-indigo-950 text-base focus:ring-2 focus:ring-indigo-500 outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-800 mb-1">
+                    VỊ TRÍ KHO GỐC (BIN)
+                  </label>
+                  <input
+                    type="text"
+                    value={addPartPendingModalData.sourceBin}
+                    onChange={(e) =>
+                      setAddPartPendingModalData((prev) => ({
+                        ...prev,
+                        sourceBin: e.target.value,
+                      }))
+                    }
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                * Linh kiện thêm vào sẽ hiển thị trong phiếu chờ bóc tách [{addPartPendingModalData.voucherCode}] và cho phép quét thẻ thùng kitting bình thường.
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                disabled={isSavingAddPartPending}
+                onClick={() => setAddPartPendingModalData((prev) => ({ ...prev, isOpen: false }))}
+                className="w-full sm:w-auto px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer"
+              >
+                HỦY BỎ
+              </button>
+              <button
+                type="button"
+                disabled={isSavingAddPartPending}
+                onClick={handleConfirmAddPartPending}
+                className="w-full sm:w-auto px-6 py-3 bg-indigo-700 hover:bg-indigo-800 text-white rounded-xl font-black text-xs shadow-md transition-all cursor-pointer flex items-center justify-center space-x-2 active:scale-95 disabled:opacity-50"
+              >
+                <Plus className="w-4 h-4 text-white" />
+                <span>
+                  {isSavingAddPartPending ? 'ĐANG THÊM & ĐỒNG BỘ SUPABASE...' : 'THÊM VÀO PHIẾU & ĐỒNG BỘ SUPABASE'}
                 </span>
               </button>
             </div>

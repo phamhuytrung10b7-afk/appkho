@@ -178,6 +178,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
           'Cần Xuất',
           'Đã Thực Xuất',
           'Chờ Xuất Bù',
+          'Tồn Hiện Tại',
           'Vị Trí Kệ (FIFO)',
           'Trạng Thái',
         ],
@@ -192,6 +193,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         const req = item.requiredQty ?? (item.bomQtyPerSet * (voucher.modelQty || 1));
         const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
         const rem = item.remainingQty ?? Math.max(0, req - exp);
+        const sysPart = storageService.getPartByCode(item.partCode) || parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+        const totalStock = sysPart ? sysPart.currentStock : 0;
 
         totalReq += req;
         totalExp += exp;
@@ -211,6 +214,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
           req,
           exp,
           rem > 0 ? -rem : 0,
+          totalStock,
           item.fifoLocation || 'Kho chính',
           statusTextItem,
         ]);
@@ -226,6 +230,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         totalReq,
         totalExp,
         totalRem > 0 ? -totalRem : 0,
+        '',
         '',
         totalRem === 0 ? 'Đã xuất đủ 100%' : `Còn thiếu ${totalRem.toLocaleString('vi-VN')}`,
       ]);
@@ -250,6 +255,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
         { wch: 14 }, // Cần Xuất
         { wch: 16 }, // Đã Thực Xuất
         { wch: 16 }, // Chờ Xuất Bù
+        { wch: 16 }, // Tồn Hiện Tại
         { wch: 24 }, // Vị Trí Kệ (FIFO)
         { wch: 16 }, // Trạng Thái
       ];
@@ -2296,6 +2302,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                       <th className="p-3 text-right">SL Cần Xuất</th>
                       <th className="p-3 text-right text-emerald-800 bg-emerald-50">Đã Thực Xuất</th>
                       <th className="p-3 text-right text-rose-800 bg-rose-50">Chờ Xuất Bù</th>
+                      <th className="p-3 text-right text-slate-800 bg-slate-100/80">Tồn Hiện Tại</th>
                       <th className="p-3 text-blue-900 bg-blue-50">Vị Trí Kệ Lấy Hàng (FIFO)</th>
                       <th className="p-3 text-center">Trạng Thái</th>
                     </tr>
@@ -2305,6 +2312,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                       const req = item.requiredQty ?? (item.bomQtyPerSet * (bomPrintModalData.modelQty || 1));
                       const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
                       const rem = item.remainingQty ?? Math.max(0, req - exp);
+                      const sysPart = storageService.getPartByCode(item.partCode) || parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+                      const totalStock = sysPart ? sysPart.currentStock : 0;
 
                       return (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors">
@@ -2345,6 +2354,9 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                             ) : (
                               <span className="text-emerald-700">0 (Đủ)</span>
                             )}
+                          </td>
+                          <td className="p-3 text-right font-bold text-slate-800 bg-slate-50/50">
+                            {totalStock.toLocaleString('vi-VN')}
                           </td>
                           <td className="p-3 font-bold text-blue-900 bg-blue-50/50">
                             📍 {item.fifoLocation}
@@ -2425,6 +2437,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                               <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 70px;">Cần Xuất</th>
                               <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 75px; color: #15803d; background-color: #f0fdf4;">Đã Thực Xuất</th>
                               <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 75px; color: #be123c; background-color: #fff1f2;">Chờ Xuất Bù</th>
+                              <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; width: 75px; color: #0f172a; background-color: #f8fafc;">Tồn Hiện Tại</th>
                               <th style="border: 1px solid #cbd5e1; padding: 6px; color: #1e40af; background-color: #eff6ff;">Vị Trí Kệ (FIFO)</th>
                               <th style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; width: 55px;">Đã Lấy</th>
                             </tr>
@@ -2434,6 +2447,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                               const req = item.requiredQty ?? (item.bomQtyPerSet * (bomPrintModalData.modelQty || 1));
                               const exp = item.exportedQty ?? item.totalQtyOut ?? 0;
                               const rem = item.remainingQty ?? Math.max(0, req - exp);
+                              const sysPart = storageService.getPartByCode(item.partCode) || parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
+                              const totalStock = sysPart ? sysPart.currentStock : 0;
                               return `
                                 <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background-color: #f8fafc;' : ''}">
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; font-weight: bold;">${idx + 1}</td>
@@ -2444,6 +2459,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold;">${req.toLocaleString('vi-VN')}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: #15803d; background-color: #f0fdf4;">${exp.toLocaleString('vi-VN')}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: ${rem > 0 ? '#be123c' : '#15803d'}; background-color: ${rem > 0 ? '#fff1f2' : '#f0fdf4'};">${rem > 0 ? `-${rem.toLocaleString('vi-VN')}` : '0 (Đủ)'}</td>
+                                  <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight: bold; color: #0f172a;">${totalStock.toLocaleString('vi-VN')}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight: bold; color: #1e40af; background-color: #eff6ff;">📍 ${item.fifoLocation}</td>
                                   <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center; font-size: 10px; color: #94a3b8;">[ &nbsp; ]</td>
                                 </tr>
