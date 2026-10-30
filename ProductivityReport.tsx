@@ -10,6 +10,7 @@ import {
   Legend,
   ResponsiveContainer,
   ComposedChart,
+  LabelList,
 } from 'recharts';
 import { FileSpreadsheet, Calendar, Users, Plus, Trash2, Download, RefreshCw, BarChart2, Table, Sparkles, QrCode, Cloud, CloudOff, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { Part } from './types';
@@ -445,7 +446,7 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
         {/* Recharts Dual Axis Chart */}
         <div className="h-80 w-full pt-2">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 20, right: 30, bottom: 20, left: 10 }}>
+            <ComposedChart data={chartData} margin={{ top: 25, right: 30, bottom: 20, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="slot" tick={{ fontSize: 12, fontWeight: 600, fill: '#475569' }} />
               <YAxis yAxisId="left" orientation="left" stroke="#2563eb" tick={{ fontSize: 11 }} />
@@ -454,7 +455,7 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                 orientation="right"
                 stroke="#ea580c"
                 unit="%"
-                domain={[0, 180]}
+                domain={[0, (dataMax: number) => Math.max(120, Math.ceil(dataMax * 1.25))]}
                 tick={{ fontSize: 11 }}
               />
               <Tooltip
@@ -469,15 +470,36 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                   value === 'sanLuong' ? 'Sản lượng theo múi giờ' : 'Năng suất lao động (%)'
                 }
               />
-              <Bar yAxisId="left" dataKey="sanLuong" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={40} />
+              <Bar
+                yAxisId="left"
+                dataKey="sanLuong"
+                fill="#3b82f6"
+                radius={[4, 4, 0, 0]}
+                barSize={38}
+                minPointSize={10}
+              >
+                <LabelList
+                  dataKey="sanLuong"
+                  position="top"
+                  formatter={(val: any) => (val && val > 0 ? val.toLocaleString('vi-VN') : '')}
+                  style={{ fontSize: '10px', fontWeight: 'bold', fill: '#1d4ed8' }}
+                />
+              </Bar>
               <Line
                 yAxisId="right"
                 type="monotone"
                 dataKey="nangSuat"
                 stroke="#ea580c"
                 strokeWidth={3}
-                dot={{ r: 5, fill: '#ea580c', strokeWidth: 2, stroke: '#ffffff' }}
-              />
+                dot={{ r: 6, fill: '#ea580c', strokeWidth: 2, stroke: '#ffffff' }}
+              >
+                <LabelList
+                  dataKey="nangSuat"
+                  position="top"
+                  formatter={(val: any) => `${val || 0}%`}
+                  style={{ fontSize: '11px', fontWeight: '800', fill: '#ea580c' }}
+                />
+              </Line>
             </ComposedChart>
           </ResponsiveContainer>
         </div>
