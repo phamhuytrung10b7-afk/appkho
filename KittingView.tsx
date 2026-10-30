@@ -9,6 +9,8 @@ import { InlineQrScanner } from './InlineQrScanner';
 import { SmoothCameraScanner } from './SmoothCameraScanner';
 import { findLocationMatch } from './StockInView';
 import { normalizeLocationStr } from './StockOutScanModal';
+import { SearchableSelect } from './SearchableSelect';
+import { soundEffects } from './soundEffects';
 import {
   Scissors,
   CheckCircle2,
@@ -106,6 +108,73 @@ export const KittingView: React.FC<KittingViewProps> = ({
   const [isCameraScanning, setIsCameraScanning] = useState(false);
   const [isBufferQrScanning, setIsBufferQrScanning] = useState(false);
 
+  // Anti-spam lock state for quick auto-kitting checkmark buttons
+  const [processingQuickKitIds, setProcessingQuickKitIds] = useState<Record<string, boolean>>({});
+
+  const handleQuickAutoKitItemToOutbuffer = async (item: KittingQueueItem) => {
+    if (processingQuickKitIds[item.id]) return;
+
+    const unkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
+    if (unkitted <= 0) return;
+
+    // Lock item to prevent double-click / fast spamming
+    setProcessingQuickKitIds((prev) => ({ ...prev, [item.id]: true }));
+
+    try {
+      const operatorName = currentOperatorName || 'Lê Hoàng Nam';
+      const destBuffer = 'Kệ 1'; // Outbuffer Kệ 1
+
+      // 1. Complete kitting queue item
+      storageService.completeKittingItem({
+        id: item.id,
+        kittedQuantity: unkitted,
+        scrapQuantity: 0,
+        bufferLocation: destBuffer,
+        operatorName: operatorName,
+        durationMinutes: 1,
+      });
+
+      // 2. Add scan log for productivity tracking
+      storageService.addKittingScanLog({
+        partCode: item.partCode,
+        partName: item.partName || item.partCode,
+        unit: item.unit || 'Cái',
+        quantity: unkitted,
+        timestamp: new Date().toISOString(),
+        bufferLocation: destBuffer,
+        operatorName: operatorName,
+      });
+
+      try {
+        soundEffects.playSuccessTingTing();
+      } catch (e) {
+        // ignore audio errors
+      }
+
+      // 3. Sync immediately to Supabase Cloud
+      await storageService.syncWithSupabase().catch(console.error);
+
+      // 4. Trigger UI refresh
+      onRefresh();
+    } catch (err: any) {
+      try {
+        soundEffects.playErrorBuzzer();
+      } catch (e) {
+        // ignore
+      }
+      alert(`Lỗi khi bóc tách nhanh linh kiện: ${err?.message || 'Lỗi không xác định'}`);
+    } finally {
+      // Keep locked for 1000ms delay to prevent rapid spamming
+      setTimeout(() => {
+        setProcessingQuickKitIds((prev) => {
+          const next = { ...prev };
+          delete next[item.id];
+          return next;
+        });
+      }, 1000);
+    }
+  };
+
   // Result Popup Modal State (Prominent OK or Error Notification)
   const [resultModal, setResultModal] = useState<{
     isOpen: boolean;
@@ -191,6 +260,15 @@ export const KittingView: React.FC<KittingViewProps> = ({
     sourceBin: 'Kho chính',
   });
   const [isSavingAddPartPending, setIsSavingAddPartPending] = useState<boolean>(false);
+
+  const addPartSelectOptions = React.useMemo(() => {
+    return storageService.getParts().map((p) => ({
+      value: p.code,
+      label: `[${p.code}] ${p.name}`,
+      sublabel: `ĐVT: ${p.unit || 'Cái'} | Vị trí: ${p.location || 'Kho chính'}`,
+      badge: `Tồn kho: ${(p.currentStock || 0).toLocaleString('vi-VN')} ${p.unit || 'Cái'}`,
+    }));
+  }, [addPartPendingModalData.isOpen]);
 
   useEffect(() => {
     const loaded = storageService.getMasterContainerTags();
@@ -2041,7 +2119,27 @@ export const KittingView: React.FC<KittingViewProps> = ({
                                         {item.partCode}
                                       </td>
                                       <td className="p-3 font-semibold text-slate-900">
-                                        {item.partName}
+                                        <div className="flex items-center justify-between space-x-2">
+                                          <span className="truncate max-w-[220px]" title={item.partName}>
+                                            {item.partName}
+                                          </span>
+                                          {!isDone && (
+                                            <button
+                                              type="button"
+                                              disabled={Boolean(processingQuickKitIds[item.id])}
+                                              onClick={() => handleQuickAutoKitItemToOutbuffer(item)}
+                                              className={`px-2 py-1 rounded-lg text-xs font-black flex items-center space-x-1 shadow-2xs transition-all cursor-pointer shrink-0 ${
+                                                processingQuickKitIds[item.id]
+                                                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                                  : 'bg-emerald-600 hover:bg-emerald-700 active:scale-90 text-white'
+                                              }`}
+                                              title={`Bóc tách nhanh toàn bộ (${unkitted.toLocaleString('vi-VN')} ${item.unit}) vào Kệ 1 Outbuffer (Đồng bộ Supabase)`}
+                                            >
+                                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                              <span className="text-[10px] hidden sm:inline">Bóc Kệ 1</span>
+                                            </button>
+                                          )}
+                                        </div>
                                       </td>
                                       <td className="p-3 text-center text-slate-600 font-medium">
                                         {item.unit}
@@ -3217,15 +3315,15 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
             <div className="space-y-4 text-xs">
               <div>
-                <label className="block font-bold text-slate-800 mb-1.5">
-                  CHỌN LINH KIỆN CẦN THÊM <span className="text-rose-500">*</span>
-                </label>
-                <select
+                <SearchableSelect
+                  label="CHỌN LINH KIỆN CẦN THÊM (Tìm kiếm Fuzzy thông minh không dấu)"
+                  required={true}
+                  options={addPartSelectOptions}
                   value={addPartPendingModalData.selectedPartCode}
-                  onChange={(e) => {
-                    const code = e.target.value;
+                  onChange={(val) => {
                     const allParts = storageService.getParts();
-                    const p = allParts.find((part) => part.code === code);
+                    const p = allParts.find((part) => part.code.toLowerCase() === val.toLowerCase() || part.id === val);
+                    const code = p ? p.code : val;
                     setAddPartPendingModalData((prev) => ({
                       ...prev,
                       selectedPartCode: code,
@@ -3234,14 +3332,20 @@ export const KittingView: React.FC<KittingViewProps> = ({
                       sourceBin: p ? p.location || 'Kho chính' : 'Kho chính',
                     }));
                   }}
-                  className="w-full px-3.5 py-2.5 bg-white border-2 border-slate-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
-                >
-                  {storageService.getParts().map((p) => (
-                    <option key={p.id} value={p.code}>
-                      [{p.code}] {p.name} ({p.unit}) — Tồn: {p.currentStock}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Gõ mã, tên linh kiện, vị trí kệ..."
+                  allowCustom={true}
+                  icon={<Package className="w-4 h-4 text-indigo-600" />}
+                />
+              </div>
+
+              <div className="p-3 bg-indigo-50/80 border border-indigo-200 rounded-xl text-[11px] text-indigo-950 font-medium space-y-1">
+                <p className="font-bold text-indigo-900 flex items-center space-x-1">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span>⚡ Lưu ý quan trọng về tồn kho:</span>
+                </p>
+                <p>
+                  Thao tác thêm linh kiện này <strong>KHÔNG trừ tồn kho thực tế</strong> hiện có trên kho chính và các kệ vị trí. Mục đích chỉ lập danh sách bóc tách và đưa linh kiện lên kệ gọi hàng (Outbuffer).
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
