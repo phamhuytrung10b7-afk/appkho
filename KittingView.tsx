@@ -640,6 +640,25 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
   const pendingItems = rawPendingItems;
 
+  // Keep selectedVoucherCode synchronized with active unkitted vouchers when modal opens
+  useEffect(() => {
+    if (isAutoKittingModalOpen && partCode) {
+      const activeForPart = rawPendingItems.filter(
+        (i) =>
+          i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
+          Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0
+      );
+      if (activeForPart.length > 0) {
+        const hasMatch = activeForPart.some(
+          (i) => (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === selectedVoucherCode.trim().toLowerCase()
+        );
+        if (!hasMatch) {
+          setSelectedVoucherCode((activeForPart[0].voucherCode || 'PHIẾU_XUẤT_LẺ').trim());
+        }
+      }
+    }
+  }, [isAutoKittingModalOpen, partCode, rawPendingItems, selectedVoucherCode]);
+
   // Date Filtering State for History Tab (Lịch sử bóc tách) - Defaults to Today
   const getTodayStr = () => {
     const d = new Date();
@@ -845,14 +864,21 @@ export const KittingView: React.FC<KittingViewProps> = ({
     const emptyBuf = buffers.find((b) => b.status === 'EMPTY');
     setTargetBuffer(matchingBuf ? matchingBuf.locationId : emptyBuf ? emptyBuf.locationId : 'BUFFER-A1-01');
 
-    // Automatically detect pending vouchers containing this partCode, sorted by newest order first
-    const vouchersForPart = rawPendingItems
-      .filter((i) => i.partCode.trim().toLowerCase() === (tag.partCode || '').trim().toLowerCase())
+    // Automatically detect pending vouchers containing this partCode that STILL HAVE unkitted stock (> 0)
+    const activeVouchersForPart = rawPendingItems
+      .filter(
+        (i) =>
+          i.partCode.trim().toLowerCase() === (tag.partCode || '').trim().toLowerCase() &&
+          Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0
+      )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    if (vouchersForPart.length > 0) {
-      // Default to the newest order containing this part
-      const newestVoucherCode = (vouchersForPart[0].voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
-      setSelectedVoucherCode(newestVoucherCode);
+
+    if (activeVouchersForPart.length > 0) {
+      // Default to the newest order containing this part that has unkitted stock
+      const newestActiveCode = (activeVouchersForPart[0].voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      setSelectedVoucherCode(newestActiveCode);
+    } else {
+      setSelectedVoucherCode('PHIẾU_XUẤT_LẺ');
     }
 
     // Automatically open popup modal for Kitting Info
@@ -982,27 +1008,42 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
     // Determine target voucher to deduct from (User requirement: Trừ đúng theo từng mã phiếu xuất kho)
     let targetVoucher = selectedVoucherCode.trim();
-    if (!targetVoucher) {
-      // Pick oldest voucher containing this part
-      targetVoucher = (pendingForPart[0]?.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
-    }
 
-    // Find pending items belonging specifically to this target voucher
-    const targetVoucherItems = pendingForPart.filter(
-      (i) => (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === targetVoucher.toLowerCase()
-    );
-
-    const availableInTargetVoucher = targetVoucherItems.reduce(
+    // Check if the current targetVoucher has available remaining stock > 0
+    let targetVoucherItems = targetVoucher
+      ? pendingForPart.filter(
+          (i) => (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === targetVoucher.toLowerCase()
+        )
+      : [];
+    let availableInTargetVoucher = targetVoucherItems.reduce(
       (sum, item) => sum + Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)),
       0
     );
+
+    // If targetVoucher is empty or has 0 stock remaining, auto-fallback to the first active voucher with stock > 0
+    if (!targetVoucher || targetVoucherItems.length === 0 || availableInTargetVoucher <= 0) {
+      const activeItem = pendingForPart.find(
+        (i) => Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0
+      );
+      if (activeItem) {
+        targetVoucher = (activeItem.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+        targetVoucherItems = pendingForPart.filter(
+          (i) => (i.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === targetVoucher.toLowerCase()
+        );
+        availableInTargetVoucher = targetVoucherItems.reduce(
+          (sum, item) => sum + Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)),
+          0
+        );
+        setSelectedVoucherCode(targetVoucher);
+      }
+    }
 
     if (targetVoucherItems.length === 0 || availableInTargetVoucher <= 0) {
       setResultModal({
         isOpen: true,
         isSuccess: false,
         title: 'BÓC TÁCH THẤT BẠI',
-        message: `Linh kiện [${partCode}] KHÔNG CÒN TỒN trong Mã phiếu [${targetVoucher}]! Vui lòng kiểm tra và chọn đúng Mã phiếu xuất kho có linh kiện này.`,
+        message: `Linh kiện [${partCode}] KHÔNG CÒN TỒN trong tất cả các Mã phiếu xuất kho! Vui lòng kiểm tra lại.`,
       });
       return;
     }
@@ -1074,11 +1115,19 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
       // If remainingToKitting > 0, consume sequentially from this voucher's existing items in queue
       if (remainingToKitting > 0) {
-        for (const pItem of targetVoucherItems) {
+        const freshQueue = storageService.getKittingQueue();
+        const pendingForThisVoucher = freshQueue.filter(
+          (q) =>
+            q.status === 'PENDING_KITTING' &&
+            q.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
+            ((q.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === targetVoucher.toLowerCase())
+        );
+
+        for (const liveItem of pendingForThisVoucher) {
           if (remainingToKitting <= 0) break;
 
-          const freshQueue = storageService.getKittingQueue();
-          const freshItem = freshQueue.find((i) => i.id === pItem.id && i.status === 'PENDING_KITTING');
+          const currentQueue = storageService.getKittingQueue();
+          const freshItem = currentQueue.find((i) => i.id === liveItem.id && i.status === 'PENDING_KITTING');
           if (!freshItem) continue;
 
           if (freshItem.rawQuantity <= remainingToKitting) {
@@ -2796,7 +2845,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                   ) : (
                     <div>
                       <select
-                        value={currentVoucherInfo?.code || ''}
+                        value={currentVoucherInfo?.code || selectedVoucherCode}
                         onChange={(e) => setSelectedVoucherCode(e.target.value)}
                         className="w-full px-3.5 py-2.5 bg-white border-2 border-indigo-300 rounded-xl font-bold text-indigo-950 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden"
                       >

@@ -1275,6 +1275,7 @@ export const storageService = {
         totalAtLoc += l.quantity;
       }
     }
+
     return totalAtLoc;
   },
 
@@ -2628,8 +2629,7 @@ export const storageService = {
     const totalInQty = inTxs.reduce((sum, t) => sum + t.quantity, 0);
     const totalOutQty = outTxs.reduce((sum, t) => sum + t.quantity, 0);
 
-    const activeLocs = this.getPartLocations(part);
-    const defaultPartLoc = activeLocs[0]?.locationName || cleanWarehousePrefix(part.location?.split(',')[0]?.split('(')[0]?.trim()) || 'Kho chính';
+    const defaultPartLoc = (Array.isArray(part.locations) && part.locations[0]?.locationName) || cleanWarehousePrefix(part.location?.split(',')[0]?.split('(')[0]?.trim()) || 'Kho chính';
 
     const rawLots: {
       id: string;
@@ -3686,6 +3686,11 @@ export const storageService = {
   getMaterialCallRequests(): MaterialCallRequest[] {
     const raw = safeGetRaw(MATERIAL_CALLS_KEY);
     if (!raw) {
+      const cached = getLocalCacheData<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS);
+      if (cached && Array.isArray(cached.data) && cached.data.length > 0) {
+        safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(cached.data));
+        return cached.data;
+      }
       safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(INITIAL_MATERIAL_CALLS));
       return INITIAL_MATERIAL_CALLS;
     }
@@ -3712,6 +3717,33 @@ export const storageService = {
       return validItems;
     } catch {
       return INITIAL_MATERIAL_CALLS;
+    }
+  },
+
+  async fetchMaterialCallsFromCloud(forceFetch: boolean = false): Promise<MaterialCallRequest[]> {
+    try {
+      const remoteCalls = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: forceFetch });
+      if (remoteCalls && Array.isArray(remoteCalls) && remoteCalls.length > 0) {
+        const localCalls = this.getMaterialCallRequests();
+        const activeLocal = localCalls.filter((c) => c && (c.status === 'CALLING' || c.status === 'DELIVERING'));
+
+        const map = new Map<string, MaterialCallRequest>();
+        for (const rem of remoteCalls) {
+          if (rem && rem.requestId) map.set(rem.requestId, rem);
+        }
+        for (const act of activeLocal) {
+          if (act && act.requestId) map.set(act.requestId, act);
+        }
+
+        const merged = Array.from(map.values()).sort(
+          (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+        );
+        this.saveMaterialCallRequests(merged);
+        return merged;
+      }
+      return this.getMaterialCallRequests();
+    } catch {
+      return this.getMaterialCallRequests();
     }
   },
 
@@ -4802,6 +4834,9 @@ export const storageService = {
       ];
 
       await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);
+
+      // 1.1 Ensure all material calls (Andon) are synced and smart-merged from Supabase Cloud
+      await this.fetchMaterialCallsFromCloud(forceFetch);
 
       // 2. Data is already written to localStorage by batchSyncAllKeys for all changed keys!
       // Retrieve parts directly from localStorage, fallback to relational table if brand new
