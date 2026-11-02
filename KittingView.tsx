@@ -478,11 +478,13 @@ export const KittingView: React.FC<KittingViewProps> = ({
       if (v.status !== 'ROLLED_BACK' && Array.isArray(v.items)) {
         v.items.forEach((vItem) => {
           const expQty = Number(vItem.exportedQty ?? vItem.totalQtyOut) || 0;
+          const vKittedQty = Number(vItem.kittedQty ?? (vItem as any).kittedQuantity) || 0;
           if (expQty > 0) {
             const groupKey = `${v.voucherCode.trim().toLowerCase()}__${vItem.partCode.trim().toLowerCase()}`;
             const existing = consolidatedMap.get(groupKey);
             if (existing) {
               existing.rawQuantity = Math.max(existing.rawQuantity, expQty);
+              existing.kittedQuantity = Math.max(existing.kittedQuantity || 0, vKittedQty);
               if (vItem.fifoLocation && !existing.sourceBin?.includes(vItem.fifoLocation)) {
                 existing.sourceBin = existing.sourceBin ? `${existing.sourceBin}, ${vItem.fifoLocation}` : vItem.fifoLocation;
               }
@@ -498,7 +500,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                 partName: vItem.partName,
                 unit: vItem.unit || 'Cái',
                 rawQuantity: expQty,
-                kittedQuantity: 0,
+                kittedQuantity: vKittedQty,
                 scrapQuantity: 0,
                 bufferLocation: 'BUFFER-A1-01',
                 status: 'PENDING_KITTING',
@@ -1183,7 +1185,32 @@ export const KittingView: React.FC<KittingViewProps> = ({
         remainingToKitting = 0;
       }
 
-      // Always log scan event for productivity reporting when items are pushed to OUTBUFFER shelf
+      // 1. Sync kitted quantity directly to BomExportVouchers and Supabase Cloud
+      if (targetVoucher && targetVoucher.toUpperCase().startsWith('PXK-')) {
+        const bomVouchers = storageService.getBomExportVouchers();
+        const vIdx = bomVouchers.findIndex(
+          (v) => v.voucherCode.trim().toLowerCase() === targetVoucher.trim().toLowerCase()
+        );
+        if (vIdx >= 0) {
+          const v = bomVouchers[vIdx];
+          if (Array.isArray(v.items)) {
+            const itemIdx = v.items.findIndex(
+              (it) => (it.partCode || '').trim().toLowerCase() === partCode.trim().toLowerCase()
+            );
+            if (itemIdx >= 0) {
+              v.items[itemIdx].kittedQty = (Number(v.items[itemIdx].kittedQty) || 0) + actualQty;
+              const allDone = v.items.every(
+                (it) => (Number(it.kittedQty) || 0) >= (Number(it.exportedQty ?? it.totalQtyOut) || 0)
+              );
+              v.status = allDone ? 'COMPLETED' : 'PARTIAL';
+              v.updatedAt = nowIso;
+              storageService.saveBomExportVouchers(bomVouchers);
+            }
+          }
+        }
+      }
+
+      // 2. Always log scan event for productivity reporting when items are pushed to OUTBUFFER shelf
       storageService.addKittingScanLog({
         partCode,
         partName: partName || partCode,
@@ -1192,6 +1219,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
         timestamp: new Date().toISOString(),
         bufferLocation: finalBuffer,
         operatorName: operator,
+        voucherCode: targetVoucher,
       });
 
       // AUTO GENERATE & SAVE SEPARATE CUSTOM CONTAINER TAG IF QTY / SPEC DIFFERS
