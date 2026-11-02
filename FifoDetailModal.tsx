@@ -17,6 +17,29 @@ export const FifoDetailModal: React.FC<FifoDetailModalProps> = ({ isOpen, onClos
   const activeLots = fifoLots.filter((l) => l.remainingQty > 0);
   const depletedLots = fifoLots.filter((l) => l.remainingQty === 0);
 
+  // Compute total stock across active FIFO lots for 100% display consistency
+  const fifoStockTotal = activeLots.reduce((sum, l) => sum + (l.remainingQty || 0), 0);
+  const effectiveStock = Math.max(part.currentStock || 0, fifoStockTotal);
+
+  // Format location summary from part or fallback to active FIFO shelves
+  const effectiveLocationSummary = (() => {
+    const summary = storageService.formatPartLocationSummary(part);
+    if (summary && summary !== 'Chưa phân vị trí' && summary !== 'Kho chính') {
+      return summary;
+    }
+    if (activeLots.length > 0) {
+      const shelfMap = new Map<string, number>();
+      activeLots.forEach((l) => {
+        const loc = l.locationName || 'Kho chính';
+        shelfMap.set(loc, (shelfMap.get(loc) || 0) + l.remainingQty);
+      });
+      return Array.from(shelfMap.entries())
+        .map(([loc, q]) => `${loc} (${q.toLocaleString('vi-VN')})`)
+        .join(', ');
+    }
+    return summary || 'Chưa phân vị trí';
+  })();
+
   return (
     <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
       <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
@@ -53,9 +76,9 @@ export const FifoDetailModal: React.FC<FifoDetailModalProps> = ({ isOpen, onClos
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
               <span className="text-[11px] font-bold text-slate-500 uppercase">Tồn kho hiện tại</span>
               <p className="text-xl font-black text-slate-900 mt-0.5">
-                {part.currentStock.toLocaleString('vi-VN')} <span className="text-xs text-slate-500">{part.unit}</span>
+                {effectiveStock.toLocaleString('vi-VN')} <span className="text-xs text-slate-500">{part.unit}</span>
               </p>
-              <p className="text-[10px] text-slate-500 mt-1">Vị trí: <strong>{storageService.formatPartLocationSummary(part)}</strong></p>
+              <p className="text-[10px] text-slate-500 mt-1">Vị trí: <strong>{effectiveLocationSummary}</strong></p>
             </div>
 
             <div className="p-3.5 bg-amber-50 border-2 border-amber-300 rounded-xl sm:col-span-2">

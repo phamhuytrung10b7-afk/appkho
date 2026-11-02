@@ -232,6 +232,25 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       return;
     }
 
+    // Material calls: filter incoming items against deleted call IDs and store directly so deleted items are NEVER resurrected
+    if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
+      let deletedSet = new Set<string>();
+      try {
+        const rawDel = localStorage.getItem('thekho_deleted_call_ids_v1');
+        if (rawDel) {
+          const decomp = decompressStorageValue(rawDel) || rawDel;
+          const parsed = JSON.parse(decomp);
+          if (Array.isArray(parsed)) deletedSet = new Set(parsed);
+        }
+      } catch (_) {}
+
+      const incoming = (data as any[]).filter((inc) => inc && inc.requestId && !deletedSet.has(inc.requestId));
+      const jsonStr = JSON.stringify(incoming);
+      localStorage.setItem(key, compressStorageValue(jsonStr));
+      localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
+      return;
+    }
+
     const jsonStr = JSON.stringify(data);
     localStorage.setItem(key, compressStorageValue(jsonStr));
     localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
@@ -368,8 +387,9 @@ export const supabaseKeyStore = {
   /**
    * Batch Smart Sync: Checks timestamps for multiple keys in a single lightweight query (~200 Bytes),
    * and only downloads the specific keys that have actually changed on Cloud!
+   * When forceFetch is true (e.g. user clicks "Đồng bộ Supabase"), downloads 100% fresh data from Cloud.
    */
-  async batchSyncAllKeys(keys: string[]): Promise<{ updatedCount: number; cachedCount: number }> {
+  async batchSyncAllKeys(keys: string[], forceFetch: boolean = false): Promise<{ updatedCount: number; cachedCount: number }> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client || keys.length === 0) {
@@ -395,7 +415,7 @@ export const supabaseKeyStore = {
         const serverTs = String(row.updated_at || '');
         const local = getLocalCacheData(key);
 
-        if (local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
+        if (!forceFetch && local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
           cachedCount++;
           egressStats.cacheHits++;
           egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;
@@ -837,7 +857,8 @@ export async function batchExecuteNgTransaction({
   const rawParts = localStorage.getItem(STORAGE_KEYS.PARTS) || localStorage.getItem('thekho_parts_v1');
   let currentParts: Part[] = [];
   try {
-    currentParts = rawParts ? JSON.parse(rawParts) : [];
+    const decompressed = decompressStorageValue(rawParts);
+    currentParts = decompressed ? JSON.parse(decompressed) : [];
   } catch {
     currentParts = [];
   }

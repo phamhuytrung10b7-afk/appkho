@@ -46,6 +46,8 @@ interface AndonCallViewProps {
   settings: AppSettings;
   onRefresh: () => void;
   onNavigateToSettings?: () => void;
+  onNavigateTab?: (tab: ViewTab) => void;
+  onSyncCloud?: () => Promise<void>;
   viewMode?: ViewTab;
 }
 
@@ -56,6 +58,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   settings,
   onRefresh,
   onNavigateToSettings,
+  onNavigateTab,
+  onSyncCloud,
   viewMode,
 }) => {
   const getInitialTab = (): 'request' | 'calling' | 'delivering' | 'history' => {
@@ -67,6 +71,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   };
 
   const [activeTab, setActiveTab] = useState<'request' | 'calling' | 'delivering' | 'history'>(getInitialTab);
+  const [isPullingCloud, setIsPullingCloud] = useState(false);
 
   useEffect(() => {
     if (viewMode === 'andon_request') setActiveTab('request');
@@ -75,8 +80,50 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     else if (viewMode === 'andon_history') setActiveTab('history');
   }, [viewMode]);
 
+  const effectiveTab = React.useMemo(() => {
+    if (viewMode === 'andon_request' || viewMode === 'andon') return 'request';
+    if (viewMode === 'andon_calling') return 'calling';
+    if (viewMode === 'andon_delivering') return 'delivering';
+    if (viewMode === 'andon_history') return 'history';
+    return activeTab;
+  }, [viewMode, activeTab]);
+
+  const handleTabClick = (tab: 'request' | 'calling' | 'delivering' | 'history') => {
+    setActiveTab(tab);
+    if (onNavigateTab) {
+      if (tab === 'request') onNavigateTab('andon_request');
+      else if (tab === 'calling') onNavigateTab('andon_calling');
+      else if (tab === 'delivering') onNavigateTab('andon_delivering');
+      else if (tab === 'history') onNavigateTab('andon_history');
+    }
+  };
+
+  const handleSyncFromCloud = async () => {
+    try {
+      setIsPullingCloud(true);
+      await storageService.fetchMaterialCallsFromCloud(true);
+      onRefresh();
+      if (onSyncCloud) {
+        await onSyncCloud();
+      }
+      setMessage({
+        type: 'success',
+        text: '☁️ Đã kéo thành công toàn bộ dữ liệu đơn gọi hàng từ Supabase Cloud!',
+      });
+    } catch (err: any) {
+      setMessage({
+        type: 'error',
+        text: `Lỗi kéo dữ liệu từ Supabase: ${err?.message || 'Không thể kết nối'}`,
+      });
+    } finally {
+      setIsPullingCloud(false);
+    }
+  };
+
   // Master parts list
-  const allParts = parts && parts.length > 0 ? parts : storageService.getParts();
+  const allParts = React.useMemo(() => {
+    return parts && parts.length > 0 ? parts : storageService.getParts();
+  }, [parts]);
 
   // Assembly lines list from Settings
   const assemblyLinesList = (settings.assemblyLines && settings.assemblyLines.length > 0)
@@ -588,8 +635,11 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
   const handleStartDelivery = (requestId: string) => {
     try {
-      storageService.updateMaterialCallStatus(requestId, 'DELIVERING', delivererName);
-      setMessage({ type: 'success', text: 'Đã nhận đơn và chuyển sang trạng thái Đang Vận Chuyển Delivery!' });
+      const updated = storageService.updateMaterialCallStatus(requestId, 'DELIVERING', delivererName);
+      setMessage({
+        type: 'success',
+        text: `🚚 Đã nhận đơn giao [${updated.partCode}] (${updated.requestedQty.toLocaleString('vi-VN')} ${updated.unit}) thành công! Đơn hàng đã chuyển sang mục "Đang trên đường vận chuyển".`,
+      });
       onRefresh();
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
@@ -598,8 +648,11 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
   const handleCompleteDelivery = (requestId: string) => {
     try {
-      storageService.updateMaterialCallStatus(requestId, 'COMPLETED', delivererName);
-      setMessage({ type: 'success', text: '🎉 Xác nhận Giao Hàng Thành Công! Đã trừ tồn kệ Buffer và hoàn tất đơn.' });
+      const updated = storageService.updateMaterialCallStatus(requestId, 'COMPLETED', delivererName);
+      setMessage({
+        type: 'success',
+        text: `🎉 Xác nhận Giao Hàng Thành Công đơn [${updated.partCode}]! Đã trừ tồn và hoàn tất đơn.`,
+      });
       onRefresh();
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
@@ -628,6 +681,22 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
+  const handleAdminClearAllCalling = () => {
+    if (!window.confirm(`ADMIN XÁC NHẬN: Bạn có chắc chắn muốn XÓA TẤT CẢ ${callingReqs.length} đơn yêu cầu đang gọi này không? Tất cả các đơn này sẽ bị xóa vĩnh viễn và không bao giờ tái xuất hiện khi đồng bộ Supabase Cloud!`)) {
+      return;
+    }
+    try {
+      storageService.clearAllCallingRequests();
+      setMessage({
+        type: 'success',
+        text: `🗑️ [ADMIN] Đã xóa vĩnh viễn tất cả ${callingReqs.length} đơn đang gọi thành công!`,
+      });
+      onRefresh();
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || 'Lỗi khi xóa tất cả đơn' });
+    }
+  };
+
   const handleAdminRollbackRequest = (requestId: string, targetStatus: 'CALLING' | 'DELIVERING') => {
     const statusLabel = targetStatus === 'CALLING' ? '1. ĐANG GỌI HÀNG' : '2. ĐANG VẬN CHUYỂN';
     if (!window.confirm(`ADMIN XÁC NHẬN: Bạn có muốn ROLLBACK đơn này về trạng thái [${statusLabel}] không?`)) {
@@ -646,20 +715,28 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   };
 
   // Priority sorting: Sort by requiredTime (earliest needed time first), fallback to requestedAt
-  const callingReqs = materialCalls
-    .filter((m) => m.status === 'CALLING')
-    .sort((a, b) => {
-      if (a.requiredTime && b.requiredTime) {
-        return a.requiredTime.localeCompare(b.requiredTime);
-      }
-      if (a.requiredTime) return -1;
-      if (b.requiredTime) return 1;
-      return new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime();
-    });
-  const deliveringReqs = materialCalls.filter((m) => m.status === 'DELIVERING');
-  const completedReqs = materialCalls
-    .filter((m) => m.status === 'COMPLETED')
-    .sort((a, b) => new Date(b.deliveredAt || b.requestedAt).getTime() - new Date(a.deliveredAt || a.requestedAt).getTime());
+  const callingReqs = React.useMemo(() => {
+    return materialCalls
+      .filter((m) => m.status === 'CALLING')
+      .sort((a, b) => {
+        if (a.requiredTime && b.requiredTime) {
+          return a.requiredTime.localeCompare(b.requiredTime);
+        }
+        if (a.requiredTime) return -1;
+        if (b.requiredTime) return 1;
+        return new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime();
+      });
+  }, [materialCalls]);
+
+  const deliveringReqs = React.useMemo(() => {
+    return materialCalls.filter((m) => m.status === 'DELIVERING');
+  }, [materialCalls]);
+
+  const completedReqs = React.useMemo(() => {
+    return materialCalls
+      .filter((m) => m.status === 'COMPLETED')
+      .sort((a, b) => new Date(b.deliveredAt || b.requestedAt).getTime() - new Date(a.deliveredAt || a.requestedAt).getTime());
+  }, [materialCalls]);
 
   // Date Filtering State for Tab 4 (Lịch sử giao cấp hàng) - Defaults to Today
   const getTodayStr = () => {
@@ -679,14 +756,21 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     return `${year}-${month}-${day}`;
   };
 
-  const [historyStartDate, setHistoryStartDate] = useState<string>(getTodayStr);
+  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'all' | 'custom'>('35days');
+
+  const [historyStartDate, setHistoryStartDate] = useState<string>(() => getDaysAgoStr(34));
+
   const [historyEndDate, setHistoryEndDate] = useState<string>(getTodayStr);
-  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'custom'>('today');
   const [historySearchQuery, setHistorySearchQuery] = useState('');
 
-  const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days') => {
+  const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days' | 'all') => {
     setHistoryPreset(preset);
     const today = getTodayStr();
+    if (preset === 'all') {
+      setHistoryStartDate('');
+      setHistoryEndDate('');
+      return;
+    }
     setHistoryEndDate(today);
     if (preset === 'today') {
       setHistoryStartDate(today);
@@ -699,40 +783,59 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
-  // Filter completed delivery records
-  const filteredCompletedReqs = completedReqs.filter((item) => {
-    const timeStr = item.deliveredAt || item.requestedAt;
-    if (timeStr) {
-      const itemDate = new Date(timeStr);
-      if (!isNaN(itemDate.getTime())) {
-        if (historyStartDate) {
-          const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
-          const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
-          if (itemDate.getTime() < start.getTime()) return false;
-        }
-        if (historyEndDate) {
-          const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
-          const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
-          if (itemDate.getTime() > end.getTime()) return false;
-        }
+  // Auto-switch to 35days preset if today has 0 records but history exists
+  useEffect(() => {
+    if (historyPreset === 'today' && completedReqs.length > 0) {
+      const today = getTodayStr();
+      const hasToday = completedReqs.some((item) => {
+        const d = (item.deliveredAt || item.requestedAt || '').substring(0, 10);
+        return d === today;
+      });
+      if (!hasToday) {
+        setHistoryPreset('35days');
+        setHistoryStartDate(getDaysAgoStr(34));
       }
     }
+  }, [completedReqs.length]);
 
-    if (historySearchQuery.trim()) {
-      const q = historySearchQuery.toLowerCase().trim();
-      const match =
-        item.partCode.toLowerCase().includes(q) ||
-        item.partName.toLowerCase().includes(q) ||
-        item.assemblyLine.toLowerCase().includes(q) ||
-        (item.requestedBy && item.requestedBy.toLowerCase().includes(q)) ||
-        (item.deliveredBy && item.deliveredBy.toLowerCase().includes(q)) ||
-        (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
-      if (!match) return false;
-    }
-    return true;
-  });
+  // Filter completed delivery records
+  const filteredCompletedReqs = React.useMemo(() => {
+    return completedReqs.filter((item) => {
+      const timeStr = item.deliveredAt || item.requestedAt;
+      if (timeStr) {
+        const itemDate = new Date(timeStr);
+        if (!isNaN(itemDate.getTime())) {
+          if (historyStartDate) {
+            const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
+            const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
+            if (itemDate.getTime() < start.getTime()) return false;
+          }
+          if (historyEndDate) {
+            const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
+            const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+            if (itemDate.getTime() > end.getTime()) return false;
+          }
+        }
+      }
 
-  const totalFilteredDeliveredQty = filteredCompletedReqs.reduce((sum, r) => sum + (r.requestedQty || 0), 0);
+      if (historySearchQuery.trim()) {
+        const q = historySearchQuery.toLowerCase().trim();
+        const match =
+          item.partCode.toLowerCase().includes(q) ||
+          item.partName.toLowerCase().includes(q) ||
+          item.assemblyLine.toLowerCase().includes(q) ||
+          (item.requestedBy && item.requestedBy.toLowerCase().includes(q)) ||
+          (item.deliveredBy && item.deliveredBy.toLowerCase().includes(q)) ||
+          (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [completedReqs, historyStartDate, historyEndDate, historySearchQuery]);
+
+  const totalFilteredDeliveredQty = React.useMemo(() => {
+    return filteredCompletedReqs.reduce((sum, r) => sum + (r.requestedQty || 0), 0);
+  }, [filteredCompletedReqs]);
 
   const formatVietnamDateTime = (isoString: string) => {
     if (!isoString) return 'Chưa ghi nhận';
@@ -792,14 +895,25 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <div className="bg-white/10 backdrop-blur-md border border-white/20 p-4 rounded-2xl flex items-center space-x-3">
-              <div className="p-2.5 bg-amber-400 text-amber-950 rounded-xl font-black">
-                <BellRing className="w-6 h-6 animate-bounce" />
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={handleSyncFromCloud}
+              disabled={isPullingCloud}
+              className="px-4 py-2.5 bg-white/20 hover:bg-white/30 active:scale-95 text-white font-extrabold rounded-2xl border border-white/30 shadow-xs transition-all cursor-pointer flex items-center space-x-2 text-xs"
+              title="Kéo toàn bộ 256 đơn hàng và lịch sử từ Supabase Cloud"
+            >
+              <RotateCcw className={`w-4 h-4 ${isPullingCloud ? 'animate-spin' : ''}`} />
+              <span>{isPullingCloud ? 'Đang kéo Supabase...' : 'Kéo Đơn Từ Supabase Cloud'}</span>
+            </button>
+
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3 sm:p-4 rounded-2xl flex items-center space-x-3">
+              <div className="p-2 sm:p-2.5 bg-amber-400 text-amber-950 rounded-xl font-black">
+                <BellRing className="w-5 h-5 sm:w-6 sm:h-6 animate-bounce" />
               </div>
               <div>
                 <span className="text-[10px] text-amber-200 font-bold uppercase block">Tín Hiệu Đang Gọi</span>
-                <span className="text-2xl font-black text-white">{callingReqs.length} Yêu Cầu</span>
+                <span className="text-xl sm:text-2xl font-black text-white">{callingReqs.length} Yêu Cầu</span>
               </div>
             </div>
           </div>
@@ -827,78 +941,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
       {/* Main Container */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden">
-        {/* Main Tabs Header - Only shown if not in specific single tab view */}
-        {!isSpecificTab && (
-          <div className="flex border-b border-slate-200 bg-slate-50 p-2 gap-2 overflow-x-auto">
-          <button
-            type="button"
-            onClick={() => setActiveTab('request')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'request'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <Send className="w-4 h-4" />
-            <span>1. SẢN XUẤT GỌI HÀNG (ANDON)</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('calling')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'calling'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <BellRing className="w-4 h-4" />
-            <span>2. ĐƠN YÊU CẦU ĐANG GỌI</span>
-            {callingReqs.length > 0 && (
-              <span className="px-2 py-0.5 text-[10px] bg-red-500 text-white font-black rounded-full animate-pulse">
-                {callingReqs.length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('delivering')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'delivering'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <Truck className="w-4 h-4" />
-            <span>3. ĐANG VẬN CHUYỂN</span>
-            {deliveringReqs.length > 0 && (
-              <span className="px-2 py-0.5 text-[10px] bg-blue-600 text-white font-black rounded-full">
-                {deliveringReqs.length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('history')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'history'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <Clock className="w-4 h-4" />
-            <span>4. LỊCH SỬ GIAO CẤP HÀNG</span>
-            <span className="px-2 py-0.5 text-[10px] bg-amber-100 text-amber-900 font-bold rounded-full">
-              {completedReqs.length}
-            </span>
-          </button>
-        </div>
-        )}
-
-        {/* TAB 1: CALLING REQUESTS (ĐƠN YÊU CẦU ĐANG GỌI) */}
-        {activeTab === 'calling' && (
+        {/* SECTION: ĐƠN YÊU CẦU ĐANG GỌI */}
+        {effectiveTab === 'calling' && (
           <div className="p-4 sm:p-6 space-y-6">
             {/* Active Delivering Staff Picker */}
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex flex-wrap items-center justify-between gap-3">
@@ -944,9 +988,22 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     * Tự động ưu tiên FIFO: Yêu cầu gọi trước xếp trên cùng để xử lý cấp hàng trước
                   </p>
                 </div>
-                <span className="text-xs font-bold text-red-600 bg-red-50 px-2.5 py-0.5 rounded-full border border-red-200 self-start sm:self-auto">
-                  {callingReqs.length} Đơn
-                </span>
+                <div className="flex items-center space-x-2 self-start sm:self-auto">
+                  {isAdmin && callingReqs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleAdminClearAllCalling}
+                      className="px-3 py-1 bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs rounded-xl shadow-2xs transition-all cursor-pointer flex items-center space-x-1"
+                      title="Admin: Dọn sạch vĩnh viễn toàn bộ đơn đang gọi rác/thử nghiệm"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Xóa Tất Cả ({callingReqs.length} Đơn)</span>
+                    </button>
+                  )}
+                  <span className="text-xs font-bold text-red-600 bg-red-50 px-2.5 py-0.5 rounded-full border border-red-200">
+                    {callingReqs.length} Đơn
+                  </span>
+                </div>
               </div>
 
               {callingReqs.length === 0 ? (
@@ -1115,8 +1172,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 2: IN-TRANSIT DELIVERIES (ĐANG TRÊN ĐƯỜNG VẬN CHUYỂN) */}
-        {activeTab === 'delivering' && (
+        {/* SECTION: ĐANG TRÊN ĐƯỜNG VẬN CHUYỂN */}
+        {effectiveTab === 'delivering' && (
           <div className="p-4 sm:p-6 space-y-6">
             <div className="flex items-center justify-between border-b border-slate-200 pb-2">
               <div>
@@ -1243,8 +1300,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 2: CREATE ANDON CALL REQUEST */}
-        {activeTab === 'request' && (
+        {/* SECTION: SẢN XUẤT GỌI HÀNG (ANDON) */}
+        {effectiveTab === 'request' && (
           <div className="p-2 sm:p-6 max-w-2xl mx-auto space-y-4 w-full min-w-0">
             <div className="p-3.5 sm:p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center space-x-3 text-amber-900">
               <Zap className="w-5 h-5 sm:w-6 sm:h-6 text-amber-600 shrink-0" />
@@ -1639,8 +1696,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 4: CALL HISTORY - ONLY COMPLETED DELIVERIES WITH DATE FILTER & 35-DAY RETENTION */}
-        {activeTab === 'history' && (
+        {/* SECTION: LỊCH SỬ GIAO CẤP HÀNG */}
+        {effectiveTab === 'history' && (
           <div className="p-4 sm:p-6 space-y-5">
             {/* Filter Toolbar */}
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
@@ -1703,7 +1760,28 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
                     }`}
                   >
-                    Toàn bộ (35 ngày)
+                    35 ngày ({completedReqs.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyHistoryPreset('all')}
+                    className={`px-3 py-1.5 rounded-xl font-bold text-xs cursor-pointer transition-all ${
+                      historyPreset === 'all'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    Tất cả ({completedReqs.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSyncFromCloud}
+                    disabled={isPullingCloud}
+                    className="px-3 py-1.5 rounded-xl font-bold text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer flex items-center space-x-1 transition-all"
+                    title="Kéo lại toàn bộ lịch sử đơn từ Supabase Cloud"
+                  >
+                    <RotateCcw className={`w-3.5 h-3.5 ${isPullingCloud ? 'animate-spin text-blue-600' : ''}`} />
+                    <span>Kéo Từ Supabase</span>
                   </button>
                 </div>
               </div>

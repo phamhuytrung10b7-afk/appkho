@@ -20,9 +20,12 @@ export const defaultPrintConfigs: AllPrintConfigs = {
   '100x75': { pageWidth: 100, pageHeight: 75, qrSize: 36, nameFontSize: 34, codeFontSize: 12, metaFontSize: 11, padding: 3 },
 };
 
+import { decompressStorageValue } from './storageCompression';
+
 export function getSavedPrintConfigs(): AllPrintConfigs {
   try {
-    const saved = localStorage.getItem('printConfigs');
+    const raw = localStorage.getItem('printConfigs');
+    const saved = decompressStorageValue(raw);
     if (saved) {
       const parsed = JSON.parse(saved);
       const res: AllPrintConfigs = {
@@ -39,11 +42,15 @@ export function getSavedPrintConfigs(): AllPrintConfigs {
       return res;
     }
   } catch (e) {
-    console.error(e);
+    console.warn('[printConfig] Notice: parsing printConfigs failed, fallback to defaults:', e);
   }
   return defaultPrintConfigs;
 }
 
 export function savePrintConfigs(configs: AllPrintConfigs) {
-  localStorage.setItem('printConfigs', JSON.stringify(configs));
+  try {
+    localStorage.setItem('printConfigs', JSON.stringify(configs));
+  } catch (e) {
+    console.warn('[printConfig] Could not save printConfigs to localStorage:', e);
+  }
 }
