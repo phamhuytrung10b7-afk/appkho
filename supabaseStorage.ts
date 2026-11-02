@@ -232,19 +232,18 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       return;
     }
 
-    // Material calls: preserve local active calls (CALLING / DELIVERING) during cloud pulls so in-flight orders are never lost
+    // Material calls: merge incoming items over existing localStorage items so status updates (e.g. CALLING -> DELIVERING) are immediately saved
     if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
       const incoming = data as any[];
       const local = getLocalCacheData<any[]>(key);
-      const activeLocal = (local.data || []).filter(
-        (c) => c && (c.status === 'CALLING' || c.status === 'DELIVERING')
-      );
       const map = new Map<string, any>();
+      if (local && Array.isArray(local.data)) {
+        for (const loc of local.data) {
+          if (loc && loc.requestId) map.set(loc.requestId, loc);
+        }
+      }
       for (const inc of incoming) {
         if (inc && inc.requestId) map.set(inc.requestId, inc);
-      }
-      for (const act of activeLocal) {
-        if (act && act.requestId) map.set(act.requestId, act);
       }
       const merged = Array.from(map.values()).sort(
         (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()

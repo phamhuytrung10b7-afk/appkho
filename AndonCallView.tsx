@@ -80,6 +80,14 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     else if (viewMode === 'andon_history') setActiveTab('history');
   }, [viewMode]);
 
+  const effectiveTab = React.useMemo(() => {
+    if (viewMode === 'andon_request' || viewMode === 'andon') return 'request';
+    if (viewMode === 'andon_calling') return 'calling';
+    if (viewMode === 'andon_delivering') return 'delivering';
+    if (viewMode === 'andon_history') return 'history';
+    return activeTab;
+  }, [viewMode, activeTab]);
+
   const handleTabClick = (tab: 'request' | 'calling' | 'delivering' | 'history') => {
     setActiveTab(tab);
     if (onNavigateTab) {
@@ -113,7 +121,9 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   };
 
   // Master parts list
-  const allParts = parts && parts.length > 0 ? parts : storageService.getParts();
+  const allParts = React.useMemo(() => {
+    return parts && parts.length > 0 ? parts : storageService.getParts();
+  }, [parts]);
 
   // Assembly lines list from Settings
   const assemblyLinesList = (settings.assemblyLines && settings.assemblyLines.length > 0)
@@ -628,15 +638,9 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       const updated = storageService.updateMaterialCallStatus(requestId, 'DELIVERING', delivererName);
       setMessage({
         type: 'success',
-        text: `🚚 Đã nhận đơn giao [${updated.partCode}] (${updated.requestedQty.toLocaleString('vi-VN')} ${updated.unit}) thành công! Đơn hàng đã chuyển sang mục "3. Đang Trên Đường Vận Chuyển".`,
+        text: `🚚 Đã nhận đơn giao [${updated.partCode}] (${updated.requestedQty.toLocaleString('vi-VN')} ${updated.unit}) thành công! Đơn hàng đã chuyển sang mục "Đang trên đường vận chuyển".`,
       });
       onRefresh();
-      // Auto-navigate to delivering tab so user can trace the order immediately
-      if (onNavigateTab && viewMode === 'andon_calling') {
-        onNavigateTab('andon_delivering');
-      } else {
-        setActiveTab('delivering');
-      }
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     }
@@ -647,15 +651,9 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       const updated = storageService.updateMaterialCallStatus(requestId, 'COMPLETED', delivererName);
       setMessage({
         type: 'success',
-        text: `🎉 Xác nhận Giao Hàng Thành Công đơn [${updated.partCode}]! Đã trừ tồn và hoàn tất đơn, lưu trong "4. Lịch Sử Giao Cấp Hàng".`,
+        text: `🎉 Xác nhận Giao Hàng Thành Công đơn [${updated.partCode}]! Đã trừ tồn và hoàn tất đơn.`,
       });
       onRefresh();
-      // Auto-navigate to history tab so user sees the completed record
-      if (onNavigateTab && viewMode === 'andon_delivering') {
-        onNavigateTab('andon_history');
-      } else {
-        setActiveTab('history');
-      }
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     }
@@ -701,20 +699,28 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   };
 
   // Priority sorting: Sort by requiredTime (earliest needed time first), fallback to requestedAt
-  const callingReqs = materialCalls
-    .filter((m) => m.status === 'CALLING')
-    .sort((a, b) => {
-      if (a.requiredTime && b.requiredTime) {
-        return a.requiredTime.localeCompare(b.requiredTime);
-      }
-      if (a.requiredTime) return -1;
-      if (b.requiredTime) return 1;
-      return new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime();
-    });
-  const deliveringReqs = materialCalls.filter((m) => m.status === 'DELIVERING');
-  const completedReqs = materialCalls
-    .filter((m) => m.status === 'COMPLETED')
-    .sort((a, b) => new Date(b.deliveredAt || b.requestedAt).getTime() - new Date(a.deliveredAt || a.requestedAt).getTime());
+  const callingReqs = React.useMemo(() => {
+    return materialCalls
+      .filter((m) => m.status === 'CALLING')
+      .sort((a, b) => {
+        if (a.requiredTime && b.requiredTime) {
+          return a.requiredTime.localeCompare(b.requiredTime);
+        }
+        if (a.requiredTime) return -1;
+        if (b.requiredTime) return 1;
+        return new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime();
+      });
+  }, [materialCalls]);
+
+  const deliveringReqs = React.useMemo(() => {
+    return materialCalls.filter((m) => m.status === 'DELIVERING');
+  }, [materialCalls]);
+
+  const completedReqs = React.useMemo(() => {
+    return materialCalls
+      .filter((m) => m.status === 'COMPLETED')
+      .sort((a, b) => new Date(b.deliveredAt || b.requestedAt).getTime() - new Date(a.deliveredAt || a.requestedAt).getTime());
+  }, [materialCalls]);
 
   // Date Filtering State for Tab 4 (Lịch sử giao cấp hàng) - Defaults to Today
   const getTodayStr = () => {
@@ -777,39 +783,43 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   }, [completedReqs.length]);
 
   // Filter completed delivery records
-  const filteredCompletedReqs = completedReqs.filter((item) => {
-    const timeStr = item.deliveredAt || item.requestedAt;
-    if (timeStr) {
-      const itemDate = new Date(timeStr);
-      if (!isNaN(itemDate.getTime())) {
-        if (historyStartDate) {
-          const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
-          const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
-          if (itemDate.getTime() < start.getTime()) return false;
-        }
-        if (historyEndDate) {
-          const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
-          const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
-          if (itemDate.getTime() > end.getTime()) return false;
+  const filteredCompletedReqs = React.useMemo(() => {
+    return completedReqs.filter((item) => {
+      const timeStr = item.deliveredAt || item.requestedAt;
+      if (timeStr) {
+        const itemDate = new Date(timeStr);
+        if (!isNaN(itemDate.getTime())) {
+          if (historyStartDate) {
+            const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
+            const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
+            if (itemDate.getTime() < start.getTime()) return false;
+          }
+          if (historyEndDate) {
+            const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
+            const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+            if (itemDate.getTime() > end.getTime()) return false;
+          }
         }
       }
-    }
 
-    if (historySearchQuery.trim()) {
-      const q = historySearchQuery.toLowerCase().trim();
-      const match =
-        item.partCode.toLowerCase().includes(q) ||
-        item.partName.toLowerCase().includes(q) ||
-        item.assemblyLine.toLowerCase().includes(q) ||
-        (item.requestedBy && item.requestedBy.toLowerCase().includes(q)) ||
-        (item.deliveredBy && item.deliveredBy.toLowerCase().includes(q)) ||
-        (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
-      if (!match) return false;
-    }
-    return true;
-  });
+      if (historySearchQuery.trim()) {
+        const q = historySearchQuery.toLowerCase().trim();
+        const match =
+          item.partCode.toLowerCase().includes(q) ||
+          item.partName.toLowerCase().includes(q) ||
+          item.assemblyLine.toLowerCase().includes(q) ||
+          (item.requestedBy && item.requestedBy.toLowerCase().includes(q)) ||
+          (item.deliveredBy && item.deliveredBy.toLowerCase().includes(q)) ||
+          (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [completedReqs, historyStartDate, historyEndDate, historySearchQuery]);
 
-  const totalFilteredDeliveredQty = filteredCompletedReqs.reduce((sum, r) => sum + (r.requestedQty || 0), 0);
+  const totalFilteredDeliveredQty = React.useMemo(() => {
+    return filteredCompletedReqs.reduce((sum, r) => sum + (r.requestedQty || 0), 0);
+  }, [filteredCompletedReqs]);
 
   const formatVietnamDateTime = (isoString: string) => {
     if (!isoString) return 'Chưa ghi nhận';
@@ -915,76 +925,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
       {/* Main Container */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden">
-        {/* Main Tabs Header - Always shown for smooth instant switching */}
-        <div className="flex border-b border-slate-200 bg-slate-50 p-2 gap-2 overflow-x-auto">
-          <button
-            type="button"
-            onClick={() => handleTabClick('request')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'request'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <Send className="w-4 h-4" />
-            <span>1. SẢN XUẤT GỌI HÀNG (ANDON)</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabClick('calling')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'calling'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <BellRing className="w-4 h-4" />
-            <span>2. ĐƠN YÊU CẦU ĐANG GỌI</span>
-            {callingReqs.length > 0 && (
-              <span className="px-2 py-0.5 text-[10px] bg-red-500 text-white font-black rounded-full animate-pulse">
-                {callingReqs.length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabClick('delivering')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'delivering'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <Truck className="w-4 h-4" />
-            <span>3. ĐANG VẬN CHUYỂN</span>
-            {deliveringReqs.length > 0 && (
-              <span className="px-2 py-0.5 text-[10px] bg-blue-600 text-white font-black rounded-full">
-                {deliveringReqs.length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabClick('history')}
-            className={`py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center space-x-2 shrink-0 cursor-pointer ${
-              activeTab === 'history'
-                ? 'bg-amber-600 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <Clock className="w-4 h-4" />
-            <span>4. LỊCH SỬ GIAO CẤP HÀNG</span>
-            <span className="px-2 py-0.5 text-[10px] bg-amber-100 text-amber-900 font-bold rounded-full">
-              {completedReqs.length}
-            </span>
-          </button>
-        </div>
-
-        {/* TAB 1: CALLING REQUESTS (ĐƠN YÊU CẦU ĐANG GỌI) */}
-        {activeTab === 'calling' && (
+        {/* SECTION: ĐƠN YÊU CẦU ĐANG GỌI */}
+        {effectiveTab === 'calling' && (
           <div className="p-4 sm:p-6 space-y-6">
             {/* Active Delivering Staff Picker */}
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex flex-wrap items-center justify-between gap-3">
@@ -1201,8 +1143,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 2: IN-TRANSIT DELIVERIES (ĐANG TRÊN ĐƯỜNG VẬN CHUYỂN) */}
-        {activeTab === 'delivering' && (
+        {/* SECTION: ĐANG TRÊN ĐƯỜNG VẬN CHUYỂN */}
+        {effectiveTab === 'delivering' && (
           <div className="p-4 sm:p-6 space-y-6">
             <div className="flex items-center justify-between border-b border-slate-200 pb-2">
               <div>
@@ -1329,8 +1271,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 2: CREATE ANDON CALL REQUEST */}
-        {activeTab === 'request' && (
+        {/* SECTION: SẢN XUẤT GỌI HÀNG (ANDON) */}
+        {effectiveTab === 'request' && (
           <div className="p-2 sm:p-6 max-w-2xl mx-auto space-y-4 w-full min-w-0">
             <div className="p-3.5 sm:p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center space-x-3 text-amber-900">
               <Zap className="w-5 h-5 sm:w-6 sm:h-6 text-amber-600 shrink-0" />
@@ -1725,8 +1667,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           </div>
         )}
 
-        {/* TAB 4: CALL HISTORY - ONLY COMPLETED DELIVERIES WITH DATE FILTER & 35-DAY RETENTION */}
-        {activeTab === 'history' && (
+        {/* SECTION: LỊCH SỬ GIAO CẤP HÀNG */}
+        {effectiveTab === 'history' && (
           <div className="p-4 sm:p-6 space-y-5">
             {/* Filter Toolbar */}
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
