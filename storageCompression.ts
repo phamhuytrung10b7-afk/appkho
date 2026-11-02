@@ -39,10 +39,9 @@ export function decompressStorageValue(val: string | null): string | null {
       if (decompressed !== null && decompressed !== undefined) {
         return decompressed;
       }
-      return null;
     } catch (err) {
-      console.warn('[StorageCompression] Lỗi giải nén dữ liệu LZ16, fallback null:', err);
-      return null;
+      console.warn('[StorageCompression] Lỗi giải nén dữ liệu, fallback chuỗi thô:', err);
+      return val;
     }
   }
   return val;
@@ -78,7 +77,6 @@ export function optimizeAllExistingLocalStorage(): {
       'thekho_supabase_url',
       'thekho_supabase_anon_key',
       'thekho_current_user_v1',
-      'printConfigs',
     ]);
 
     const allKeys: string[] = [];

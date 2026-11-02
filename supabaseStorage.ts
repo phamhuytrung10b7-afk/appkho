@@ -232,46 +232,6 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       return;
     }
 
-    // Material calls: merge incoming items over existing localStorage items so status updates (e.g. CALLING -> DELIVERING -> COMPLETED) are immediately saved and never reverted
-    if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
-      const incoming = data as any[];
-      const local = getLocalCacheData<any[]>(key);
-      const map = new Map<string, any>();
-      if (local && Array.isArray(local.data)) {
-        for (const loc of local.data) {
-          if (loc && loc.requestId) map.set(loc.requestId, loc);
-        }
-      }
-      const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
-      for (const inc of incoming) {
-        if (inc && inc.requestId) {
-          const existing = map.get(inc.requestId);
-          if (existing) {
-            const wExisting = statusWeights[existing.status] || 0;
-            const wInc = statusWeights[inc.status] || 0;
-            const finalStatus = wInc >= wExisting ? inc.status : existing.status;
-            map.set(inc.requestId, {
-              ...existing,
-              ...inc,
-              status: finalStatus,
-              deliveredBy: inc.deliveredBy || existing.deliveredBy,
-              deliveredAt: inc.deliveredAt || existing.deliveredAt,
-              isStockDeducted: Boolean(inc.isStockDeducted || existing.isStockDeducted),
-            });
-          } else {
-            map.set(inc.requestId, inc);
-          }
-        }
-      }
-      const merged = Array.from(map.values()).sort(
-        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
-      );
-      const jsonStr = JSON.stringify(merged);
-      localStorage.setItem(key, compressStorageValue(jsonStr));
-      localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
-      return;
-    }
-
     const jsonStr = JSON.stringify(data);
     localStorage.setItem(key, compressStorageValue(jsonStr));
     localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
@@ -408,9 +368,8 @@ export const supabaseKeyStore = {
   /**
    * Batch Smart Sync: Checks timestamps for multiple keys in a single lightweight query (~200 Bytes),
    * and only downloads the specific keys that have actually changed on Cloud!
-   * When forceFetch is true (e.g. user clicks "Đồng bộ Supabase"), downloads 100% fresh data from Cloud.
    */
-  async batchSyncAllKeys(keys: string[], forceFetch: boolean = false): Promise<{ updatedCount: number; cachedCount: number }> {
+  async batchSyncAllKeys(keys: string[]): Promise<{ updatedCount: number; cachedCount: number }> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client || keys.length === 0) {
@@ -436,7 +395,7 @@ export const supabaseKeyStore = {
         const serverTs = String(row.updated_at || '');
         const local = getLocalCacheData(key);
 
-        if (!forceFetch && local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
+        if (local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
           cachedCount++;
           egressStats.cacheHits++;
           egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;
@@ -878,8 +837,7 @@ export async function batchExecuteNgTransaction({
   const rawParts = localStorage.getItem(STORAGE_KEYS.PARTS) || localStorage.getItem('thekho_parts_v1');
   let currentParts: Part[] = [];
   try {
-    const decompressed = decompressStorageValue(rawParts);
-    currentParts = decompressed ? JSON.parse(decompressed) : [];
+    currentParts = rawParts ? JSON.parse(rawParts) : [];
   } catch {
     currentParts = [];
   }

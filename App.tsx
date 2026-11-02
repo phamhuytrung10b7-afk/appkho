@@ -493,7 +493,7 @@ export default function App() {
               parts={parts}
               transactions={transactions}
               settings={settings}
-              onRefresh={refreshData}
+              onRefresh={handleManualSyncCloud}
               onOpenBinCard={handleOpenBinCard}
             />
           )}
@@ -503,14 +503,14 @@ export default function App() {
               queue={kittingQueue}
               settings={settings}
               buffers={bufferLocations}
-              onRefresh={refreshData}
+              onRefresh={handleManualSyncCloud}
             />
           )}
 
           {currentTab === 'buffer' && (
             <BufferMapView
               buffers={bufferLocations}
-              onRefresh={refreshData}
+              onRefresh={handleManualSyncCloud}
             />
           )}
 
@@ -524,9 +524,7 @@ export default function App() {
               buffers={bufferLocations}
               parts={parts}
               settings={settings}
-              onRefresh={refreshData}
-              onNavigateTab={(tab) => setCurrentTab(tab)}
-              onSyncCloud={handleManualSyncCloud}
+              onRefresh={handleManualSyncCloud}
               onNavigateToSettings={() => setCurrentTab('settings')}
               viewMode={currentTab}
             />

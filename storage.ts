@@ -745,64 +745,12 @@ export const storageService = {
         continue;
       }
 
-      // Compute true physical stock from transaction ledger (Double-entry source of truth)
-      let totalIn = 0;
-      let totalOut = 0;
-      const inLots: { loc: string; qty: number }[] = [];
-
-      for (let h = 0; h < history.length; h++) {
-        const tx = history[h];
-        const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
-        if (q <= 0) continue;
-        if (tx.type === 'IN') {
-          totalIn += q;
-          inLots.push({ loc: (tx.locationId || '').trim() || 'Kho chính', qty: q });
-        } else if (
-          tx.type === 'OUT' ||
-          tx.type === 'TRANSFER_TO_NG' ||
-          tx.type === 'EXPORT_NG_RTV' ||
-          tx.type === 'EXPORT_NG_SCRAP'
-        ) {
-          totalOut += q;
-        }
-      }
-
-      const ledgerStock = Math.max(0, Math.round((totalIn - totalOut) * 100) / 100);
-
-      // Verify against active FIFO lots (sum of remaining unconsumed lots)
-      let remOut = totalOut;
-      const fifoLotShelves = new Map<string, number>();
-      for (const lot of inLots) {
-        if (remOut >= lot.qty) {
-          remOut -= lot.qty;
-        } else {
-          const rem = lot.qty - remOut;
-          remOut = 0;
-          const locClean = lot.loc;
-          if (locClean && isRealShelfLocation(locClean)) {
-            fifoLotShelves.set(locClean, (fifoLotShelves.get(locClean) || 0) + rem);
-          }
-        }
-      }
-
-      const fifoLotsTotal = Array.from(fifoLotShelves.values()).reduce((sum, q) => sum + q, 0);
-      const trueStock = Math.max(ledgerStock, fifoLotsTotal);
-
-      // Derive physical shelf locations
-      let activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];
-      if (activeLocs.length === 0 && trueStock > 0 && fifoLotShelves.size > 0) {
-        // Fallback to active FIFO lot shelf distribution
-        for (const [sName, sQty] of fifoLotShelves.entries()) {
-          if (sQty > 0) {
-            activeLocs.push({ locationName: sName, quantity: sQty });
-          }
-        }
-      }
-      if (activeLocs.length === 0 && p.locations && p.locations.length > 0 && trueStock > 0) {
-        activeLocs = p.locations;
-      }
-
-      const newSummary = activeLocs.length > 0 ? this.formatPartLocationSummary(activeLocs) : (trueStock > 0 ? (p.location || 'Kho chính') : 'Chưa phân vị trí');
+      const latestTx = history[history.length - 1];
+      const trueStock = Math.max(0, latestTx.stockAfter);
+      const trueLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];
+      // Do not wipe valid existing locations if transaction history was incomplete
+      const activeLocs = trueLocs.length > 0 ? trueLocs : (p.locations && p.locations.length > 0 ? p.locations : []);
+      const newSummary = this.formatPartLocationSummary(activeLocs);
 
       const locsChanged = JSON.stringify(p.locations || []) !== JSON.stringify(activeLocs);
       const stockChanged = p.currentStock !== trueStock;
@@ -1275,7 +1223,6 @@ export const storageService = {
         totalAtLoc += l.quantity;
       }
     }
-
     return totalAtLoc;
   },
 
@@ -1898,7 +1845,7 @@ export const storageService = {
   },
 
   getStockCheckRecords(): StockCheckRecord[] {
-    const raw = safeGetRaw(STOCK_CHECKS_KEY);
+    const raw = localStorage.getItem(STOCK_CHECKS_KEY);
     if (!raw) return [];
     try {
       return JSON.parse(raw);
@@ -2629,7 +2576,8 @@ export const storageService = {
     const totalInQty = inTxs.reduce((sum, t) => sum + t.quantity, 0);
     const totalOutQty = outTxs.reduce((sum, t) => sum + t.quantity, 0);
 
-    const defaultPartLoc = (Array.isArray(part.locations) && part.locations[0]?.locationName) || cleanWarehousePrefix(part.location?.split(',')[0]?.split('(')[0]?.trim()) || 'Kho chính';
+    const activeLocs = this.getPartLocations(part);
+    const defaultPartLoc = activeLocs[0]?.locationName || cleanWarehousePrefix(part.location?.split(',')[0]?.split('(')[0]?.trim()) || 'Kho chính';
 
     const rawLots: {
       id: string;
@@ -2752,7 +2700,7 @@ export const storageService = {
     let prunedCalls = 0;
 
     // 1. Prune completed Kitting records older than maxDays
-    const rawKitting = safeGetRaw(KITTING_QUEUE_KEY);
+    const rawKitting = localStorage.getItem(KITTING_QUEUE_KEY);
     if (rawKitting) {
       try {
         const kQueue: KittingQueueItem[] = JSON.parse(rawKitting);
@@ -2767,7 +2715,7 @@ export const storageService = {
           return true;
         });
         if (prunedKitting > 0) {
-          safeSetRaw(KITTING_QUEUE_KEY, JSON.stringify(filteredQueue));
+          localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(filteredQueue));
           supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, filteredQueue);
         }
       } catch {
@@ -2776,7 +2724,7 @@ export const storageService = {
     }
 
     // 2. Prune completed Material Call (Andon) records older than maxDays
-    const rawCalls = safeGetRaw(MATERIAL_CALLS_KEY);
+    const rawCalls = localStorage.getItem(MATERIAL_CALLS_KEY);
     if (rawCalls) {
       try {
         const calls: MaterialCallRequest[] = JSON.parse(rawCalls);
@@ -2791,7 +2739,7 @@ export const storageService = {
           return true;
         });
         if (prunedCalls > 0) {
-          safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(filteredCalls));
+          localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(filteredCalls));
           supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, filteredCalls);
         }
       } catch {
@@ -3434,7 +3382,7 @@ export const storageService = {
   },
 
   getBufferMap(): BufferLocationMap[] {
-    const raw = safeGetRaw(BUFFER_MAP_KEY);
+    const raw = localStorage.getItem(BUFFER_MAP_KEY);
     let list: BufferLocationMap[] | null = null;
     if (raw) {
       try {
@@ -3450,12 +3398,12 @@ export const storageService = {
     // 1. Kiểm tra cache đồng bộ từ Supabase KeyStore nếu localStorage chưa có
     if (!list || list.length === 0) {
       try {
-        const cachedRaw = safeGetRaw(STORAGE_KEYS.BUFFER_MAP);
+        const cachedRaw = localStorage.getItem(STORAGE_KEYS.BUFFER_MAP);
         if (cachedRaw) {
           const parsed = JSON.parse(cachedRaw);
           if (Array.isArray(parsed) && parsed.length > 0) {
             list = parsed;
-            safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(list));
+            localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(list));
           }
         }
       } catch (_) {}
@@ -3466,7 +3414,7 @@ export const storageService = {
       this.fetchBufferMapFromCloud(true)
         .then((cloudData) => {
           if (cloudData && Array.isArray(cloudData) && cloudData.length > 0) {
-            safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(cloudData));
+            localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(cloudData));
             window.dispatchEvent(new CustomEvent('thekho:buffer_map_updated', { detail: cloudData }));
           }
         })
@@ -3490,13 +3438,13 @@ export const storageService = {
     try {
       const remote = await supabaseKeyStore.get<BufferLocationMap[]>(STORAGE_KEYS.BUFFER_MAP, { forceFresh });
       if (remote && Array.isArray(remote) && remote.length > 0) {
-        safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(remote));
+        localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(remote));
         return this.normalizeBufferLocations(remote);
       }
     } catch (err) {
       console.warn('[fetchBufferMapFromCloud] Lỗi kéo sơ đồ kệ từ Supabase:', err);
     }
-    const raw = safeGetRaw(BUFFER_MAP_KEY);
+    const raw = localStorage.getItem(BUFFER_MAP_KEY);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
@@ -3510,7 +3458,7 @@ export const storageService = {
 
   async saveBufferMap(locs: BufferLocationMap[]): Promise<boolean> {
     try {
-      safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(locs));
+      localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
       const ok = await supabaseKeyStore.set(STORAGE_KEYS.BUFFER_MAP, locs);
       return ok;
     } catch (err) {
@@ -3520,7 +3468,7 @@ export const storageService = {
   },
 
   saveBufferLocations(locs: BufferLocationMap[]): void {
-    safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(locs));
+    localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
     this.saveBufferMap(locs).catch((err) => {
       console.warn('[saveBufferLocations] Lỗi ngầm lưu sơ đồ kệ lên Supabase:', err);
     });
@@ -3684,14 +3632,9 @@ export const storageService = {
 
   // --- MATERIAL CALL REQUEST METHODS (ANDON) ---
   getMaterialCallRequests(): MaterialCallRequest[] {
-    const raw = safeGetRaw(MATERIAL_CALLS_KEY);
+    const raw = localStorage.getItem(MATERIAL_CALLS_KEY);
     if (!raw) {
-      const cached = getLocalCacheData<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS);
-      if (cached && Array.isArray(cached.data) && cached.data.length > 0) {
-        safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(cached.data));
-        return cached.data;
-      }
-      safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(INITIAL_MATERIAL_CALLS));
+      localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(INITIAL_MATERIAL_CALLS));
       return INITIAL_MATERIAL_CALLS;
     }
     try {
@@ -3711,7 +3654,7 @@ export const storageService = {
       });
 
       if (hasPruned) {
-        safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(validItems));
+        localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(validItems));
         supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, validItems);
       }
       return validItems;
@@ -3720,55 +3663,8 @@ export const storageService = {
     }
   },
 
-  async fetchMaterialCallsFromCloud(forceFetch: boolean = false): Promise<MaterialCallRequest[]> {
-    try {
-      const remoteCalls = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: forceFetch });
-      if (remoteCalls && Array.isArray(remoteCalls) && remoteCalls.length > 0) {
-        const localCalls = this.getMaterialCallRequests();
-        const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
-
-        const map = new Map<string, MaterialCallRequest>();
-        for (const loc of localCalls) {
-          if (loc && loc.requestId) {
-            map.set(loc.requestId, loc);
-          }
-        }
-
-        for (const rem of remoteCalls) {
-          if (rem && rem.requestId) {
-            const existing = map.get(rem.requestId);
-            if (existing) {
-              const wExisting = statusWeights[existing.status] || 0;
-              const wRem = statusWeights[rem.status] || 0;
-              const finalStatus = wRem >= wExisting ? rem.status : existing.status;
-              map.set(rem.requestId, {
-                ...existing,
-                ...rem,
-                status: finalStatus,
-                deliveredBy: rem.deliveredBy || existing.deliveredBy,
-                deliveredAt: rem.deliveredAt || existing.deliveredAt,
-                isStockDeducted: Boolean(existing.isStockDeducted || rem.isStockDeducted),
-              });
-            } else {
-              map.set(rem.requestId, rem);
-            }
-          }
-        }
-
-        const merged = Array.from(map.values()).sort(
-          (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
-        );
-        this.saveMaterialCallRequests(merged);
-        return merged;
-      }
-      return this.getMaterialCallRequests();
-    } catch {
-      return this.getMaterialCallRequests();
-    }
-  },
-
   saveMaterialCallRequests(reqs: MaterialCallRequest[]): void {
-    safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
+    localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
     supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, reqs);
   },
 
@@ -4154,16 +4050,16 @@ export const storageService = {
 
   // --- USER ACCOUNTS STORAGE & AUTH ---
   getUsers(): UserAccount[] {
-    const data = safeGetRaw('thekho_users_v1');
+    const data = localStorage.getItem('thekho_users_v1');
     if (!data) {
-      safeSetRaw('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+      localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
       supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
       return DEFAULT_SYSTEM_USERS;
     }
     try {
       const parsed: UserAccount[] = JSON.parse(data);
       if (!Array.isArray(parsed) || parsed.length === 0) {
-        safeSetRaw('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+        localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
         supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
         return DEFAULT_SYSTEM_USERS;
       }
@@ -4349,7 +4245,7 @@ export const storageService = {
   },
 
   getCurrentUser(): UserAccount | null {
-    const data = safeGetRaw('thekho_current_user_v1');
+    const data = localStorage.getItem('thekho_current_user_v1');
     if (!data) return null;
     try {
       const u: UserAccount = JSON.parse(data);
@@ -4660,9 +4556,9 @@ export const storageService = {
 
   // --- CONVERSION FACTORS (HỆ SỐ QUY ĐỔI) ---
   getConversionFactors(): ConversionFactor[] {
-    const raw = safeGetRaw(CONVERSION_FACTORS_KEY);
+    const raw = localStorage.getItem(CONVERSION_FACTORS_KEY);
     if (!raw) {
-      safeSetRaw(CONVERSION_FACTORS_KEY, JSON.stringify(DEFAULT_CONVERSION_FACTORS));
+      localStorage.setItem(CONVERSION_FACTORS_KEY, JSON.stringify(DEFAULT_CONVERSION_FACTORS));
       return DEFAULT_CONVERSION_FACTORS;
     }
     try {
@@ -4675,7 +4571,7 @@ export const storageService = {
   },
 
   saveConversionFactors(factors: ConversionFactor[]): void {
-    safeSetRaw(CONVERSION_FACTORS_KEY, JSON.stringify(factors));
+    localStorage.setItem(CONVERSION_FACTORS_KEY, JSON.stringify(factors));
     supabaseKeyStore.set(STORAGE_KEYS.CONVERSION_FACTORS, factors);
   },
 
@@ -4687,7 +4583,7 @@ export const storageService = {
 
   // --- KITTING SCAN LOGS (Ghi nhận quét bóc tách lên OUTBUFFER - Lưu tối đa 35 ngày) ---
   getKittingScanLogs(): KittingScanLog[] {
-    const raw = safeGetRaw(KITTING_SCAN_LOGS_KEY);
+    const raw = localStorage.getItem(KITTING_SCAN_LOGS_KEY);
     if (!raw) return [];
     try {
       const logs: KittingScanLog[] = JSON.parse(raw);
@@ -4703,7 +4599,7 @@ export const storageService = {
       });
 
       if (validLogs.length !== logs.length) {
-        safeSetRaw(KITTING_SCAN_LOGS_KEY, JSON.stringify(validLogs));
+        localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(validLogs));
       }
       return validLogs;
     } catch {
@@ -4718,16 +4614,16 @@ export const storageService = {
       id: 'scan-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
     };
     logs.unshift(newLog);
-    safeSetRaw(KITTING_SCAN_LOGS_KEY, JSON.stringify(logs));
+    localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(logs));
     supabaseKeyStore.set(STORAGE_KEYS.KITTING_SCAN_LOGS, logs);
     return newLog;
   },
 
   // --- PRODUCTIVITY PERSONNEL CONFIG (Lưu trực tiếp Supabase Cloud: thekho_staff_allocation_v1 & thekho_daily_reports_v1) ---
   getProductivityPersonnelConfig(): ProductivityPersonnelConfig {
-    const raw = safeGetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY);
+    const raw = localStorage.getItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY);
     if (!raw) {
-      safeSetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG));
+      localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG));
       return DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG;
     }
     try {
@@ -4738,7 +4634,7 @@ export const storageService = {
   },
 
   async saveProductivityPersonnelConfig(config: ProductivityPersonnelConfig): Promise<{ success: boolean; cloudSynced: boolean; message?: string }> {
-    safeSetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(config));
+    localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(config));
     
     // Push directly to Supabase Cloud under keys
     try {
@@ -4769,7 +4665,7 @@ export const storageService = {
       const cloudVal = await supabaseKeyStore.get<ProductivityPersonnelConfig>(STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG)
         || await supabaseKeyStore.get<ProductivityPersonnelConfig>(STORAGE_KEYS.STAFF_ALLOCATION);
       if (cloudVal && typeof cloudVal === 'object') {
-        safeSetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(cloudVal));
+        localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(cloudVal));
         return cloudVal;
       }
     } catch (_) {}
@@ -4778,7 +4674,7 @@ export const storageService = {
 
   // --- CUSTOM GENERATED CONTAINER TAGS (Lưu vị trí riêng biệt với Thẻ Master Data) ---
   getCustomGeneratedContainerTags(): CustomGeneratedContainerTag[] {
-    const raw = safeGetRaw(CUSTOM_GENERATED_CONTAINER_TAGS_KEY);
+    const raw = localStorage.getItem(CUSTOM_GENERATED_CONTAINER_TAGS_KEY);
     if (!raw) return [];
     try {
       const list = JSON.parse(raw);
@@ -4789,7 +4685,7 @@ export const storageService = {
   },
 
   saveCustomGeneratedContainerTags(tags: CustomGeneratedContainerTag[]): void {
-    safeSetRaw(CUSTOM_GENERATED_CONTAINER_TAGS_KEY, JSON.stringify(tags));
+    localStorage.setItem(CUSTOM_GENERATED_CONTAINER_TAGS_KEY, JSON.stringify(tags));
     supabaseKeyStore.set(STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, tags);
   },
 
@@ -4853,10 +4749,7 @@ export const storageService = {
         STORAGE_KEYS.USERS,
       ];
 
-      await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);
-
-      // 1.1 Ensure all material calls (Andon) are synced and smart-merged from Supabase Cloud
-      await this.fetchMaterialCallsFromCloud(forceFetch);
+      await supabaseKeyStore.batchSyncAllKeys(allKvKeys);
 
       // 2. Data is already written to localStorage by batchSyncAllKeys for all changed keys!
       // Retrieve parts directly from localStorage, fallback to relational table if brand new
@@ -5013,7 +4906,7 @@ export const storageService = {
     // 2. Chuyển đổi và dọn dẹp triệt để thekho_transactions_v1 & thekho_master_container_tags_v1:
     // Tuyệt đối không lưu lịch sử giao dịch và thẻ container dưới localStorage (Source of Truth là Supabase)
     try {
-      const rawTxs = safeGetRaw(TRANSACTIONS_KEY);
+      const rawTxs = localStorage.getItem(TRANSACTIONS_KEY);
       if (rawTxs) {
         try {
           const parsed: Transaction[] = JSON.parse(rawTxs);

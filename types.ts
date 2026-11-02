@@ -285,7 +285,6 @@ export interface BomExportVoucherItem {
   status?: 'COMPLETED' | 'PARTIAL' | 'PENDING';
   isExtraConsumable?: boolean; // Đánh dấu linh kiện tiêu hao thêm ngoài định mức
   extraNote?: string; // Ghi chú lý do tiêu hao thêm
-  kittedQty?: number; // Số lượng đã bóc tách từ phiếu xuất kho này
 }
 
 export interface BomExportVoucher {
@@ -330,7 +329,6 @@ export interface KittingScanLog {
   timestamp: string; // ISO string
   bufferLocation: string;
   operatorName?: string;
-  voucherCode?: string; // Mã phiếu xuất kho trừ tồn
 }
 
 export interface HourlyPersonnelSlot {
