@@ -192,36 +192,67 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
     return partMap.get(codeKey)!;
   };
 
+  const isDateMatch = (tsStr: string | Date | undefined | null, targetDateStr: string): boolean => {
+    if (!tsStr) return false;
+    let str = typeof tsStr === 'string' ? tsStr.trim() : tsStr.toISOString();
+    if (str.startsWith(targetDateStr)) return true;
+
+    const d = new Date(str);
+    if (isNaN(d.getTime())) {
+      const parts = str.split(/[\sT\/.-]/);
+      if (parts.length >= 3 && parts[2].length === 4) {
+        const ymd = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        return ymd === targetDateStr;
+      }
+      return false;
+    }
+
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}` === targetDateStr;
+  };
+
   // 1. Process scan logs for current reportDate
-  const dateLogs = scanLogs.filter((log) => log.timestamp.startsWith(reportDate));
+  const processedLogKeys = new Set<string>();
+  const dateLogs = scanLogs.filter((log) => isDateMatch(log.timestamp, reportDate));
   dateLogs.forEach((log) => {
     const item = initPartEntry(log.partCode, log.partName || log.partCode);
-    const slotKey = getSlotKey(new Date(log.timestamp));
+    const dt = new Date(log.timestamp);
+    const slotKey = getSlotKey(dt);
     item.thucHien += log.quantity;
     item.hourly[slotKey] = (item.hourly[slotKey] || 0) + log.quantity;
     item.tongSanLuong += log.quantity;
     item.conLai = Math.max(0, item.khsx - item.thucHien);
     item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
+    processedLogKeys.add(`${log.partCode.trim().toLowerCase()}_${log.quantity}_${slotKey}`);
   });
 
-  // 2. Aggregate completed kittingQueue items on reportDate if scanLogs missing
-  if (dateLogs.length === 0) {
-    const dateQueue = kittingQueue.filter((kq) => {
-      const ts = kq.endTime || kq.startTime || kq.createdAt;
-      return (kq.status === 'IN_BUFFER' || kq.status === 'DELIVERED' || (kq.kittedQuantity && kq.kittedQuantity > 0)) && ts && ts.startsWith(reportDate);
-    });
-    dateQueue.forEach((kq) => {
-      const item = initPartEntry(kq.partCode, kq.partName || kq.partCode);
-      const ts = kq.endTime || kq.startTime || kq.createdAt;
-      const slotKey = getSlotKey(new Date(ts));
-      const qty = kq.kittedQuantity || kq.rawQuantity || 0;
-      item.thucHien += qty;
-      item.hourly[slotKey] = (item.hourly[slotKey] || 0) + qty;
-      item.tongSanLuong += qty;
-      item.conLai = Math.max(0, item.khsx - item.thucHien);
-      item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
-    });
-  }
+  // 2. Aggregate completed kittingQueue items on reportDate to complement scan logs
+  const dateQueue = kittingQueue.filter((kq) => {
+    const ts = kq.endTime || kq.startTime || kq.createdAt;
+    const isDone = kq.status === 'IN_BUFFER' || kq.status === 'DELIVERED' || (kq.kittedQuantity && kq.kittedQuantity > 0);
+    return isDone && isDateMatch(ts, reportDate);
+  });
+
+  dateQueue.forEach((kq) => {
+    const ts = kq.endTime || kq.startTime || kq.createdAt;
+    const dt = new Date(ts);
+    const slotKey = getSlotKey(dt);
+    const qty = kq.kittedQuantity || kq.rawQuantity || 0;
+    if (qty > 0) {
+      const key = `${kq.partCode.trim().toLowerCase()}_${qty}_${slotKey}`;
+      if (!processedLogKeys.has(key)) {
+        const item = initPartEntry(kq.partCode, kq.partName || kq.partCode);
+        item.thucHien += qty;
+        item.hourly[slotKey] = (item.hourly[slotKey] || 0) + qty;
+        item.tongSanLuong += qty;
+        item.conLai = Math.max(0, item.khsx - item.thucHien);
+        item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
+        processedLogKeys.add(key);
+      }
+    }
+  });
 
   const items = Array.from(partMap.values());
 
@@ -274,8 +305,8 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
 
   const grandNsldRatio = grandTotalRequiredSp > 0 ? (grandTotalConvertedSp / grandTotalRequiredSp) * 100 : 0;
 
-  // Prepare chart data for 8h-17h (Image 5)
-  const chartData = TIME_SLOTS.slice(0, 8).map((slot) => {
+  // Prepare chart data for all time slots including overtime
+  const chartData = TIME_SLOTS.map((slot) => {
     const sl = hourlyTotals[slot] || 0;
     const ns = Math.round(hourlyNsldRatio[slot] || 0);
     return {
@@ -512,8 +543,8 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                 <td className="p-2.5 text-left pl-4 font-bold border-r border-slate-300 bg-blue-50 text-blue-900 w-48 whitespace-nowrap">
                   Sản lượng theo múi giờ
                 </td>
-                {TIME_SLOTS.slice(0, 8).map((slot) => (
-                  <td key={slot} className="p-2.5 border-r border-slate-200 font-mono font-bold text-slate-800">
+                {TIME_SLOTS.map((slot) => (
+                  <td key={slot} className="p-2 border-r border-slate-200 font-mono font-bold text-slate-800 text-[11px]">
                     {hourlyTotals[slot] ? hourlyTotals[slot].toLocaleString('vi-VN') : '0'}
                   </td>
                 ))}
@@ -522,8 +553,8 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                 <td className="p-2.5 text-left pl-4 font-bold border-r border-slate-300 bg-orange-100 text-orange-900 w-48 whitespace-nowrap">
                   Năng suất lao động
                 </td>
-                {TIME_SLOTS.slice(0, 8).map((slot) => (
-                  <td key={slot} className="p-2.5 border-r border-slate-200 font-mono font-black text-orange-600">
+                {TIME_SLOTS.map((slot) => (
+                  <td key={slot} className="p-2 border-r border-slate-200 font-mono font-black text-orange-600 text-[11px]">
                     {hourlyNsldRatio[slot] ? `${Math.round(hourlyNsldRatio[slot])}%` : '0%'}
                   </td>
                 ))}
