@@ -679,9 +679,25 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     return `${year}-${month}-${day}`;
   };
 
-  const [historyStartDate, setHistoryStartDate] = useState<string>(getTodayStr);
+  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'custom'>(() => {
+    const today = getTodayStr();
+    const hasToday = completedReqs.some((item) => {
+      const d = (item.deliveredAt || item.requestedAt || '').substring(0, 10);
+      return d === today;
+    });
+    return hasToday ? 'today' : '35days';
+  });
+
+  const [historyStartDate, setHistoryStartDate] = useState<string>(() => {
+    const today = getTodayStr();
+    const hasToday = completedReqs.some((item) => {
+      const d = (item.deliveredAt || item.requestedAt || '').substring(0, 10);
+      return d === today;
+    });
+    return hasToday ? today : getDaysAgoStr(34);
+  });
+
   const [historyEndDate, setHistoryEndDate] = useState<string>(getTodayStr);
-  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'custom'>('today');
   const [historySearchQuery, setHistorySearchQuery] = useState('');
 
   const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days') => {
@@ -698,6 +714,21 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       setHistoryStartDate(getDaysAgoStr(34));
     }
   };
+
+  // Auto-switch to 35days preset if today has 0 records but history exists
+  useEffect(() => {
+    if (historyPreset === 'today' && completedReqs.length > 0) {
+      const today = getTodayStr();
+      const hasToday = completedReqs.some((item) => {
+        const d = (item.deliveredAt || item.requestedAt || '').substring(0, 10);
+        return d === today;
+      });
+      if (!hasToday) {
+        setHistoryPreset('35days');
+        setHistoryStartDate(getDaysAgoStr(34));
+      }
+    }
+  }, [completedReqs.length]);
 
   // Filter completed delivery records
   const filteredCompletedReqs = completedReqs.filter((item) => {

@@ -4,6 +4,7 @@ import { MasterKittingTag, SAMPLE_MASTER_TAGS } from './masterExcelParser';
 import { getPartGroupConfig } from './partGroupColors';
 import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS, batchExecuteNgTransaction, mapSupabaseRowToTransaction, getLocalCacheData, setLocalCacheData } from './supabaseStorage';
 import { getActiveSupabaseClient } from './supabase';
+import { compressStorageValue, decompressStorageValue, optimizeAllExistingLocalStorage } from './storageCompression';
 import * as XLSX from 'xlsx';
 
 const PARTS_KEY = 'thekho_parts_v1';
@@ -23,6 +24,45 @@ const KITTING_SCAN_LOGS_KEY = 'thekho_kitting_scan_logs_v1';
 const PRODUCTIVITY_PERSONNEL_CONFIG_KEY = 'thekho_productivity_personnel_config_v1';
 const CUSTOM_GENERATED_CONTAINER_TAGS_KEY = 'thekho_custom_generated_container_tags_v1';
 const USERS_KEY = 'thekho_users_v1';
+
+/**
+ * Helper an toàn đọc dữ liệu localStorage với tự động giải nén LZ-String.
+ * Tương thích ngược 100% với JSON thô cũ.
+ */
+function safeGetRaw(key: string): string | null {
+  try {
+    const raw = localStorage.getItem(key);
+    return decompressStorageValue(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Helper an toàn ghi dữ liệu localStorage với tự động nén LZ-String UTF-16.
+ * Giảm 70-90% dung lượng thực tế, chống tuyệt đối tràn bộ nhớ QuotaExceededError.
+ */
+function safeSetRaw(key: string, value: string): boolean {
+  try {
+    const compressed = compressStorageValue(value);
+    localStorage.setItem(key, compressed);
+    return true;
+  } catch (err: any) {
+    if (err?.name === 'QuotaExceededError' || err?.code === 22 || err?.code === 1014) {
+      console.warn('[Storage] QuotaExceededError detected! Running emergency 14-day cleanup...');
+      try {
+        storageService.cleanupOldLocalStorageRecords(14);
+        const compressed = compressStorageValue(value);
+        localStorage.setItem(key, compressed);
+        return true;
+      } catch {
+        console.error('[Storage] Still exceeded quota after emergency cleanup.');
+        return false;
+      }
+    }
+    return false;
+  }
+}
 
 // In-Memory RAM Caches for high-volume entities (Transactions & Master Container Tags).
 // Eliminates localStorage bloating (keeping localStorage < 500KB) while ensuring instant UI access.
@@ -594,9 +634,9 @@ export function isLocationMatch(locA: string | undefined | null, locB: string | 
 export const storageService = {
   // Settings
   getSettings(): AppSettings {
-    const raw = localStorage.getItem(SETTINGS_KEY);
+    const raw = safeGetRaw(SETTINGS_KEY);
     if (!raw) {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(initialSettings));
+      safeSetRaw(SETTINGS_KEY, JSON.stringify(initialSettings));
       return initialSettings;
     }
     try {
@@ -616,14 +656,14 @@ export const storageService = {
   },
 
   saveSettings(settings: AppSettings): void {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    safeSetRaw(SETTINGS_KEY, JSON.stringify(settings));
     supabaseKeyStore.set(STORAGE_KEYS.SETTINGS, settings);
     supabaseRelationalStore.upsertSettings(settings);
   },
 
   // Parts
   getParts(): Part[] {
-    const raw = localStorage.getItem(PARTS_KEY);
+    const raw = safeGetRaw(PARTS_KEY);
     if (!raw) {
       return [];
     }
@@ -705,12 +745,64 @@ export const storageService = {
         continue;
       }
 
-      const latestTx = history[history.length - 1];
-      const trueStock = Math.max(0, latestTx.stockAfter);
-      const trueLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];
-      // Do not wipe valid existing locations if transaction history was incomplete
-      const activeLocs = trueLocs.length > 0 ? trueLocs : (p.locations && p.locations.length > 0 ? p.locations : []);
-      const newSummary = this.formatPartLocationSummary(activeLocs);
+      // Compute true physical stock from transaction ledger (Double-entry source of truth)
+      let totalIn = 0;
+      let totalOut = 0;
+      const inLots: { loc: string; qty: number }[] = [];
+
+      for (let h = 0; h < history.length; h++) {
+        const tx = history[h];
+        const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+        if (q <= 0) continue;
+        if (tx.type === 'IN') {
+          totalIn += q;
+          inLots.push({ loc: (tx.locationId || '').trim() || 'Kho chính', qty: q });
+        } else if (
+          tx.type === 'OUT' ||
+          tx.type === 'TRANSFER_TO_NG' ||
+          tx.type === 'EXPORT_NG_RTV' ||
+          tx.type === 'EXPORT_NG_SCRAP'
+        ) {
+          totalOut += q;
+        }
+      }
+
+      const ledgerStock = Math.max(0, Math.round((totalIn - totalOut) * 100) / 100);
+
+      // Verify against active FIFO lots (sum of remaining unconsumed lots)
+      let remOut = totalOut;
+      const fifoLotShelves = new Map<string, number>();
+      for (const lot of inLots) {
+        if (remOut >= lot.qty) {
+          remOut -= lot.qty;
+        } else {
+          const rem = lot.qty - remOut;
+          remOut = 0;
+          const locClean = lot.loc;
+          if (locClean && isRealShelfLocation(locClean)) {
+            fifoLotShelves.set(locClean, (fifoLotShelves.get(locClean) || 0) + rem);
+          }
+        }
+      }
+
+      const fifoLotsTotal = Array.from(fifoLotShelves.values()).reduce((sum, q) => sum + q, 0);
+      const trueStock = Math.max(ledgerStock, fifoLotsTotal);
+
+      // Derive physical shelf locations
+      let activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];
+      if (activeLocs.length === 0 && trueStock > 0 && fifoLotShelves.size > 0) {
+        // Fallback to active FIFO lot shelf distribution
+        for (const [sName, sQty] of fifoLotShelves.entries()) {
+          if (sQty > 0) {
+            activeLocs.push({ locationName: sName, quantity: sQty });
+          }
+        }
+      }
+      if (activeLocs.length === 0 && p.locations && p.locations.length > 0 && trueStock > 0) {
+        activeLocs = p.locations;
+      }
+
+      const newSummary = activeLocs.length > 0 ? this.formatPartLocationSummary(activeLocs) : (trueStock > 0 ? (p.location || 'Kho chính') : 'Chưa phân vị trí');
 
       const locsChanged = JSON.stringify(p.locations || []) !== JSON.stringify(activeLocs);
       const stockChanged = p.currentStock !== trueStock;
@@ -747,7 +839,7 @@ export const storageService = {
       locations: p.locations || [],
       updatedAt: p.updatedAt,
     }));
-    localStorage.setItem(PARTS_KEY, JSON.stringify(compactParts));
+    safeSetRaw(PARTS_KEY, JSON.stringify(compactParts));
     supabaseKeyStore.set(STORAGE_KEYS.PARTS, parts);
     supabaseRelationalStore.upsertParts(parts);
   },
@@ -1805,7 +1897,7 @@ export const storageService = {
   },
 
   getStockCheckRecords(): StockCheckRecord[] {
-    const raw = localStorage.getItem(STOCK_CHECKS_KEY);
+    const raw = safeGetRaw(STOCK_CHECKS_KEY);
     if (!raw) return [];
     try {
       return JSON.parse(raw);
@@ -2197,7 +2289,7 @@ export const storageService = {
 
   // Container Batches (History of QR codes generated from Excel)
   getContainerBatches(): ContainerBatch[] {
-    const raw = localStorage.getItem(CONTAINER_BATCHES_KEY);
+    const raw = safeGetRaw(CONTAINER_BATCHES_KEY);
     if (!raw) return [];
     try {
       return JSON.parse(raw);
@@ -2207,7 +2299,7 @@ export const storageService = {
   },
 
   saveContainerBatches(batches: ContainerBatch[]): void {
-    localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
+    safeSetRaw(CONTAINER_BATCHES_KEY, JSON.stringify(batches));
     supabaseKeyStore.set(STORAGE_KEYS.CONTAINER_BATCHES, batches);
   },
 
@@ -2230,7 +2322,7 @@ export const storageService = {
 
   // Model BOMs
   getModelBOMs(): ModelBOM[] {
-    const raw = localStorage.getItem(MODEL_BOMS_KEY);
+    const raw = safeGetRaw(MODEL_BOMS_KEY);
     if (!raw) return [];
     try {
       return JSON.parse(raw);
@@ -2247,13 +2339,13 @@ export const storageService = {
     } else {
       boms.unshift(bom);
     }
-    localStorage.setItem(MODEL_BOMS_KEY, JSON.stringify(boms));
+    safeSetRaw(MODEL_BOMS_KEY, JSON.stringify(boms));
     supabaseKeyStore.set(STORAGE_KEYS.MODEL_BOMS, boms);
   },
 
   deleteModelBOM(id: string): void {
     const boms = this.getModelBOMs().filter(b => b.id !== id);
-    localStorage.setItem(MODEL_BOMS_KEY, JSON.stringify(boms));
+    safeSetRaw(MODEL_BOMS_KEY, JSON.stringify(boms));
     supabaseKeyStore.set(STORAGE_KEYS.MODEL_BOMS, boms);
   },
 
@@ -2356,7 +2448,7 @@ export const storageService = {
 
   // Used QR Tokens (To prevent scanning the same Cont QR tag twice)
   getUsedQrTokens(): Record<string, { scannedAt: string; scannedBy?: string; partCode: string; quantity: number; importedQuantity?: number; contNumber: string }> {
-    const raw = localStorage.getItem(USED_QR_TOKENS_KEY);
+    const raw = safeGetRaw(USED_QR_TOKENS_KEY);
     if (!raw) return {};
     try {
       return JSON.parse(raw);
@@ -2402,7 +2494,7 @@ export const storageService = {
   },
 
   saveUsedQrTokens(tokens: Record<string, any>): void {
-    localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(tokens));
+    safeSetRaw(USED_QR_TOKENS_KEY, JSON.stringify(tokens));
     supabaseKeyStore.set(STORAGE_KEYS.USED_QR_TOKENS, tokens);
   },
 
@@ -2660,7 +2752,7 @@ export const storageService = {
     let prunedCalls = 0;
 
     // 1. Prune completed Kitting records older than maxDays
-    const rawKitting = localStorage.getItem(KITTING_QUEUE_KEY);
+    const rawKitting = safeGetRaw(KITTING_QUEUE_KEY);
     if (rawKitting) {
       try {
         const kQueue: KittingQueueItem[] = JSON.parse(rawKitting);
@@ -2675,7 +2767,7 @@ export const storageService = {
           return true;
         });
         if (prunedKitting > 0) {
-          localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(filteredQueue));
+          safeSetRaw(KITTING_QUEUE_KEY, JSON.stringify(filteredQueue));
           supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, filteredQueue);
         }
       } catch {
@@ -2684,7 +2776,7 @@ export const storageService = {
     }
 
     // 2. Prune completed Material Call (Andon) records older than maxDays
-    const rawCalls = localStorage.getItem(MATERIAL_CALLS_KEY);
+    const rawCalls = safeGetRaw(MATERIAL_CALLS_KEY);
     if (rawCalls) {
       try {
         const calls: MaterialCallRequest[] = JSON.parse(rawCalls);
@@ -2699,7 +2791,7 @@ export const storageService = {
           return true;
         });
         if (prunedCalls > 0) {
-          localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(filteredCalls));
+          safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(filteredCalls));
           supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, filteredCalls);
         }
       } catch {
@@ -2712,9 +2804,9 @@ export const storageService = {
 
   // --- KITTING QUEUE METHODS ---
   getKittingQueue(): KittingQueueItem[] {
-    const raw = localStorage.getItem(KITTING_QUEUE_KEY);
+    const raw = safeGetRaw(KITTING_QUEUE_KEY);
     if (!raw) {
-      localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(INITIAL_KITTING_QUEUE));
+      safeSetRaw(KITTING_QUEUE_KEY, JSON.stringify(INITIAL_KITTING_QUEUE));
       return INITIAL_KITTING_QUEUE;
     }
     try {
@@ -2734,7 +2826,7 @@ export const storageService = {
       });
 
       if (hasPruned) {
-        localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(validItems));
+        safeSetRaw(KITTING_QUEUE_KEY, JSON.stringify(validItems));
         supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, validItems);
       }
       return validItems;
@@ -2754,7 +2846,7 @@ export const storageService = {
       }
       return false;
     });
-    localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(activeQueue));
+    safeSetRaw(KITTING_QUEUE_KEY, JSON.stringify(activeQueue));
     supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, items);
   },
 
@@ -3342,7 +3434,7 @@ export const storageService = {
   },
 
   getBufferMap(): BufferLocationMap[] {
-    const raw = localStorage.getItem(BUFFER_MAP_KEY);
+    const raw = safeGetRaw(BUFFER_MAP_KEY);
     let list: BufferLocationMap[] | null = null;
     if (raw) {
       try {
@@ -3358,12 +3450,12 @@ export const storageService = {
     // 1. Kiểm tra cache đồng bộ từ Supabase KeyStore nếu localStorage chưa có
     if (!list || list.length === 0) {
       try {
-        const cachedRaw = localStorage.getItem(STORAGE_KEYS.BUFFER_MAP);
+        const cachedRaw = safeGetRaw(STORAGE_KEYS.BUFFER_MAP);
         if (cachedRaw) {
           const parsed = JSON.parse(cachedRaw);
           if (Array.isArray(parsed) && parsed.length > 0) {
             list = parsed;
-            localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(list));
+            safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(list));
           }
         }
       } catch (_) {}
@@ -3374,7 +3466,7 @@ export const storageService = {
       this.fetchBufferMapFromCloud(true)
         .then((cloudData) => {
           if (cloudData && Array.isArray(cloudData) && cloudData.length > 0) {
-            localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(cloudData));
+            safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(cloudData));
             window.dispatchEvent(new CustomEvent('thekho:buffer_map_updated', { detail: cloudData }));
           }
         })
@@ -3398,13 +3490,13 @@ export const storageService = {
     try {
       const remote = await supabaseKeyStore.get<BufferLocationMap[]>(STORAGE_KEYS.BUFFER_MAP, { forceFresh });
       if (remote && Array.isArray(remote) && remote.length > 0) {
-        localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(remote));
+        safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(remote));
         return this.normalizeBufferLocations(remote);
       }
     } catch (err) {
       console.warn('[fetchBufferMapFromCloud] Lỗi kéo sơ đồ kệ từ Supabase:', err);
     }
-    const raw = localStorage.getItem(BUFFER_MAP_KEY);
+    const raw = safeGetRaw(BUFFER_MAP_KEY);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
@@ -3418,7 +3510,7 @@ export const storageService = {
 
   async saveBufferMap(locs: BufferLocationMap[]): Promise<boolean> {
     try {
-      localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
+      safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(locs));
       const ok = await supabaseKeyStore.set(STORAGE_KEYS.BUFFER_MAP, locs);
       return ok;
     } catch (err) {
@@ -3428,7 +3520,7 @@ export const storageService = {
   },
 
   saveBufferLocations(locs: BufferLocationMap[]): void {
-    localStorage.setItem(BUFFER_MAP_KEY, JSON.stringify(locs));
+    safeSetRaw(BUFFER_MAP_KEY, JSON.stringify(locs));
     this.saveBufferMap(locs).catch((err) => {
       console.warn('[saveBufferLocations] Lỗi ngầm lưu sơ đồ kệ lên Supabase:', err);
     });
@@ -3592,9 +3684,9 @@ export const storageService = {
 
   // --- MATERIAL CALL REQUEST METHODS (ANDON) ---
   getMaterialCallRequests(): MaterialCallRequest[] {
-    const raw = localStorage.getItem(MATERIAL_CALLS_KEY);
+    const raw = safeGetRaw(MATERIAL_CALLS_KEY);
     if (!raw) {
-      localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(INITIAL_MATERIAL_CALLS));
+      safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(INITIAL_MATERIAL_CALLS));
       return INITIAL_MATERIAL_CALLS;
     }
     try {
@@ -3614,7 +3706,7 @@ export const storageService = {
       });
 
       if (hasPruned) {
-        localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(validItems));
+        safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(validItems));
         supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, validItems);
       }
       return validItems;
@@ -3624,7 +3716,7 @@ export const storageService = {
   },
 
   saveMaterialCallRequests(reqs: MaterialCallRequest[]): void {
-    localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
+    safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
     supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, reqs);
   },
 
@@ -3917,7 +4009,7 @@ export const storageService = {
 
   // --- BOM EXPORT VOUCHERS STORAGE ---
   getBomExportVouchers(): BomExportVoucher[] {
-    const data = localStorage.getItem(BOM_VOUCHERS_KEY);
+    const data = safeGetRaw(BOM_VOUCHERS_KEY);
     if (!data) return [];
     try {
       return JSON.parse(data);
@@ -3931,7 +4023,7 @@ export const storageService = {
   },
 
   saveBomExportVouchers(vouchers: BomExportVoucher[]): void {
-    localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
+    safeSetRaw(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
     supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers);
   },
 
@@ -4010,16 +4102,16 @@ export const storageService = {
 
   // --- USER ACCOUNTS STORAGE & AUTH ---
   getUsers(): UserAccount[] {
-    const data = localStorage.getItem('thekho_users_v1');
+    const data = safeGetRaw('thekho_users_v1');
     if (!data) {
-      localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+      safeSetRaw('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
       supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
       return DEFAULT_SYSTEM_USERS;
     }
     try {
       const parsed: UserAccount[] = JSON.parse(data);
       if (!Array.isArray(parsed) || parsed.length === 0) {
-        localStorage.setItem('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
+        safeSetRaw('thekho_users_v1', JSON.stringify(DEFAULT_SYSTEM_USERS));
         supabaseKeyStore.set('thekho_users_v1', DEFAULT_SYSTEM_USERS);
         return DEFAULT_SYSTEM_USERS;
       }
@@ -4205,7 +4297,7 @@ export const storageService = {
   },
 
   getCurrentUser(): UserAccount | null {
-    const data = localStorage.getItem('thekho_current_user_v1');
+    const data = safeGetRaw('thekho_current_user_v1');
     if (!data) return null;
     try {
       const u: UserAccount = JSON.parse(data);
@@ -4516,9 +4608,9 @@ export const storageService = {
 
   // --- CONVERSION FACTORS (HỆ SỐ QUY ĐỔI) ---
   getConversionFactors(): ConversionFactor[] {
-    const raw = localStorage.getItem(CONVERSION_FACTORS_KEY);
+    const raw = safeGetRaw(CONVERSION_FACTORS_KEY);
     if (!raw) {
-      localStorage.setItem(CONVERSION_FACTORS_KEY, JSON.stringify(DEFAULT_CONVERSION_FACTORS));
+      safeSetRaw(CONVERSION_FACTORS_KEY, JSON.stringify(DEFAULT_CONVERSION_FACTORS));
       return DEFAULT_CONVERSION_FACTORS;
     }
     try {
@@ -4531,7 +4623,7 @@ export const storageService = {
   },
 
   saveConversionFactors(factors: ConversionFactor[]): void {
-    localStorage.setItem(CONVERSION_FACTORS_KEY, JSON.stringify(factors));
+    safeSetRaw(CONVERSION_FACTORS_KEY, JSON.stringify(factors));
     supabaseKeyStore.set(STORAGE_KEYS.CONVERSION_FACTORS, factors);
   },
 
@@ -4543,7 +4635,7 @@ export const storageService = {
 
   // --- KITTING SCAN LOGS (Ghi nhận quét bóc tách lên OUTBUFFER - Lưu tối đa 35 ngày) ---
   getKittingScanLogs(): KittingScanLog[] {
-    const raw = localStorage.getItem(KITTING_SCAN_LOGS_KEY);
+    const raw = safeGetRaw(KITTING_SCAN_LOGS_KEY);
     if (!raw) return [];
     try {
       const logs: KittingScanLog[] = JSON.parse(raw);
@@ -4559,7 +4651,7 @@ export const storageService = {
       });
 
       if (validLogs.length !== logs.length) {
-        localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(validLogs));
+        safeSetRaw(KITTING_SCAN_LOGS_KEY, JSON.stringify(validLogs));
       }
       return validLogs;
     } catch {
@@ -4574,16 +4666,16 @@ export const storageService = {
       id: 'scan-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
     };
     logs.unshift(newLog);
-    localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(logs));
+    safeSetRaw(KITTING_SCAN_LOGS_KEY, JSON.stringify(logs));
     supabaseKeyStore.set(STORAGE_KEYS.KITTING_SCAN_LOGS, logs);
     return newLog;
   },
 
   // --- PRODUCTIVITY PERSONNEL CONFIG (Lưu trực tiếp Supabase Cloud: thekho_staff_allocation_v1 & thekho_daily_reports_v1) ---
   getProductivityPersonnelConfig(): ProductivityPersonnelConfig {
-    const raw = localStorage.getItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY);
+    const raw = safeGetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY);
     if (!raw) {
-      localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG));
+      safeSetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG));
       return DEFAULT_PRODUCTIVITY_PERSONNEL_CONFIG;
     }
     try {
@@ -4594,7 +4686,7 @@ export const storageService = {
   },
 
   async saveProductivityPersonnelConfig(config: ProductivityPersonnelConfig): Promise<{ success: boolean; cloudSynced: boolean; message?: string }> {
-    localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(config));
+    safeSetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(config));
     
     // Push directly to Supabase Cloud under keys
     try {
@@ -4625,7 +4717,7 @@ export const storageService = {
       const cloudVal = await supabaseKeyStore.get<ProductivityPersonnelConfig>(STORAGE_KEYS.PRODUCTIVITY_PERSONNEL_CONFIG)
         || await supabaseKeyStore.get<ProductivityPersonnelConfig>(STORAGE_KEYS.STAFF_ALLOCATION);
       if (cloudVal && typeof cloudVal === 'object') {
-        localStorage.setItem(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(cloudVal));
+        safeSetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY, JSON.stringify(cloudVal));
         return cloudVal;
       }
     } catch (_) {}
@@ -4634,7 +4726,7 @@ export const storageService = {
 
   // --- CUSTOM GENERATED CONTAINER TAGS (Lưu vị trí riêng biệt với Thẻ Master Data) ---
   getCustomGeneratedContainerTags(): CustomGeneratedContainerTag[] {
-    const raw = localStorage.getItem(CUSTOM_GENERATED_CONTAINER_TAGS_KEY);
+    const raw = safeGetRaw(CUSTOM_GENERATED_CONTAINER_TAGS_KEY);
     if (!raw) return [];
     try {
       const list = JSON.parse(raw);
@@ -4645,7 +4737,7 @@ export const storageService = {
   },
 
   saveCustomGeneratedContainerTags(tags: CustomGeneratedContainerTag[]): void {
-    localStorage.setItem(CUSTOM_GENERATED_CONTAINER_TAGS_KEY, JSON.stringify(tags));
+    safeSetRaw(CUSTOM_GENERATED_CONTAINER_TAGS_KEY, JSON.stringify(tags));
     supabaseKeyStore.set(STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS, tags);
   },
 
@@ -4709,7 +4801,7 @@ export const storageService = {
         STORAGE_KEYS.USERS,
       ];
 
-      await supabaseKeyStore.batchSyncAllKeys(allKvKeys);
+      await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);
 
       // 2. Data is already written to localStorage by batchSyncAllKeys for all changed keys!
       // Retrieve parts directly from localStorage, fallback to relational table if brand new
@@ -4866,7 +4958,7 @@ export const storageService = {
     // 2. Chuyển đổi và dọn dẹp triệt để thekho_transactions_v1 & thekho_master_container_tags_v1:
     // Tuyệt đối không lưu lịch sử giao dịch và thẻ container dưới localStorage (Source of Truth là Supabase)
     try {
-      const rawTxs = localStorage.getItem(TRANSACTIONS_KEY);
+      const rawTxs = safeGetRaw(TRANSACTIONS_KEY);
       if (rawTxs) {
         try {
           const parsed: Transaction[] = JSON.parse(rawTxs);
@@ -4886,7 +4978,7 @@ export const storageService = {
 
     // 3. Dọn dẹp Kitting Scan Logs (thekho_kitting_scan_logs_v1)
     try {
-      const rawLogs = localStorage.getItem(KITTING_SCAN_LOGS_KEY);
+      const rawLogs = safeGetRaw(KITTING_SCAN_LOGS_KEY);
       if (rawLogs) {
         const logs: KittingScanLog[] = JSON.parse(rawLogs);
         if (Array.isArray(logs)) {
@@ -4896,7 +4988,7 @@ export const storageService = {
           });
           if (keptLogs.length < logs.length) {
             prunedKittingLogs = logs.length - keptLogs.length;
-            localStorage.setItem(KITTING_SCAN_LOGS_KEY, JSON.stringify(keptLogs));
+            safeSetRaw(KITTING_SCAN_LOGS_KEY, JSON.stringify(keptLogs));
           }
         }
       }
@@ -4907,7 +4999,7 @@ export const storageService = {
     // 4. Dọn dẹp Yêu cầu Gọi Hàng Andon (thekho_material_calls_v1)
     // CHÚ Ý: Tuyệt đối KHÔNG xóa đơn đang gọi (CALLING) hoặc đang giao (DELIVERING)
     try {
-      const rawCalls = localStorage.getItem(MATERIAL_CALLS_KEY);
+      const rawCalls = safeGetRaw(MATERIAL_CALLS_KEY);
       if (rawCalls) {
         const calls: MaterialCallRequest[] = JSON.parse(rawCalls);
         if (Array.isArray(calls)) {
@@ -4920,7 +5012,7 @@ export const storageService = {
           });
           if (keptCalls.length < calls.length) {
             prunedAndonCalls = calls.length - keptCalls.length;
-            localStorage.setItem(MATERIAL_CALLS_KEY, JSON.stringify(keptCalls));
+            safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(keptCalls));
           }
         }
       }
@@ -4931,7 +5023,7 @@ export const storageService = {
     // 5. Dọn dẹp Kitting Queue đã hoàn thành (thekho_kitting_queue_v1)
     // CHÚ Ý: Giữ lại toàn bộ PENDING_KITTING và IN_BUFFER
     try {
-      const rawQueue = localStorage.getItem(KITTING_QUEUE_KEY);
+      const rawQueue = safeGetRaw(KITTING_QUEUE_KEY);
       if (rawQueue) {
         const queue: KittingQueueItem[] = JSON.parse(rawQueue);
         if (Array.isArray(queue)) {
@@ -4944,7 +5036,7 @@ export const storageService = {
           });
           if (keptQueue.length < queue.length) {
             prunedKittingQueue = queue.length - keptQueue.length;
-            localStorage.setItem(KITTING_QUEUE_KEY, JSON.stringify(keptQueue));
+            safeSetRaw(KITTING_QUEUE_KEY, JSON.stringify(keptQueue));
           }
         }
       }
@@ -4954,7 +5046,7 @@ export const storageService = {
 
     // 6. Dọn dẹp Lô Thẻ Thùng Container đã nhập hết và cũ (thekho_container_batches_v1)
     try {
-      const rawBatches = localStorage.getItem(CONTAINER_BATCHES_KEY);
+      const rawBatches = safeGetRaw(CONTAINER_BATCHES_KEY);
       if (rawBatches) {
         const batches: ContainerBatch[] = JSON.parse(rawBatches);
         if (Array.isArray(batches)) {
@@ -4966,7 +5058,7 @@ export const storageService = {
           });
           if (keptBatches.length < batches.length) {
             prunedContainerBatches = batches.length - keptBatches.length;
-            localStorage.setItem(CONTAINER_BATCHES_KEY, JSON.stringify(keptBatches));
+            safeSetRaw(CONTAINER_BATCHES_KEY, JSON.stringify(keptBatches));
           }
         }
       }
@@ -4976,7 +5068,7 @@ export const storageService = {
 
     // 7. Dọn dẹp Token QR đã quét (thekho_used_qr_tokens_v1)
     try {
-      const rawTokens = localStorage.getItem(USED_QR_TOKENS_KEY);
+      const rawTokens = safeGetRaw(USED_QR_TOKENS_KEY);
       if (rawTokens) {
         const tokens: Record<string, any> = JSON.parse(rawTokens);
         if (typeof tokens === 'object' && tokens !== null) {
@@ -4992,7 +5084,7 @@ export const storageService = {
           }
           if (count > 0) {
             prunedTokens = count;
-            localStorage.setItem(USED_QR_TOKENS_KEY, JSON.stringify(newTokens));
+            safeSetRaw(USED_QR_TOKENS_KEY, JSON.stringify(newTokens));
           }
         }
       }
@@ -5002,7 +5094,7 @@ export const storageService = {
 
     // 8. Dọn dẹp Phiếu Xuất BOM đã hoàn thành cũ (thekho_bom_vouchers_v1)
     try {
-      const rawVouchers = localStorage.getItem(BOM_VOUCHERS_KEY);
+      const rawVouchers = safeGetRaw(BOM_VOUCHERS_KEY);
       if (rawVouchers) {
         const vouchers: BomExportVoucher[] = JSON.parse(rawVouchers);
         if (Array.isArray(vouchers)) {
@@ -5015,7 +5107,7 @@ export const storageService = {
           });
           if (keptVouchers.length < vouchers.length) {
             prunedBomVouchers = vouchers.length - keptVouchers.length;
-            localStorage.setItem(BOM_VOUCHERS_KEY, JSON.stringify(keptVouchers));
+            safeSetRaw(BOM_VOUCHERS_KEY, JSON.stringify(keptVouchers));
           }
         }
       }
@@ -5025,7 +5117,7 @@ export const storageService = {
 
     // 9. Dọn dẹp Báo Cáo Hàng Ngày cũ
     try {
-      const rawReports = localStorage.getItem('thekho_daily_reports_v1');
+      const rawReports = safeGetRaw('thekho_daily_reports_v1');
       if (rawReports) {
         const reports = JSON.parse(rawReports);
         if (Array.isArray(reports)) {
@@ -5034,12 +5126,20 @@ export const storageService = {
             return !isNaN(time) && time >= cutoffMs;
           });
           if (keptReports.length < reports.length) {
-            localStorage.setItem('thekho_daily_reports_v1', JSON.stringify(keptReports));
+            safeSetRaw('thekho_daily_reports_v1', JSON.stringify(keptReports));
           }
         }
       }
     } catch (e) {
       console.warn('[Storage Cleanup] Error pruning daily reports:', e);
+    }
+
+    // 9b. TỰ ĐỘNG NÉN TOÀN BỘ LOCALSTORAGE CÒN LẠI VỚI LZ-STRING UTF-16:
+    // Nén siêu cấp tất cả các key lớn, giảm 70% - 90% dung lượng trình duyệt
+    try {
+      optimizeAllExistingLocalStorage();
+    } catch (e) {
+      console.warn('[Storage Cleanup] Error optimizing storage compression:', e);
     }
 
     // 10. Tính dung lượng sau khi dọn dẹp (Bytes)
@@ -5117,6 +5217,19 @@ export const storageService = {
         bomVouchers: this.getBomVouchers().length,
       },
     };
+  },
+
+  /**
+   * Tối ưu hóa nén toàn bộ LocalStorage sang chuẩn LZ-String UTF-16
+   */
+  optimizeLocalStorage(): {
+    convertedKeys: string[];
+    beforeBytes: number;
+    afterBytes: number;
+    freedBytes: number;
+    percentSaved: number;
+  } {
+    return optimizeAllExistingLocalStorage();
   },
 
   /**

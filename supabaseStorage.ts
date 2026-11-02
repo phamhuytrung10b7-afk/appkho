@@ -168,13 +168,18 @@ function logSupabaseError(context: string, error: any) {
 // Local storage cache timestamp prefix
 export const CACHE_TS_PREFIX = '_thekho_cache_ts_';
 
+import { compressStorageValue, decompressStorageValue } from './storageCompression';
+
 // Helper for localStorage cached data
 export function getLocalCacheData<T>(key: string): { data: T | null; timestamp: string | null } {
   try {
     const ts = localStorage.getItem(`${CACHE_TS_PREFIX}${key}`);
     const rawData = localStorage.getItem(key);
     if (rawData) {
-      return { data: JSON.parse(rawData) as T, timestamp: ts };
+      const decompressed = decompressStorageValue(rawData);
+      if (decompressed) {
+        return { data: JSON.parse(decompressed) as T, timestamp: ts };
+      }
     }
     return { data: null, timestamp: ts };
   } catch {
@@ -201,7 +206,8 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       const activeQueue = (data as any[]).filter(
         (item) => item.status === 'PENDING_KITTING' || item.status === 'IN_BUFFER'
       );
-      localStorage.setItem(key, JSON.stringify(activeQueue));
+      const jsonStr = JSON.stringify(activeQueue);
+      localStorage.setItem(key, compressStorageValue(jsonStr));
       localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
       return;
     }
@@ -220,12 +226,14 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
         locations: p.locations || [],
         updatedAt: p.updatedAt,
       }));
-      localStorage.setItem(key, JSON.stringify(compactParts));
+      const jsonStr = JSON.stringify(compactParts);
+      localStorage.setItem(key, compressStorageValue(jsonStr));
       localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
       return;
     }
 
-    localStorage.setItem(key, JSON.stringify(data));
+    const jsonStr = JSON.stringify(data);
+    localStorage.setItem(key, compressStorageValue(jsonStr));
     localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
   } catch {
     // QuotaExceeded or private browsing mode safe fallback
@@ -360,8 +368,9 @@ export const supabaseKeyStore = {
   /**
    * Batch Smart Sync: Checks timestamps for multiple keys in a single lightweight query (~200 Bytes),
    * and only downloads the specific keys that have actually changed on Cloud!
+   * When forceFetch is true (e.g. user clicks "Đồng bộ Supabase"), downloads 100% fresh data from Cloud.
    */
-  async batchSyncAllKeys(keys: string[]): Promise<{ updatedCount: number; cachedCount: number }> {
+  async batchSyncAllKeys(keys: string[], forceFetch: boolean = false): Promise<{ updatedCount: number; cachedCount: number }> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client || keys.length === 0) {
@@ -387,7 +396,7 @@ export const supabaseKeyStore = {
         const serverTs = String(row.updated_at || '');
         const local = getLocalCacheData(key);
 
-        if (local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
+        if (!forceFetch && local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
           cachedCount++;
           egressStats.cacheHits++;
           egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;
@@ -829,7 +838,8 @@ export async function batchExecuteNgTransaction({
   const rawParts = localStorage.getItem(STORAGE_KEYS.PARTS) || localStorage.getItem('thekho_parts_v1');
   let currentParts: Part[] = [];
   try {
-    currentParts = rawParts ? JSON.parse(rawParts) : [];
+    const decompressed = decompressStorageValue(rawParts);
+    currentParts = decompressed ? JSON.parse(decompressed) : [];
   } catch {
     currentParts = [];
   }

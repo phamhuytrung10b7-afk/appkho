@@ -575,9 +575,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
       pItem.kittedQuantity = Math.min(pItem.rawQuantity, Math.max(explicitQty, queueItemKitted));
     });
 
-    // 3. For general / xuất lẻ kittings:
-    // First, credit them to 'PHIẾU_XUẤT_LẺ'.
-    // If there is an excess beyond 'PHIẾU_XUẤT_LẺ', distribute via FIFO to older vouchers that still have unkitted balance.
+    // 3. For general / xuất lẻ kittings: ONLY credit to 'PHIẾU_XUẤT_LẺ' (ngăn chặn tràn sang các phiếu xuất khác)
     const pendingByPartMap = new Map<string, typeof pendingList>();
     pendingList.forEach((pItem) => {
       const pCode = pItem.partCode.trim().toLowerCase();
@@ -591,7 +589,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
       let unassignedHistory = generalKittedByPart.get(pCode) || 0;
       if (unassignedHistory <= 0) return;
 
-      // First priority: credit to PHIẾU_XUẤT_LẺ
+      // Credit specifically to PHIẾU_XUẤT_LẺ
       const xuatLeItem = itemsForPart.find(
         (i) => (i.voucherCode || '').trim().toLowerCase() === 'phiếu_xuất_lẻ'
       );
@@ -601,22 +599,37 @@ export const KittingView: React.FC<KittingViewProps> = ({
         xuatLeItem.kittedQuantity = (xuatLeItem.kittedQuantity || 0) + alloc;
         unassignedHistory -= alloc;
       }
+    });
 
-      // If still unassigned history remaining, allocate FIFO to oldest pending items
-      if (unassignedHistory > 0) {
-        const sortedItems = [...itemsForPart]
-          .filter((i) => (i.voucherCode || '').trim().toLowerCase() !== 'phiếu_xuất_lẻ')
-          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    // 4. User Requirement: Linh kiện được sản xuất gọi hàng và giao hàng thành công vô lịch sử cấp hàng
+    // thì tự động trừ tồn ở danh sách chờ bóc tách theo nguyên tắc FIFO (từ phiếu cũ nhất đến mới nhất)
+    const completedAndonCalls = materialCalls.filter((m) => m.status === 'COMPLETED');
+    const andonDeliveredByPart = new Map<string, number>();
+    completedAndonCalls.forEach((req) => {
+      const pCode = (req.partCode || '').trim().toLowerCase();
+      const qty = Number(req.requestedQty) || 0;
+      if (pCode && qty > 0) {
+        andonDeliveredByPart.set(pCode, (andonDeliveredByPart.get(pCode) || 0) + qty);
+      }
+    });
 
-        for (const pItem of sortedItems) {
-          if (unassignedHistory <= 0) break;
-          const needed = Math.max(0, pItem.rawQuantity - (pItem.kittedQuantity || 0));
-          if (needed > 0) {
-            const alloc = Math.min(needed, unassignedHistory);
-            pItem.kittedQuantity = (pItem.kittedQuantity || 0) + alloc;
-            unassignedHistory -= alloc;
-          }
-        }
+    pendingByPartMap.forEach((itemsForPart, pCode) => {
+      let andonRemaining = andonDeliveredByPart.get(pCode) || 0;
+      if (andonRemaining <= 0) return;
+
+      // Sắp xếp các phiếu theo FIFO (thời gian cũ nhất trước)
+      const sortedByFifo = [...itemsForPart].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+
+      for (const pItem of sortedByFifo) {
+        if (andonRemaining <= 0) break;
+        const unkitted = Math.max(0, pItem.rawQuantity - (pItem.kittedQuantity || 0));
+        if (unkitted <= 0) continue;
+
+        const deduct = Math.min(unkitted, andonRemaining);
+        pItem.kittedQuantity = (pItem.kittedQuantity || 0) + deduct;
+        andonRemaining -= deduct;
       }
     });
 
@@ -949,11 +962,10 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
 
     // STRICT RULE: Only allow kitting within available quantity of the pending queue (Danh Sách Chờ Bóc Tách)
-    const allQueue = storageService.getKittingQueue();
-    const pendingForPart = allQueue.filter(
+    const pendingForPart = rawPendingItems.filter(
       (item) =>
-        item.status === 'PENDING_KITTING' &&
-        item.partCode.trim().toLowerCase() === partCode.trim().toLowerCase()
+        item.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
+        Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)) > 0
     );
 
     if (pendingForPart.length === 0) {
@@ -1006,6 +1018,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
     // Process deduction strictly from the selected voucher items
     try {
       let remainingToKitting = actualQty;
+      const allQueue = storageService.getKittingQueue();
+      const nowIso = new Date().toISOString();
 
       // If a specific queue item was clicked and belongs to this voucher
       if (selectedItem && selectedItem.partCode.toLowerCase() === partCode.toLowerCase()) {
@@ -1056,7 +1070,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
         }
       }
 
-      // If remainingToKitting > 0, consume sequentially from this voucher's items
+      // If remainingToKitting > 0, consume sequentially from this voucher's existing items in queue
       if (remainingToKitting > 0) {
         for (const pItem of targetVoucherItems) {
           if (remainingToKitting <= 0) break;
@@ -1103,6 +1117,70 @@ export const KittingView: React.FC<KittingViewProps> = ({
             remainingToKitting = 0;
           }
         }
+      }
+
+      // If remainingToKitting > 0 (item originated from BOM export vouchers or synthesized OUT transactions),
+      // create a completed IN_BUFFER kitting record and update Buffer shelf stock directly
+      if (remainingToKitting > 0) {
+        const freshQueue = storageService.getKittingQueue();
+        const targetSample = targetVoucherItems[0];
+        const newDoneItem: KittingQueueItem = {
+          id: 'kit-done-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+          transactionId: targetSample?.transactionId || ('tx-kit-' + Date.now()),
+          partCode,
+          partName: partName || partCode,
+          unit: unit || 'Cái',
+          rawQuantity: remainingToKitting,
+          kittedQuantity: remainingToKitting,
+          scrapQuantity: scrapQty,
+          bufferLocation: finalBuffer,
+          operatorName: operator,
+          status: 'IN_BUFFER',
+          voucherCode: targetVoucher,
+          voucherTitle: targetSample?.voucherTitle || (targetVoucher === 'PHIẾU_XUẤT_LẺ' ? 'Linh kiện xuất lẻ' : `Phiếu xuất ${targetVoucher}`),
+          sourceBin: targetSample?.sourceBin || 'Kho chính',
+          createdAt: nowIso,
+          endTime: nowIso,
+          durationMinutes: 15,
+          kittingProductivity: Math.round((remainingToKitting / 0.25) * 10) / 10,
+        };
+        freshQueue.unshift(newDoneItem);
+        storageService.saveKittingQueue(freshQueue);
+
+        // Update buffer shelf stock
+        const currentBuffers = storageService.getBufferLocations();
+        const bIdx = currentBuffers.findIndex((b) => b.locationId === finalBuffer);
+        if (bIdx >= 0) {
+          const targetBuf = currentBuffers[bIdx];
+          let items: BufferPartItem[] = targetBuf.items ? [...targetBuf.items] : [];
+          const itemIdx = items.findIndex((i) => i.partCode === partCode);
+          if (itemIdx >= 0) {
+            items[itemIdx] = {
+              ...items[itemIdx],
+              partName: partName || partCode,
+              unit: unit || 'Cái',
+              currentStockQty: items[itemIdx].currentStockQty + remainingToKitting,
+              lastUpdated: nowIso,
+            };
+          } else {
+            items.push({
+              id: 'bitem-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+              partCode,
+              partName: partName || partCode,
+              unit: unit || 'Cái',
+              currentStockQty: remainingToKitting,
+              lastUpdated: nowIso,
+            });
+          }
+          currentBuffers[bIdx] = {
+            ...targetBuf,
+            items,
+            currentStockQty: items.reduce((sum, i) => sum + (i.currentStockQty || 0), 0),
+            lastUpdated: nowIso,
+          };
+          storageService.saveBufferLocations(currentBuffers);
+        }
+        remainingToKitting = 0;
       }
 
       // Always log scan event for productivity reporting when items are pushed to OUTBUFFER shelf
