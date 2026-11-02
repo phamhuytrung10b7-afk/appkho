@@ -3725,14 +3725,34 @@ export const storageService = {
       const remoteCalls = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: forceFetch });
       if (remoteCalls && Array.isArray(remoteCalls) && remoteCalls.length > 0) {
         const localCalls = this.getMaterialCallRequests();
-        const activeLocal = localCalls.filter((c) => c && (c.status === 'CALLING' || c.status === 'DELIVERING'));
+        const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
 
         const map = new Map<string, MaterialCallRequest>();
-        for (const rem of remoteCalls) {
-          if (rem && rem.requestId) map.set(rem.requestId, rem);
+        for (const loc of localCalls) {
+          if (loc && loc.requestId) {
+            map.set(loc.requestId, loc);
+          }
         }
-        for (const act of activeLocal) {
-          if (act && act.requestId) map.set(act.requestId, act);
+
+        for (const rem of remoteCalls) {
+          if (rem && rem.requestId) {
+            const existing = map.get(rem.requestId);
+            if (existing) {
+              const wExisting = statusWeights[existing.status] || 0;
+              const wRem = statusWeights[rem.status] || 0;
+              const finalStatus = wRem >= wExisting ? rem.status : existing.status;
+              map.set(rem.requestId, {
+                ...existing,
+                ...rem,
+                status: finalStatus,
+                deliveredBy: rem.deliveredBy || existing.deliveredBy,
+                deliveredAt: rem.deliveredAt || existing.deliveredAt,
+                isStockDeducted: Boolean(existing.isStockDeducted || rem.isStockDeducted),
+              });
+            } else {
+              map.set(rem.requestId, rem);
+            }
+          }
         }
 
         const merged = Array.from(map.values()).sort(

@@ -232,7 +232,7 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       return;
     }
 
-    // Material calls: merge incoming items over existing localStorage items so status updates (e.g. CALLING -> DELIVERING) are immediately saved
+    // Material calls: merge incoming items over existing localStorage items so status updates (e.g. CALLING -> DELIVERING -> COMPLETED) are immediately saved and never reverted
     if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
       const incoming = data as any[];
       const local = getLocalCacheData<any[]>(key);
@@ -242,8 +242,26 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
           if (loc && loc.requestId) map.set(loc.requestId, loc);
         }
       }
+      const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
       for (const inc of incoming) {
-        if (inc && inc.requestId) map.set(inc.requestId, inc);
+        if (inc && inc.requestId) {
+          const existing = map.get(inc.requestId);
+          if (existing) {
+            const wExisting = statusWeights[existing.status] || 0;
+            const wInc = statusWeights[inc.status] || 0;
+            const finalStatus = wInc >= wExisting ? inc.status : existing.status;
+            map.set(inc.requestId, {
+              ...existing,
+              ...inc,
+              status: finalStatus,
+              deliveredBy: inc.deliveredBy || existing.deliveredBy,
+              deliveredAt: inc.deliveredAt || existing.deliveredAt,
+              isStockDeducted: Boolean(inc.isStockDeducted || existing.isStockDeducted),
+            });
+          } else {
+            map.set(inc.requestId, inc);
+          }
+        }
       }
       const merged = Array.from(map.values()).sort(
         (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
