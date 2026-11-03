@@ -4387,28 +4387,54 @@ export const storageService = {
   },
 
   /**
-   * Tự động kiểm tra và phục hồi các phiếu xuất kho BOM & hàng chờ Kitting từ lịch sử giao dịch (transactions).
-   * Đảm bảo không bao giờ bị mất phiếu xuất BOM hay hàng chờ bóc tách dù mạng chập chờn hay reload.
+   * KÍCH HOẠT THEO YÊU CẦU (ON-DEMAND): Đối soát & Bù phiếu xuất kho BOM & Kitting Queue từ transactions.
+   * Giới hạn phạm vi: chỉ quét các giao dịch xuất trong ngày/tuần hiện tại (mặc định 7 ngày gần nhất).
+   * Tự động tái lập các phiếu còn thiếu và đẩy đồng bộ ngay lên Supabase Cloud.
    */
-  reconcileBomVouchersAndQueueFromTransactions(): { restoredVouchers: number; restoredQueueItems: number } {
+  async reconcileBomVouchersAndQueueFromTransactions(options?: { daysLimit?: number }): Promise<{
+    restoredVouchers: number;
+    restoredQueueItems: number;
+    scannedCount: number;
+    totalVouchersCount: number;
+  }> {
     let restoredVouchers = 0;
     let restoredQueueItems = 0;
 
-    const txs = this.getTransactions();
-    if (!txs || txs.length === 0) return { restoredVouchers: 0, restoredQueueItems: 0 };
+    let txs = this.getTransactions();
+    // Nếu trong RAM chưa có, tải giao dịch trực tiếp từ Supabase Relational Table
+    if (!txs || txs.length === 0) {
+      try {
+        const cloudTxs = await supabaseRelationalStore.selectAllTransactions();
+        if (cloudTxs && cloudTxs.length > 0) {
+          txs = cloudTxs;
+          inMemoryTransactions = cloudTxs;
+        }
+      } catch (_) {}
+    }
+
+    if (!txs || txs.length === 0) {
+      return { restoredVouchers: 0, restoredQueueItems: 0, scannedCount: 0, totalVouchersCount: this.getBomExportVouchers().length };
+    }
 
     const vouchers = this.getBomExportVouchers();
     const queue = this.getKittingQueue();
     const modelBoms = this.getModelBOMs();
 
-    // Tìm tất cả giao dịch xuất theo BOM
-    const bomTxs = txs.filter(
-      (t) =>
-        t.type === 'OUT' &&
-        (t.productionOrder?.toUpperCase().includes('SHA') ||
-          t.notes?.toUpperCase().includes('MODEL') ||
-          (t.reasonOrPurpose && t.reasonOrPurpose.includes('BOM')))
-    );
+    // Giới hạn phạm vi ngày/tuần hiện tại (mặc định 7 ngày)
+    const days = options?.daysLimit && options.daysLimit > 0 ? options.daysLimit : 7;
+    const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    // Tìm các giao dịch xuất theo BOM trong phạm vi thời gian chỉ định
+    const bomTxs = txs.filter((t) => {
+      if (t.type !== 'OUT') return false;
+      const tTime = new Date(t.date).getTime();
+      if (!isNaN(tTime) && tTime < cutoffTime) return false;
+      return (
+        t.productionOrder?.toUpperCase().includes('SHA') ||
+        t.notes?.toUpperCase().includes('MODEL') ||
+        (t.reasonOrPurpose && t.reasonOrPurpose.includes('BOM'))
+      );
+    });
 
     // Gom nhóm giao dịch theo Model + Ngày xuất
     const groupMap = new Map<string, { modelName: string; date: string; person: string; modelQty: number; txs: Transaction[] }>();
@@ -4581,12 +4607,19 @@ export const storageService = {
 
     if (vouchersUpdated) {
       this.saveBomExportVouchers(vouchers);
+      await supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers).catch(() => {});
     }
     if (queueUpdated) {
       this.saveKittingQueue(queue);
+      await supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue).catch(() => {});
     }
 
-    return { restoredVouchers, restoredQueueItems };
+    return {
+      restoredVouchers,
+      restoredQueueItems,
+      scannedCount: bomTxs.length,
+      totalVouchersCount: vouchers.length,
+    };
   },
 
   // --- USER ACCOUNTS STORAGE & AUTH ---
@@ -5330,11 +5363,6 @@ export const storageService = {
         localStorage.setItem(USERS_KEY, JSON.stringify(DEFAULT_SYSTEM_USERS));
         supabaseKeyStore.set(USERS_KEY, DEFAULT_SYSTEM_USERS);
       }
-
-      // 5. Tự động kiểm tra và phục hồi đồng bộ các phiếu xuất kho BOM & Kitting Queue từ transactions
-      try {
-        this.reconcileBomVouchersAndQueueFromTransactions();
-      } catch (_) {}
     } catch (err: any) {
       parts = this.getParts();
       transactions = this.getTransactions();

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { Part, AppSettings, BomExportVoucher, BomExportVoucherItem } from './types';
 import { storageService, isLocationMatch } from './storage';
-import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks, Search, Trash2, Sparkles, Filter, Plus } from 'lucide-react';
+import { ArrowUpRight, CheckCircle2, AlertTriangle, AlertCircle, Package, Clock, User, FileCode, FileText, QrCode, Zap, Printer, X, FileSpreadsheet, Upload, Download, MapPin, RotateCcw, Check, PlusCircle, Layers, ListChecks, Search, Trash2, Sparkles, Filter, Plus, RefreshCw } from 'lucide-react';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { QrScannerModal } from './QrScannerModal';
 import { InlineQrScanner } from './InlineQrScanner';
@@ -141,6 +141,40 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
 
   const refreshSavedVouchers = () => {
     setSavedVouchers(storageService.getBomExportVouchers());
+  };
+
+  // Đối soát & Bù phiếu BOM (On-Demand khi bấm nút UI)
+  const [isReconciling, setIsReconciling] = useState(false);
+
+  const handleReconcileBomVouchers = async () => {
+    setIsReconciling(true);
+    setMessage({
+      type: 'info',
+      text: '🔄 Đang tiến hành đối soát các giao dịch xuất BOM trong tuần và kiểm tra bù phiếu lên Supabase Cloud...',
+    });
+    try {
+      const result = await storageService.reconcileBomVouchersAndQueueFromTransactions({ daysLimit: 7 });
+      refreshSavedVouchers();
+
+      if (result.restoredVouchers > 0) {
+        setMessage({
+          type: 'success',
+          text: `🎉 Đã đối soát thành công ${result.restoredVouchers} phiếu bị thiếu! Đã tái lập và đồng bộ lên Supabase Cloud.`,
+        });
+      } else {
+        setMessage({
+          type: 'success',
+          text: `✅ Đã đối soát xong ${result.scannedCount} giao dịch BOM trong tuần! Toàn bộ phiếu xuất kho đều đầy đủ, không có phiếu nào bị thiếu.`,
+        });
+      }
+    } catch (err: any) {
+      setMessage({
+        type: 'error',
+        text: `Lỗi trong quá trình đối soát: ${err?.message || 'Không thể đối soát'}`,
+      });
+    } finally {
+      setIsReconciling(false);
+    }
   };
 
   // Xuất phiếu xuất kho theo model BOM ra file Excel (.xlsx) với cấu trúc cột y chang bản in
@@ -1086,6 +1120,21 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     {partialVouchers.length} phiếu chờ
                   </span>
                 </button>
+
+                <button
+                  type="button"
+                  disabled={isReconciling}
+                  onClick={handleReconcileBomVouchers}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center space-x-2 border shadow-2xs ${
+                    isReconciling
+                      ? 'bg-indigo-100 text-indigo-400 border-indigo-200 cursor-not-allowed'
+                      : 'bg-white hover:bg-indigo-50 text-indigo-700 border-indigo-200 hover:border-indigo-300'
+                  }`}
+                  title="Quét đối soát các giao dịch xuất BOM trong tuần để bù phiếu còn thiếu lên Supabase"
+                >
+                  <RefreshCw className={`w-4 h-4 text-indigo-600 ${isReconciling ? 'animate-spin' : ''}`} />
+                  <span>{isReconciling ? 'Đang đối soát & bù phiếu...' : 'Đối soát & Bù phiếu BOM'}</span>
+                </button>
               </div>
 
               <div className="text-[11px] font-bold text-slate-500 px-3 py-1 bg-white rounded-xl border border-slate-200 shadow-xs">
@@ -1577,6 +1626,29 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     placeholder="Tìm mã phiếu / model / người lập..."
                     className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-pink-500 w-full sm:w-56"
                   />
+                  <button
+                    type="button"
+                    disabled={isReconciling}
+                    onClick={handleReconcileBomVouchers}
+                    className={`px-3.5 py-2 font-bold rounded-xl text-xs transition-all cursor-pointer flex items-center space-x-1.5 shadow-xs shrink-0 ${
+                      isReconciling
+                        ? 'bg-indigo-300 text-white cursor-not-allowed'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                    }`}
+                    title="Quét đối soát các giao dịch xuất theo BOM trong tuần, tự động tái lập và bù các mã phiếu xuất còn thiếu lên Supabase"
+                  >
+                    {isReconciling ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Đang đối soát...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 text-indigo-200" />
+                        <span>Đối soát & Bù phiếu BOM</span>
+                      </>
+                    )}
+                  </button>
                   <button
                     type="button"
                     onClick={() => setIsVoucherHistoryOpen(!isVoucherHistoryOpen)}
