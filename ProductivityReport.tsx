@@ -12,7 +12,7 @@ import {
   ComposedChart,
   LabelList,
 } from 'recharts';
-import { FileSpreadsheet, Calendar, Users, Plus, Trash2, Download, RefreshCw, BarChart2, Table, Sparkles, QrCode, Cloud, CloudOff, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { FileSpreadsheet, Calendar, Users, Plus, Trash2, Download, RefreshCw, BarChart2, Table, Sparkles, QrCode, Cloud, CloudOff, CheckCircle2, AlertTriangle, Save } from 'lucide-react';
 import { Part } from './types';
 import { ProductivityExportModal } from './ProductivityExportModal';
 import { storageService } from './storage';
@@ -68,7 +68,24 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
   const [cloudSaveAlert, setCloudSaveAlert] = useState<string | null>(null);
+  const [khsxSavedSuccess, setKhsxSavedSuccess] = useState<string | null>(null);
+  const [isSavingKhsx, setIsSavingKhsx] = useState(false);
   const [personnelConfig, setPersonnelConfig] = useState(() => storageService.getProductivityPersonnelConfig());
+
+  // Local draft map for KHSX inputs (partCode -> raw string) to avoid auto-sync lag on every keystroke
+  const [localKhsxMap, setLocalKhsxMap] = useState<Record<string, string>>({});
+
+  // Initialize draft inputs from personnelConfig.khsxMap
+  useEffect(() => {
+    if (personnelConfig?.khsxMap) {
+      const initial: Record<string, string> = {};
+      for (const [code, val] of Object.entries(personnelConfig.khsxMap)) {
+        const numVal = Number(val) || 0;
+        initial[code] = numVal > 0 ? String(numVal) : '';
+      }
+      setLocalKhsxMap(initial);
+    }
+  }, [personnelConfig?.khsxMap]);
 
   // 35-day date retention bounds
   const today = new Date();
@@ -110,24 +127,39 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
     }
   };
 
-  const handleUpdateKhsx = async (partCode: string, valStr: string) => {
-    const parsed = parseInt(valStr, 10);
-    const newKhsx = isNaN(parsed) ? 0 : Math.max(0, parsed);
-    const updatedMap = {
-      ...(personnelConfig.khsxMap || {}),
-      [partCode]: newKhsx,
-    };
-    const updatedCfg = {
-      ...personnelConfig,
-      khsxMap: updatedMap,
-    };
-    setPersonnelConfig(updatedCfg);
-    const result = await storageService.saveProductivityPersonnelConfig(updatedCfg);
-    if (!result.cloudSynced) {
-      setCloudSaveAlert(result.message || '⚠️ MẤT KẾT NỐI SUPABASE CLOUD: Không thể lưu chỉ tiêu KHSX lên Cloud!');
+  // Manual save all KHSX targets & sync to Supabase Cloud on button click
+  const handleSaveAllKhsx = async () => {
+    setIsSavingKhsx(true);
+    try {
+      const newKhsxMap: Record<string, number> = { ...(personnelConfig.khsxMap || {}) };
+      for (const [code, valStr] of Object.entries(localKhsxMap)) {
+        const parsed = parseInt(String(valStr), 10);
+        newKhsxMap[code] = isNaN(parsed) ? 0 : Math.max(0, parsed);
+      }
+
+      const updatedCfg = {
+        ...personnelConfig,
+        khsxMap: newKhsxMap,
+      };
+
+      setPersonnelConfig(updatedCfg);
+      const result = await storageService.saveProductivityPersonnelConfig(updatedCfg);
+
+      if (result.cloudSynced) {
+        setKhsxSavedSuccess('✅ Đã lưu KHSX & đồng bộ thành công lên Supabase Cloud!');
+      } else {
+        setCloudSaveAlert(result.message || '⚠️ Đã lưu tại máy nhưng chưa đồng bộ được lên Supabase Cloud!');
+        setTimeout(() => setCloudSaveAlert(null), 5000);
+      }
+
+      setTimeout(() => setKhsxSavedSuccess(null), 4000);
+      setRefreshTrigger((p) => p + 1);
+    } catch (err: any) {
+      setCloudSaveAlert('⚠️ Lỗi lưu KHSX: ' + (err?.message || 'Không thể lưu'));
       setTimeout(() => setCloudSaveAlert(null), 5000);
+    } finally {
+      setIsSavingKhsx(false);
     }
-    setRefreshTrigger((p) => p + 1);
   };
 
   const personnel: PersonnelSummary = {
@@ -171,14 +203,15 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
     const codeKey = pCode.trim().toUpperCase();
     if (!partMap.has(codeKey)) {
       const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
-      const khsx = personnelConfig.khsxMap?.[pCode] || 550;
+      // Default to 0 / blank (no auto pre-filled default numbers like 550)
+      const khsx = personnelConfig.khsxMap?.[pCode] ?? 0;
       partMap.set(codeKey, {
         id: codeKey,
         partCode: pCode,
         partName: pName || pCode,
         khsx: khsx,
         thucHien: 0,
-        conLai: khsx,
+        conLai: khsx > 0 ? khsx : 0,
         tyLeHoanThanh: 0,
         hsqd: factor,
         hourly: {
@@ -255,6 +288,18 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   });
 
   const items = Array.from(partMap.values());
+
+  // Apply draft KHSX inputs for real-time live preview without lag
+  items.forEach((item) => {
+    const draftStr = localKhsxMap[item.partCode];
+    if (draftStr !== undefined) {
+      const parsed = parseInt(draftStr, 10);
+      const val = isNaN(parsed) ? 0 : Math.max(0, parsed);
+      item.khsx = val;
+      item.conLai = Math.max(0, val - item.thucHien);
+      item.tyLeHoanThanh = val > 0 ? (item.thucHien / val) * 100 : 0;
+    }
+  });
 
   // Calculate hourly sums and metrics
   const hourlyTotals: { [slot: string]: number } = {};
@@ -375,6 +420,22 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
           </div>
           <button
             onClick={() => setCloudSaveAlert(null)}
+            className="text-white hover:text-slate-200 text-xs underline font-extrabold cursor-pointer"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
+
+      {/* KHSX Save Success Toast */}
+      {khsxSavedSuccess && (
+        <div className="bg-emerald-600 text-white px-4 py-3 rounded-2xl shadow-md flex items-center justify-between text-xs font-bold animate-in fade-in">
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 className="w-5 h-5 text-emerald-200 shrink-0" />
+            <span>{khsxSavedSuccess}</span>
+          </div>
+          <button
+            onClick={() => setKhsxSavedSuccess(null)}
             className="text-white hover:text-slate-200 text-xs underline font-extrabold cursor-pointer"
           >
             Đóng
@@ -573,22 +634,36 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
             <div>
               <h3 className="font-black text-lg tracking-tight">Báo Cáo Hằng Ngày</h3>
               <p className="text-xs text-emerald-100">
-                Danh sách linh kiện được ghi nhận tự động khi quét bóc tách thẻ thùng Kitting Smart thành công.
+                Cột KHSX mặc định để trắng. Điền số lượng và bấm nút "Lưu KHSX & Đồng bộ" để đồng bộ Supabase Cloud.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3 bg-emerald-900/80 px-4 py-2 rounded-xl border border-emerald-700">
-            <span className="text-xs font-extrabold text-emerald-200 uppercase">Ngày:</span>
-            <input
-              type="date"
-              min={minDateStr}
-              max={maxDateStr}
-              value={reportDate}
-              onChange={(e) => setReportDate(e.target.value)}
-              className="bg-white text-slate-900 px-3 py-1 rounded-lg text-xs font-bold border-none cursor-pointer focus:ring-2 focus:ring-emerald-400"
-              title="Xem báo cáo hằng ngày trong vòng 35 ngày"
-            />
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Mobile & Desktop Save KHSX Button */}
+            <button
+              type="button"
+              onClick={handleSaveAllKhsx}
+              disabled={isSavingKhsx}
+              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-black shadow-lg transition-all cursor-pointer active:scale-95 touch-manipulation min-h-[40px] border border-blue-400/40"
+              title="Lưu tất cả chỉ tiêu KHSX đã điền và đồng bộ Supabase Cloud"
+            >
+              <Save className={`w-4 h-4 ${isSavingKhsx ? 'animate-spin' : ''}`} />
+              <span>{isSavingKhsx ? 'Đang lưu Cloud...' : 'Lưu KHSX & Đồng Bộ'}</span>
+            </button>
+
+            <div className="flex items-center space-x-2 bg-emerald-900/80 px-3 py-1.5 rounded-xl border border-emerald-700">
+              <span className="text-xs font-extrabold text-emerald-200 uppercase">Ngày:</span>
+              <input
+                type="date"
+                min={minDateStr}
+                max={maxDateStr}
+                value={reportDate}
+                onChange={(e) => setReportDate(e.target.value)}
+                className="bg-white text-slate-900 px-3 py-1 rounded-lg text-xs font-bold border-none cursor-pointer focus:ring-2 focus:ring-emerald-400"
+                title="Xem báo cáo hằng ngày trong vòng 35 ngày"
+              />
+            </div>
           </div>
         </div>
 
@@ -639,10 +714,24 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
         <div className="overflow-x-auto border border-slate-400 rounded-xl">
           <table className="w-full text-xs text-slate-900 border-collapse border border-slate-400">
             <thead>
-              {/* Yellow Table Header Row matching Image 6 */}
+              {/* Yellow Table Header Row matching Image 6 with integrated Save button */}
               <tr className="bg-yellow-300 text-slate-900 font-bold uppercase text-[11px] border-b border-slate-400">
                 <th className="p-2 border border-slate-400 text-left min-w-[220px]">Tên linh kiện</th>
-                <th className="p-2 border border-slate-400 text-center w-16">KHSX</th>
+                <th className="p-1.5 border border-slate-400 text-center w-28 bg-yellow-300">
+                  <div className="flex flex-col items-center justify-center gap-1">
+                    <span className="font-black text-slate-900">KHSX</span>
+                    <button
+                      type="button"
+                      onClick={handleSaveAllKhsx}
+                      disabled={isSavingKhsx}
+                      className="flex items-center justify-center space-x-1 px-2 py-1 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white rounded-lg text-[10px] font-black shadow-md cursor-pointer transition-all active:scale-95 touch-manipulation min-h-[30px] w-full border border-blue-500"
+                      title="Bấm để lưu tất cả chỉ tiêu KHSX và đồng bộ lên Supabase Cloud"
+                    >
+                      <Save className={`w-3.5 h-3.5 ${isSavingKhsx ? 'animate-spin' : ''}`} />
+                      <span>{isSavingKhsx ? 'Lưu...' : 'Lưu KHSX'}</span>
+                    </button>
+                  </div>
+                </th>
                 <th className="p-2 border border-slate-400 text-center w-16">Thực Hiện</th>
                 <th className="p-2 border border-slate-400 text-center w-16">Còn Lại</th>
                 <th className="p-2 border border-slate-400 text-center w-20">Tỉ lệ Hoàn Thành</th>
@@ -681,11 +770,17 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                         type="number"
                         min="0"
                         step="1"
-                        value={item.khsx || ''}
-                        onChange={(e) => handleUpdateKhsx(item.partCode, e.target.value)}
+                        value={localKhsxMap[item.partCode] !== undefined ? localKhsxMap[item.partCode] : (item.khsx > 0 ? String(item.khsx) : '')}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setLocalKhsxMap((prev) => ({
+                            ...prev,
+                            [item.partCode]: val,
+                          }));
+                        }}
                         className="w-20 text-center font-black bg-white hover:bg-amber-100/80 border border-amber-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-500/30 rounded px-1.5 py-1 text-xs text-blue-900 transition-all shadow-2xs"
-                        title="Bấm để điền Kế hoạch sản xuất (KHSX)"
-                        placeholder="0"
+                        title="Điền Kế hoạch sản xuất (KHSX). Bấm nút 'Lưu KHSX' để đồng bộ."
+                        placeholder=""
                       />
                     </td>
                     <td className="p-2 border border-slate-300 text-center font-medium">

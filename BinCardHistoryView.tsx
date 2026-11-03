@@ -100,13 +100,34 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
     );
   }, [parts, searchTerm]);
 
-  // History for Selected Part
+  // History for Selected Part with computed running stock
   const partHistory = useMemo(() => {
     if (!selectedPart) return [];
+    let source: Transaction[] = [];
     if (cloudHistory !== null && cloudHistory.length > 0) {
-      return [...cloudHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      source = [...cloudHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    } else {
+      source = storageService.getBinCardHistory(selectedPart.id);
     }
-    return storageService.getBinCardHistory(selectedPart.id);
+
+    let running = 0;
+    return source.map((tx) => {
+      const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+      if (tx.type === 'IN') {
+        running += q;
+      } else if (
+        tx.type === 'OUT' ||
+        tx.type === 'TRANSFER_TO_NG' ||
+        tx.type === 'EXPORT_NG_RTV' ||
+        tx.type === 'EXPORT_NG_SCRAP'
+      ) {
+        running = Math.max(0, running - q);
+      }
+      return {
+        ...tx,
+        computedStockAfter: Math.round(running * 100) / 100,
+      };
+    });
   }, [selectedPart, cloudHistory]);
 
   // Filtered History for Selected Part
@@ -525,7 +546,7 @@ export const BinCardHistoryView: React.FC<BinCardHistoryViewProps> = ({
                             {!isStockIn && !isAudit ? `-${item.quantity.toLocaleString('vi-VN')}` : '-'}
                           </td>
                           <td className="p-2 border-r border-slate-200 text-right font-black text-slate-900 bg-amber-50/30">
-                            {item.stockAfter.toLocaleString('vi-VN')} {selectedPart.unit}
+                            {(item.computedStockAfter ?? item.stockAfter).toLocaleString('vi-VN')} {selectedPart.unit}
                           </td>
                           <td className="p-2 border-r border-slate-200 font-bold text-slate-800 whitespace-nowrap">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${

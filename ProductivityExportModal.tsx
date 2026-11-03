@@ -107,7 +107,7 @@ export const ProductivityExportModal: React.FC<ProductivityExportModalProps> = (
 
       if (!partMap.has(codeKey)) {
         const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
-        const khsx = config.khsxMap?.[log.partCode] || 550;
+        const khsx = config.khsxMap?.[log.partCode] ?? 0;
         partMap.set(codeKey, {
           partCode: log.partCode,
           partName: log.partName || log.partCode,

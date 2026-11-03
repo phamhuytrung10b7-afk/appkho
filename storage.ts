@@ -696,8 +696,25 @@ export const storageService = {
     if (!part) return null;
     const history = this.getBinCardHistory(part.id);
     if (history.length === 0) return part;
-    const latestTx = history[history.length - 1];
-    const trueStock = Math.max(0, latestTx.stockAfter);
+
+    let totalIn = 0;
+    let totalOut = 0;
+    for (let h = 0; h < history.length; h++) {
+      const tx = history[h];
+      const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+      if (q <= 0) continue;
+      if (tx.type === 'IN') {
+        totalIn += q;
+      } else if (
+        tx.type === 'OUT' ||
+        tx.type === 'TRANSFER_TO_NG' ||
+        tx.type === 'EXPORT_NG_RTV' ||
+        tx.type === 'EXPORT_NG_SCRAP'
+      ) {
+        totalOut += q;
+      }
+    }
+    const trueStock = Math.max(0, Math.round((totalIn - totalOut) * 100) / 100);
     const activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(part, history) : [];
     const newLocSummary = this.formatPartLocationSummary(activeLocs);
 
@@ -786,8 +803,7 @@ export const storageService = {
         }
       }
 
-      const fifoLotsTotal = Array.from(fifoLotShelves.values()).reduce((sum, q) => sum + q, 0);
-      const trueStock = Math.max(ledgerStock, fifoLotsTotal);
+      const trueStock = ledgerStock;
 
       // Derive physical shelf locations
       let activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];

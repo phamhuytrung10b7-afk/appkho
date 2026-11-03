@@ -61,21 +61,41 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
     }
   }, [isOpen, part?.id, part?.code]);
 
-  // Fetch chronological bin card transaction history
+  // Fetch chronological bin card transaction history with accurate running stock calculation
   const allHistory = useMemo(() => {
     if (!part) return [];
+    let source: Transaction[] = [];
     if (cloudHistory !== null && cloudHistory.length > 0) {
-      // Sort chronologically ascending
-      return [...cloudHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      source = [...cloudHistory].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    } else {
+      source = storageService.getBinCardHistory(part.id);
     }
-    return storageService.getBinCardHistory(part.id);
+
+    let running = 0;
+    return source.map((tx) => {
+      const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+      if (tx.type === 'IN') {
+        running += q;
+      } else if (
+        tx.type === 'OUT' ||
+        tx.type === 'TRANSFER_TO_NG' ||
+        tx.type === 'EXPORT_NG_RTV' ||
+        tx.type === 'EXPORT_NG_SCRAP'
+      ) {
+        running = Math.max(0, running - q);
+      }
+      return {
+        ...tx,
+        computedStockAfter: Math.round(running * 100) / 100,
+      };
+    });
   }, [part?.id, cloudHistory]);
 
   // Actual current ending balance from transaction ledger:
   const actualCurrentStock = useMemo(() => {
     if (!part) return 0;
     if (allHistory.length > 0) {
-      return allHistory[allHistory.length - 1].stockAfter;
+      return allHistory[allHistory.length - 1].computedStockAfter;
     }
     return part.currentStock;
   }, [allHistory, part?.currentStock]);
@@ -84,7 +104,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
   useEffect(() => {
     if (!part) return;
     if (allHistory.length > 0) {
-      const latestStock = allHistory[allHistory.length - 1].stockAfter;
+      const latestStock = allHistory[allHistory.length - 1].computedStockAfter;
       if (part.currentStock !== latestStock) {
         storageService.reconcilePartStock(part.id);
       }
@@ -392,7 +412,7 @@ export const ElectronicBinCardModal: React.FC<ElectronicBinCardModalProps> = ({
                             {!isStockIn && !isAudit ? `-${item.quantity.toLocaleString('vi-VN')}` : '-'}
                           </td>
                           <td className="p-2 border-r border-slate-200 text-right font-black text-slate-900 bg-amber-50/40">
-                            {item.stockAfter.toLocaleString('vi-VN')}
+                            {(item.computedStockAfter ?? item.stockAfter).toLocaleString('vi-VN')}
                           </td>
                           <td className="p-2 border-r border-slate-200 font-bold text-slate-800 bg-emerald-50/20 whitespace-nowrap">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${
