@@ -272,8 +272,7 @@ export function isServerTimestampNewer(serverTs: string, localTs: string | null)
   const sTime = new Date(serverTs).getTime();
   const lTime = new Date(localTs).getTime();
   if (isNaN(sTime) || isNaN(lTime)) return serverTs !== localTs;
-  // Server must be strictly newer by more than 1 second to avoid clock skew or formatting diffs
-  return sTime > lTime + 1000;
+  return sTime > lTime;
 }
 
 /**
@@ -410,17 +409,21 @@ export const supabaseKeyStore = {
       const changedKeys: string[] = [];
       let cachedCount = 0;
 
-      for (const row of metaList) {
-        const key = row.key;
-        const serverTs = String(row.updated_at || '');
-        const local = getLocalCacheData(key);
+      if (forceFetch) {
+        changedKeys.push(...keys);
+      } else {
+        for (const row of metaList) {
+          const key = row.key;
+          const serverTs = String(row.updated_at || '');
+          const local = getLocalCacheData(key);
 
-        if (!forceFetch && local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
-          cachedCount++;
-          egressStats.cacheHits++;
-          egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;
-        } else {
-          changedKeys.push(key);
+          if (local.data !== null && !isServerTimestampNewer(serverTs, local.timestamp)) {
+            cachedCount++;
+            egressStats.cacheHits++;
+            egressStats.estimatedBytesSaved += JSON.stringify(local.data).length;
+          } else {
+            changedKeys.push(key);
+          }
         }
       }
 

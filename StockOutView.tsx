@@ -769,6 +769,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
 
             const printedItems: BomExportVoucherItem[] = [];
             const roundItemsSummary: Array<{ partCode: string; quantity: number; fifoLocation?: string }> = [];
+            const batchStockOutItems: any[] = [];
 
             checkedItems.forEach((item) => {
               let fullFifoLocStr = 'Kho chính';
@@ -789,7 +790,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   fullFifoLocStr = `${locationName} (${fifoNext.contNumber})`;
                 }
 
-                const tx = storageService.addStockOut({
+                batchStockOutItems.push({
                   partId: item.sysPart.id,
                   quantity: item.qtyThisRound,
                   date: new Date(dateTime).toISOString(),
@@ -803,16 +804,6 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   voucherCode: bomVoucherCode,
                   voucherTitle: `Model BOM: ${currentBOM.name}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`,
                   sourceBin: locationName,
-                });
-
-                const latestPart = storageService.getPartById(item.sysPart.id) || item.sysPart;
-                const partLocs = storageService.getPartLocations(latestPart);
-                const updatedActiveLocs = partLocs.filter((l) => l.quantity > 0);
-                const newLocSummary = storageService.formatPartLocationSummary(updatedActiveLocs);
-                storageService.updatePart(latestPart.id, {
-                  currentStock: tx.stockAfter,
-                  locations: updatedActiveLocs,
-                  location: newLocSummary,
                 });
 
                 roundItemsSummary.push({
@@ -838,6 +829,11 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                 extraNote: item.extraNote,
               });
             });
+
+            // Thực hiện xuất kho hàng loạt siêu tốc (1 lần ghi nguyên khối, không lag, không nghẽn mạng)
+            if (batchStockOutItems.length > 0) {
+              storageService.executeBatchStockOut({ items: batchStockOutItems });
+            }
 
             const totalQtyRequired = printedItems.reduce((sum, i) => sum + (i.requiredQty || 0), 0);
             const totalQtyOut = printedItems.reduce((sum, i) => sum + (i.exportedQty || 0), 0);
@@ -923,6 +919,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
 
             const nextRound = (selectedBackorderVoucher.dispatchRounds || 1) + 1;
             const roundItemsSummary: Array<{ partCode: string; quantity: number; fifoLocation?: string }> = [];
+            const batchStockOutItems: any[] = [];
 
             const updatedItems = selectedBackorderVoucher.items.map((item) => {
               const match = checkedItems.find((ci) => ci.partCode === item.partCode);
@@ -957,7 +954,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                 }
                 fullFifoLocStr = locationName;
 
-                const tx = storageService.addStockOut({
+                batchStockOutItems.push({
                   partId: match.sysPart.id,
                   quantity: qtyOutThisRound,
                   date: new Date(dateTime).toISOString(),
@@ -969,16 +966,6 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   voucherCode: selectedBackorderVoucher.voucherCode,
                   voucherTitle: `Xuất bù Đợt ${nextRound} - ${selectedBackorderVoucher.modelName}`,
                   sourceBin: locationName,
-                });
-
-                const latestPart = storageService.getPartById(match.sysPart.id) || match.sysPart;
-                const partLocs = storageService.getPartLocations(latestPart);
-                const updatedActiveLocs = partLocs.filter((l) => l.quantity > 0);
-                const newLocSummary = storageService.formatPartLocationSummary(updatedActiveLocs);
-                storageService.updatePart(latestPart.id, {
-                  currentStock: tx.stockAfter,
-                  locations: updatedActiveLocs,
-                  location: newLocSummary,
                 });
 
                 roundItemsSummary.push({
@@ -1003,6 +990,11 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                 status: newStatus,
               };
             });
+
+            // Thực hiện xuất bù hàng loạt siêu tốc (1 lần ghi nguyên khối, không lag, không nghẽn mạng)
+            if (batchStockOutItems.length > 0) {
+              storageService.executeBatchStockOut({ items: batchStockOutItems });
+            }
 
             const totalQtyRequired = updatedItems.reduce((sum, i) => sum + (i.requiredQty || 0), 0);
             const totalQtyOut = updatedItems.reduce((sum, i) => sum + (i.exportedQty || 0), 0);

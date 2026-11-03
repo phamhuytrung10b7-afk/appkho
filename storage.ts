@@ -1756,6 +1756,183 @@ export const storageService = {
     return newTx;
   },
 
+  // Perform fast batched stock exports (used by BOM export to prevent browser freezing and network saturation)
+  executeBatchStockOut(params: {
+    items: Array<{
+      partId: string;
+      quantity: number;
+      importedQuantity?: number;
+      date?: string;
+      person?: string;
+      productionOrder?: string;
+      reasonOrPurpose?: string;
+      notes?: string;
+      locationId?: string;
+      voucherCode?: string;
+      voucherTitle?: string;
+      sourceBin?: string;
+      fifoAllocations?: Array<{
+        locationName: string;
+        quantity: number;
+        lotId?: string;
+        contNumber?: string;
+      }>;
+    }>;
+  }): { transactions: Transaction[]; updatedParts: Part[] } {
+    const parts = this.getParts();
+    const txs = this.getTransactions();
+    const queue = this.getKittingQueue();
+    const buffers = this.getBufferLocations();
+
+    const createdTxs: Transaction[] = [];
+    const affectedPartsMap = new Map<string, Part>();
+
+    for (const item of params.items) {
+      if (item.quantity <= 0) continue;
+      const partIdx = parts.findIndex((p) => p.id === item.partId || p.code === item.partId);
+      if (partIdx === -1) continue;
+      const part = parts[partIdx];
+
+      const stockBefore = part.currentStock;
+      const stockAfter = Math.max(0, stockBefore - item.quantity);
+
+      const locs = this.getPartLocations(part);
+      let remainingToDeduct = item.quantity;
+      const deductedLocations: Array<{ name: string; qty: number }> = [];
+
+      const targetLoc = item.locationId
+        ? item.locationId.replace(/\s*\([\d\.\,\s]+\)$/, '').trim()
+        : '';
+
+      if (targetLoc) {
+        const existing = locs.find((l) => isLocationMatch(l.locationName, targetLoc) && l.quantity > 0);
+        if (existing) {
+          const deduct = Math.min(existing.quantity, remainingToDeduct);
+          existing.quantity -= deduct;
+          remainingToDeduct -= deduct;
+          deductedLocations.push({ name: existing.locationName, qty: deduct });
+        }
+      }
+
+      if (remainingToDeduct > 0) {
+        for (const loc of locs) {
+          if (loc.quantity > 0) {
+            const deduct = Math.min(loc.quantity, remainingToDeduct);
+            loc.quantity -= deduct;
+            remainingToDeduct -= deduct;
+            const existingDeducted = deductedLocations.find((d) => d.name === loc.locationName);
+            if (existingDeducted) {
+              existingDeducted.qty += deduct;
+            } else {
+              deductedLocations.push({ name: loc.locationName, qty: deduct });
+            }
+            if (remainingToDeduct <= 0) break;
+          }
+        }
+      }
+
+      const activeLocs = locs.filter((l) => l.quantity > 0);
+      const newLocSummary = this.formatPartLocationSummary(activeLocs);
+
+      part.currentStock = stockAfter;
+      part.locations = activeLocs;
+      part.location = newLocSummary;
+      part.updatedAt = new Date().toISOString();
+      affectedPartsMap.set(part.id, part);
+
+      const txLocation = deductedLocations.length > 0
+        ? deductedLocations.map((d) => d.name).join(', ')
+        : (targetLoc || 'Kho chính');
+
+      const newTx: Transaction = {
+        id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        partId: part.id,
+        partCode: part.code,
+        partName: part.name,
+        unit: part.unit,
+        type: 'OUT',
+        quantity: item.quantity,
+        date: item.date || new Date().toISOString(),
+        person: item.person || 'Thủ kho',
+        productionOrder: item.productionOrder || '',
+        voucherCode: item.voucherCode || undefined,
+        reasonOrPurpose: item.reasonOrPurpose || 'Xuất sản xuất',
+        notes: item.notes || '',
+        locationId: txLocation,
+        stockBefore,
+        stockAfter,
+      };
+
+      createdTxs.push(newTx);
+      txs.push(newTx);
+
+      // Kitting Queue in-memory update
+      const cleanVoucherCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      const existingPending = queue.find(
+        (q) =>
+          q.status === 'PENDING_KITTING' &&
+          (q.voucherCode || 'PHIẾU_XUẤT_LẺ').trim().toLowerCase() === cleanVoucherCode.toLowerCase() &&
+          q.partCode.trim().toLowerCase() === newTx.partCode.trim().toLowerCase()
+      );
+
+      if (existingPending) {
+        existingPending.rawQuantity += newTx.quantity;
+        if (!existingPending.allItemIds) {
+          existingPending.allItemIds = [existingPending.id];
+        }
+        existingPending.batchCount = (existingPending.batchCount || 1) + 1;
+        if (newTx.id) {
+          if (!existingPending.transactionIds) {
+            existingPending.transactionIds = existingPending.transactionId ? [existingPending.transactionId] : [];
+          }
+          if (!existingPending.transactionIds.includes(newTx.id)) {
+            existingPending.transactionIds.push(newTx.id);
+          }
+        }
+      } else {
+        const existingBuf = buffers.find((b) => b.partCode === newTx.partCode && b.status !== 'EMPTY');
+        const emptyBuf = buffers.find((b) => b.status === 'EMPTY');
+        const defaultBuffer = existingBuf ? existingBuf.locationId : (emptyBuf ? emptyBuf.locationId : 'BUFFER-A1-01');
+
+        queue.push({
+          id: 'kit-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+          transactionId: newTx.id,
+          transactionIds: [newTx.id],
+          voucherCode: item.voucherCode,
+          voucherTitle: item.voucherTitle,
+          sourceBin: item.sourceBin || txLocation,
+          fifoAllocations: item.fifoAllocations,
+          partCode: newTx.partCode,
+          partName: newTx.partName,
+          unit: newTx.unit,
+          rawQuantity: newTx.quantity,
+          kittedQuantity: 0,
+          scrapQuantity: 0,
+          bufferLocation: defaultBuffer,
+          status: 'PENDING_KITTING',
+          createdAt: newTx.date,
+          operatorName: newTx.person || 'Thủ kho',
+        });
+      }
+    }
+
+    // 1 single atomic save to disk & memory
+    this.saveParts(parts);
+    this.saveTransactions(txs);
+    this.saveKittingQueue(queue);
+
+    // Asynchronous cloud sync in 2 batch calls
+    const affectedPartsList = Array.from(affectedPartsMap.values());
+    if (affectedPartsList.length > 0) {
+      supabaseRelationalStore.upsertParts(affectedPartsList).catch(() => {});
+    }
+    if (createdTxs.length > 0) {
+      supabaseRelationalStore.upsertTransactions(createdTxs).catch(() => {});
+    }
+
+    return { transactions: createdTxs, updatedParts: affectedPartsList };
+  },
+
   // Transfer part stock between warehouse locations
   transferPartLocationStock(params: {
     partId: string;
@@ -4209,6 +4386,209 @@ export const storageService = {
     this.saveBomExportVouchers(vouchers);
   },
 
+  /**
+   * Tự động kiểm tra và phục hồi các phiếu xuất kho BOM & hàng chờ Kitting từ lịch sử giao dịch (transactions).
+   * Đảm bảo không bao giờ bị mất phiếu xuất BOM hay hàng chờ bóc tách dù mạng chập chờn hay reload.
+   */
+  reconcileBomVouchersAndQueueFromTransactions(): { restoredVouchers: number; restoredQueueItems: number } {
+    let restoredVouchers = 0;
+    let restoredQueueItems = 0;
+
+    const txs = this.getTransactions();
+    if (!txs || txs.length === 0) return { restoredVouchers: 0, restoredQueueItems: 0 };
+
+    const vouchers = this.getBomExportVouchers();
+    const queue = this.getKittingQueue();
+    const modelBoms = this.getModelBOMs();
+
+    // Tìm tất cả giao dịch xuất theo BOM
+    const bomTxs = txs.filter(
+      (t) =>
+        t.type === 'OUT' &&
+        (t.productionOrder?.toUpperCase().includes('SHA') ||
+          t.notes?.toUpperCase().includes('MODEL') ||
+          (t.reasonOrPurpose && t.reasonOrPurpose.includes('BOM')))
+    );
+
+    // Gom nhóm giao dịch theo Model + Ngày xuất
+    const groupMap = new Map<string, { modelName: string; date: string; person: string; modelQty: number; txs: Transaction[] }>();
+
+    for (const tx of bomTxs) {
+      let modelName = (tx.productionOrder || '').trim().toUpperCase();
+      if (!modelName || !modelBoms.some((b) => b.name.toUpperCase() === modelName)) {
+        const match = (tx.notes || '').match(/Model\s+([A-Z0-9]+)/i);
+        if (match) modelName = match[1].trim().toUpperCase();
+      }
+      if (!modelName) continue;
+
+      let modelQty = 1;
+      const qtyMatch = (tx.notes || '').match(/\((\d+)\s*bộ\)/i);
+      if (qtyMatch) {
+        modelQty = parseInt(qtyMatch[1], 10) || 1;
+      }
+
+      const dateStr = (tx.date || '').slice(0, 10);
+      const groupKey = `${modelName}__${dateStr}`;
+
+      if (!groupMap.has(groupKey)) {
+        groupMap.set(groupKey, {
+          modelName,
+          date: tx.date,
+          person: tx.person || 'Sunhouse (Quản Trị Hệ Thống (Admin))',
+          modelQty,
+          txs: [tx],
+        });
+      } else {
+        groupMap.get(groupKey)!.txs.push(tx);
+      }
+    }
+
+    let vouchersUpdated = false;
+    let queueUpdated = false;
+
+    groupMap.forEach((group) => {
+      const { modelName, date, person, modelQty, txs: groupTxs } = group;
+      const matchingBom = modelBoms.find((b) => b.name.toUpperCase() === modelName);
+      if (!matchingBom) return;
+
+      const existingVoucher = vouchers.find(
+        (v) =>
+          v.modelName?.toUpperCase() === modelName &&
+          (v.dateTime?.startsWith(date.slice(0, 10)) || v.createdAt?.startsWith(date.slice(0, 10)))
+      );
+
+      let targetVoucherCode = existingVoucher?.voucherCode;
+
+      if (!existingVoucher) {
+        const dateFormatted = date.slice(0, 10).replace(/-/g, '');
+        targetVoucherCode = `PXK-BOM-${dateFormatted}-001`;
+
+        const txByPart = new Map<string, Transaction>();
+        groupTxs.forEach((t) => txByPart.set(t.partCode.trim().toLowerCase(), t));
+
+        const printedItems: BomExportVoucherItem[] = [];
+        const round1Items: Array<{ partCode: string; quantity: number; fifoLocation: string }> = [];
+
+        for (const bItem of matchingBom.items) {
+          const pCode = bItem.partCode.trim();
+          const tx = txByPart.get(pCode.toLowerCase());
+          const requiredQty = (Number(bItem.quantity) || 0) * modelQty;
+          const exportedQty = tx ? Number(tx.quantity) || 0 : 0;
+          const remainingQty = Math.max(0, requiredQty - exportedQty);
+
+          let status: 'PENDING' | 'PARTIAL' | 'COMPLETED' = 'PENDING';
+          if (exportedQty >= requiredQty) status = 'COMPLETED';
+          else if (exportedQty > 0) status = 'PARTIAL';
+
+          const itemObj: BomExportVoucherItem = {
+            partCode: pCode,
+            partName: bItem.partName || (tx ? tx.partName : ''),
+            unit: bItem.unit || (tx ? tx.unit : 'Cái'),
+            bomQtyPerSet: Number(bItem.quantity) || 0,
+            requiredQty,
+            exportedQty,
+            remainingQty,
+            currentBatchQty: exportedQty,
+            totalQtyOut: exportedQty,
+            fifoLocation: tx ? `${tx.locationId || 'Kho1200'} (Nhập kho)` : 'Kho chính',
+            status,
+            isExtraConsumable: false,
+            extraNote: '',
+          };
+          printedItems.push(itemObj);
+
+          if (exportedQty > 0) {
+            round1Items.push({
+              partCode: pCode,
+              quantity: exportedQty,
+              fifoLocation: itemObj.fifoLocation,
+            });
+          }
+        }
+
+        const totalQtyRequired = printedItems.reduce((s, i) => s + (i.requiredQty || 0), 0);
+        const totalQtyOut = printedItems.reduce((s, i) => s + (i.exportedQty || 0), 0);
+        const totalQtyRemaining = Math.max(0, totalQtyRequired - totalQtyOut);
+
+        const newVoucher: BomExportVoucher = {
+          id: 'vxk-' + new Date(date).getTime() + '-' + modelName.toLowerCase(),
+          voucherCode: targetVoucherCode,
+          modelName,
+          modelQty,
+          createdAt: date,
+          updatedAt: new Date().toISOString(),
+          dateTime: date,
+          person,
+          items: printedItems,
+          totalPartsCount: printedItems.length,
+          totalQtyRequired,
+          totalQtyOut,
+          totalQtyRemaining,
+          voucherType: 'BOM',
+          status: totalQtyRemaining > 0 ? 'PARTIAL' : 'COMPLETED',
+          dispatchRounds: 1,
+          roundsHistory: [
+            {
+              roundNumber: 1,
+              dateTime: date,
+              person,
+              notes: `Đợt 1 (Còn thiếu ${totalQtyRemaining.toLocaleString('vi-VN')} linh kiện chờ xuất bù)`,
+              items: round1Items,
+            },
+          ],
+          notes: `Xuất theo BOM Model ${modelName} (${modelQty} bộ)`,
+        };
+
+        vouchers.unshift(newVoucher);
+        vouchersUpdated = true;
+        restoredVouchers++;
+      }
+
+      // Đảm bảo các linh kiện đã xuất có trong hàng chờ bóc tách Kitting
+      if (targetVoucherCode) {
+        for (const tx of groupTxs) {
+          const alreadyInQueue = queue.some(
+            (q) =>
+              (q.voucherCode === targetVoucherCode || q.transactionId === tx.id || q.transactionIds?.includes(tx.id)) &&
+              q.partCode.trim().toLowerCase() === tx.partCode.trim().toLowerCase()
+          );
+
+          if (!alreadyInQueue && Number(tx.quantity) > 0) {
+            queue.push({
+              id: 'kit-' + (tx.id || String(Date.now())) + '-' + Math.random().toString(36).substring(2, 6),
+              transactionId: tx.id,
+              transactionIds: [tx.id],
+              voucherCode: targetVoucherCode,
+              voucherTitle: `Model BOM: ${modelName}`,
+              sourceBin: tx.locationId || 'Kho1200',
+              partCode: tx.partCode,
+              partName: tx.partName,
+              unit: tx.unit || 'Cái',
+              rawQuantity: Number(tx.quantity),
+              kittedQuantity: 0,
+              scrapQuantity: 0,
+              bufferLocation: 'BUFFER-A1-01',
+              status: 'PENDING_KITTING',
+              createdAt: tx.date || date,
+              operatorName: tx.person || person,
+            });
+            queueUpdated = true;
+            restoredQueueItems++;
+          }
+        }
+      }
+    });
+
+    if (vouchersUpdated) {
+      this.saveBomExportVouchers(vouchers);
+    }
+    if (queueUpdated) {
+      this.saveKittingQueue(queue);
+    }
+
+    return { restoredVouchers, restoredQueueItems };
+  },
+
   // --- USER ACCOUNTS STORAGE & AUTH ---
   getUsers(): UserAccount[] {
     const data = safeGetRaw('thekho_users_v1');
@@ -4950,6 +5330,11 @@ export const storageService = {
         localStorage.setItem(USERS_KEY, JSON.stringify(DEFAULT_SYSTEM_USERS));
         supabaseKeyStore.set(USERS_KEY, DEFAULT_SYSTEM_USERS);
       }
+
+      // 5. Tự động kiểm tra và phục hồi đồng bộ các phiếu xuất kho BOM & Kitting Queue từ transactions
+      try {
+        this.reconcileBomVouchersAndQueueFromTransactions();
+      } catch (_) {}
     } catch (err: any) {
       parts = this.getParts();
       transactions = this.getTransactions();
