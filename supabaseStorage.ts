@@ -232,7 +232,7 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       return;
     }
 
-    // Material calls: filter incoming items against deleted call IDs and store directly so deleted items are NEVER resurrected
+    // Material calls: filter incoming items against deleted call IDs and preserve recently created active CALLING orders from local cache
     if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
       let deletedSet = new Set<string>();
       try {
@@ -244,8 +244,39 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
         }
       } catch (_) {}
 
-      const incoming = (data as any[]).filter((inc) => inc && inc.requestId && !deletedSet.has(inc.requestId));
-      const jsonStr = JSON.stringify(incoming);
+      // Retain any recently created active CALLING orders from local cache to prevent stale overwrite
+      let existingCalls: any[] = [];
+      try {
+        const rawCalls = localStorage.getItem(key);
+        if (rawCalls) {
+          const decomp = decompressStorageValue(rawCalls) || rawCalls;
+          const p = JSON.parse(decomp);
+          if (Array.isArray(p)) existingCalls = p;
+        }
+      } catch (_) {}
+
+      const map = new Map<string, any>();
+      for (const inc of (data as any[])) {
+        if (inc && inc.requestId && !deletedSet.has(inc.requestId)) {
+          map.set(inc.requestId, inc);
+        }
+      }
+
+      // Preserve recent local calling requests (< 2 hours old) so they never disappear on cloud sync
+      const recentThreshold = Date.now() - 2 * 60 * 60 * 1000;
+      for (const ex of existingCalls) {
+        if (ex && ex.requestId && ex.status === 'CALLING') {
+          const t = new Date(ex.requestedAt || 0).getTime();
+          if (t >= recentThreshold && !map.has(ex.requestId)) {
+            map.set(ex.requestId, ex);
+          }
+        }
+      }
+
+      const mergedIncoming = Array.from(map.values()).sort(
+        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+      );
+      const jsonStr = JSON.stringify(mergedIncoming);
       localStorage.setItem(key, compressStorageValue(jsonStr));
       localStorage.setItem(`${CACHE_TS_PREFIX}${key}`, ts);
       return;

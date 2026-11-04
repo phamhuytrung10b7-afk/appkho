@@ -193,6 +193,39 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     message: string;
   } | null>(null);
 
+  // Success Confirmation Modal State (renders prominent popup after calling on mobile/desktop)
+  const [callSuccessModalData, setCallSuccessModalData] = useState<{
+    isOpen: boolean;
+    request: MaterialCallRequest;
+    proposedMasterQty?: number | null;
+  } | null>(null);
+
+  // Proposed standard quantity from Thẻ Thùng Master Data
+  const [proposedMasterQty, setProposedMasterQty] = useState<number | null>(null);
+
+  // Master container tags cache
+  const masterContainerTags = React.useMemo(() => {
+    return storageService.getMasterContainerTags();
+  }, []);
+
+  const customContainerTags = React.useMemo(() => {
+    return storageService.getCustomGeneratedContainerTags();
+  }, []);
+
+  // Helper to find standard quantity from Master Container Tags (Thẻ Thùng Master Data)
+  const getMasterTagForPart = React.useCallback(
+    (pCode: string) => {
+      if (!pCode) return null;
+      const clean = pCode.trim().toLowerCase();
+      const m = masterContainerTags.find((t) => t.partCode && t.partCode.trim().toLowerCase() === clean);
+      if (m && m.standardQty > 0) return m;
+      const c = customContainerTags.find((t) => t.partCode && t.partCode.trim().toLowerCase() === clean);
+      if (c && c.standardQty > 0) return c;
+      return null;
+    },
+    [masterContainerTags, customContainerTags]
+  );
+
   const [showManualForm, setShowManualForm] = useState(false);
 
   useEffect(() => {
@@ -347,102 +380,116 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   const kittingQueue = storageService.getKittingQueue();
   const pendingKittingItems = kittingQueue.filter((k) => k.status === 'PENDING_KITTING');
 
-  // Group available stock on Outbuffer shelves by part code
-  const bufferPartsMap = new Map<
-    string,
-    {
-      partCode: string;
-      partName: string;
-      unit: string;
-      totalBufferStock: number;
-      availableBuffers: BufferLocationMap[];
-    }
-  >();
+  interface BufferPartSummary {
+    partCode: string;
+    partName: string;
+    unit: string;
+    totalBufferStock: number;
+    availableBuffers: BufferLocationMap[];
+  }
 
-  buffers.forEach((b) => {
-    if (b.status !== 'EMPTY') {
-      const itemsOnShelf = (b.items && b.items.length > 0)
-        ? b.items
-        : (b.partCode ? [{ partCode: b.partCode, partName: b.partName || b.partCode, unit: b.unit || 'PCS', currentStockQty: b.currentStockQty }] : []);
+  // Group available stock on Outbuffer shelves by part code (Memoized for high performance on weak phones)
+  const bufferPartsMap = React.useMemo<Map<string, BufferPartSummary>>(() => {
+    const map = new Map<string, BufferPartSummary>();
 
-      itemsOnShelf.forEach((item) => {
-        if (item.partCode && item.currentStockQty > 0) {
-          const code = item.partCode.trim();
-          if (!bufferPartsMap.has(code)) {
-            bufferPartsMap.set(code, {
-              partCode: code,
-              partName: item.partName || code,
-              unit: item.unit || 'PCS',
-              totalBufferStock: item.currentStockQty,
-              availableBuffers: [{
+    buffers.forEach((b) => {
+      if (b.status !== 'EMPTY') {
+        const itemsOnShelf = (b.items && b.items.length > 0)
+          ? b.items
+          : (b.partCode ? [{ partCode: b.partCode, partName: b.partName || b.partCode, unit: b.unit || 'PCS', currentStockQty: b.currentStockQty }] : []);
+
+        itemsOnShelf.forEach((item) => {
+          if (item.partCode && item.currentStockQty > 0) {
+            const code = item.partCode.trim();
+            if (!map.has(code)) {
+              map.set(code, {
+                partCode: code,
+                partName: item.partName || code,
+                unit: item.unit || 'PCS',
+                totalBufferStock: item.currentStockQty,
+                availableBuffers: [{
+                  ...b,
+                  partCode: item.partCode,
+                  partName: item.partName,
+                  unit: item.unit,
+                  currentStockQty: item.currentStockQty,
+                }],
+              });
+            } else {
+              const entry = map.get(code)!;
+              entry.totalBufferStock += item.currentStockQty;
+              entry.availableBuffers.push({
                 ...b,
                 partCode: item.partCode,
                 partName: item.partName,
                 unit: item.unit,
                 currentStockQty: item.currentStockQty,
-              }],
-            });
-          } else {
-            const entry = bufferPartsMap.get(code)!;
-            entry.totalBufferStock += item.currentStockQty;
-            entry.availableBuffers.push({
-              ...b,
-              partCode: item.partCode,
-              partName: item.partName,
-              unit: item.unit,
-              currentStockQty: item.currentStockQty,
-            });
+              });
+            }
           }
-        }
-      });
-    }
-  });
-
-  // Sort each part's available buffers by FIFO (oldest lastUpdated first)
-  bufferPartsMap.forEach((entry) => {
-    entry.availableBuffers.sort((a, b) => {
-      const timeA = a.lastUpdated ? new Date(a.lastUpdated).getTime() : 0;
-      const timeB = b.lastUpdated ? new Date(b.lastUpdated).getTime() : 0;
-      return timeA - timeB;
+        });
+      }
     });
-  });
 
-  // Prepare searchable options for SearchableSelect
-  // Rule: ONLY allow parts that are either on Outbuffer shelves OR in Pending Kitting list (đã xuất kho thô)
-  const partSelectOptions: SelectOption[] = Array.from(bufferPartsMap.values()).map((p) => {
-    const shelfListStr = p.availableBuffers.map((b) => b.locationId).join(', ');
-    return {
-      value: p.partCode,
-      label: `[${p.partCode}] ${p.partName}`,
-      sublabel: `Tồn Outbuffer: ${p.totalBufferStock} ${p.unit} | Kệ: ${shelfListStr}`,
-      badge: `Sẵn sàng Kệ ${p.availableBuffers[0].locationId}`,
-    };
-  });
-
-  // Add parts from "Danh sách chờ bóc tách" that are not on Outbuffer shelves yet
-  const seenPendingPartCodes = new Set<string>();
-  pendingKittingItems.forEach((kit) => {
-    if (!bufferPartsMap.has(kit.partCode) && !seenPendingPartCodes.has(kit.partCode)) {
-      seenPendingPartCodes.add(kit.partCode);
-      partSelectOptions.push({
-        value: kit.partCode,
-        label: `[${kit.partCode}] ${kit.partName}`,
-        sublabel: `Đã xuất kho thô (Chờ bóc tách Kitting): ${kit.rawQuantity} ${kit.unit}`,
-        badge: `📦 Chờ Bóc Tách Kitting`,
+    // Sort each part's available buffers by FIFO (oldest lastUpdated first)
+    map.forEach((entry) => {
+      entry.availableBuffers.sort((a, b) => {
+        const timeA = a.lastUpdated ? new Date(a.lastUpdated).getTime() : 0;
+        const timeB = b.lastUpdated ? new Date(b.lastUpdated).getTime() : 0;
+        return timeA - timeB;
       });
-    }
-  });
+    });
+
+    return map;
+  }, [buffers]);
+
+  // Prepare searchable options for SearchableSelect (Memoized)
+  // Rule: ONLY allow parts that are either on Outbuffer shelves OR in Pending Kitting list (đã xuất kho thô)
+  const partSelectOptions: SelectOption[] = React.useMemo(() => {
+    const options: SelectOption[] = Array.from(bufferPartsMap.values()).map((p: BufferPartSummary) => {
+      const shelfListStr = p.availableBuffers.map((b) => b.locationId).join(', ');
+      return {
+        value: p.partCode,
+        label: `[${p.partCode}] ${p.partName}`,
+        sublabel: `Tồn Outbuffer: ${p.totalBufferStock} ${p.unit} | Kệ: ${shelfListStr}`,
+        badge: `Sẵn sàng Kệ ${p.availableBuffers[0].locationId}`,
+      };
+    });
+
+    // Add parts from "Danh sách chờ bóc tách" that are not on Outbuffer shelves yet
+    const seenPendingPartCodes = new Set<string>();
+    pendingKittingItems.forEach((kit) => {
+      if (!bufferPartsMap.has(kit.partCode) && !seenPendingPartCodes.has(kit.partCode)) {
+        seenPendingPartCodes.add(kit.partCode);
+        options.push({
+          value: kit.partCode,
+          label: `[${kit.partCode}] ${kit.partName}`,
+          sublabel: `Đã xuất kho thô (Chờ bóc tách Kitting): ${kit.rawQuantity} ${kit.unit}`,
+          badge: `📦 Chờ Bóc Tách Kitting`,
+        });
+      }
+    });
+
+    return options;
+  }, [bufferPartsMap, pendingKittingItems]);
 
   // Automatically select first available part if none selected
   useEffect(() => {
     if (partSelectOptions.length > 0) {
       if (!selectedPartCode) {
-        setSelectedPartCode(partSelectOptions[0].value);
+        const firstVal = partSelectOptions[0].value;
+        setSelectedPartCode(firstVal);
+        const mTag = getMasterTagForPart(firstVal);
+        if (mTag && mTag.standardQty > 0) {
+          setRequestedQty(mTag.standardQty);
+          setProposedMasterQty(mTag.standardQty);
+        }
       }
     } else {
       setSelectedPartCode('');
+      setProposedMasterQty(null);
     }
-  }, [partSelectOptions]);
+  }, [partSelectOptions, selectedPartCode, getMasterTagForPart]);
 
   // Keep assemblyLine in sync if settings update
   useEffect(() => {
@@ -506,7 +553,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
 
     try {
-      storageService.createMaterialCallRequest({
+      const newReq = storageService.createMaterialCallRequest({
         assemblyLine,
         partCode: selectedPartCode,
         partName: partName || selectedPartCode,
@@ -545,10 +592,18 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công! ${deductInfo}. Bạn có thể tiếp tục gọi linh kiện khác bên dưới.`,
       });
 
+      // Display prominent success popup modal for mobile & desktop confirmation
+      setCallSuccessModalData({
+        isOpen: true,
+        request: newReq,
+        proposedMasterQty,
+      });
+
       onRefresh();
       // Giữ nguyên tại tab gọi hàng (không nhảy qua tab đơn đang gọi) để người thao tác tiếp tục gọi
       setSelectedPartCode('');
       setRequestedQty(10);
+      setProposedMasterQty(null);
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Lỗi khi tạo tín hiệu Andon' });
     }
@@ -585,7 +640,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
 
     try {
-      storageService.createMaterialCallRequest({
+      const newReq = storageService.createMaterialCallRequest({
         assemblyLine: targetLine,
         partCode: partCode,
         partName: partName || partCode,
@@ -622,6 +677,13 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       setMessage({
         type: 'success',
         text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${partCode}] thành công! ${deductDetail}. Vị trí giao: ${targetLine}`,
+      });
+
+      // Open Success Confirmation Modal for mobile clarity
+      setCallSuccessModalData({
+        isOpen: true,
+        request: newReq,
+        proposedMasterQty: requestedQty,
       });
 
       onRefresh();
@@ -1492,9 +1554,18 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         value={selectedPartCode}
                         onChange={(val) => {
                           setSelectedPartCode(val);
-                          const info = bufferPartsMap.get(val);
-                          if (info && info.availableBuffers.length > 0) {
-                            setRequestedQty(Math.min(10, info.availableBuffers[0].currentStockQty));
+                          const mTag = getMasterTagForPart(val);
+                          if (mTag && mTag.standardQty > 0) {
+                            setRequestedQty(mTag.standardQty);
+                            setProposedMasterQty(mTag.standardQty);
+                          } else {
+                            const info = bufferPartsMap.get(val);
+                            if (info && info.availableBuffers.length > 0) {
+                              setRequestedQty(Math.min(10, info.availableBuffers[0].currentStockQty));
+                            } else {
+                              setRequestedQty(10);
+                            }
+                            setProposedMasterQty(null);
                           }
                         }}
                         placeholder="Gõ mã hoặc tên linh kiện để tìm kiếm..."
@@ -1598,17 +1669,42 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
                   {/* Requested Quantity */}
                   <div>
-                    <label className="block font-bold text-slate-800 mb-1">
-                      3. Số Lượng Cần Gọi ({unit}) <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={requestedQty}
-                      onChange={(e) => setRequestedQty(Number(e.target.value))}
-                      required
-                      className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl font-black text-amber-800 text-sm focus:ring-2 focus:ring-amber-500 outline-hidden"
-                    />
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block font-bold text-slate-800 text-xs sm:text-sm">
+                        3. Số Lượng Cần Gọi ({unit}) <span className="text-rose-500">*</span>
+                      </label>
+                      {proposedMasterQty && (
+                        <span className="text-[11px] font-extrabold text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-lg flex items-center space-x-1">
+                          <Package className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                          <span>Chuẩn Thẻ Thùng: <strong>{proposedMasterQty.toLocaleString('vi-VN')} {unit}</strong></span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        value={requestedQty}
+                        onChange={(e) => setRequestedQty(Number(e.target.value))}
+                        required
+                        className="w-full flex-1 px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl font-black text-amber-900 text-sm focus:ring-2 focus:ring-amber-500 outline-hidden"
+                      />
+                      {proposedMasterQty && requestedQty !== proposedMasterQty && (
+                        <button
+                          type="button"
+                          onClick={() => setRequestedQty(proposedMasterQty)}
+                          className="px-3 py-2.5 bg-amber-100 hover:bg-amber-200 border border-amber-300 text-amber-950 rounded-xl text-xs font-bold shrink-0 cursor-pointer transition-colors shadow-2xs"
+                          title={`Khôi phục số lượng theo tiêu chuẩn Thẻ Thùng (${proposedMasterQty})`}
+                        >
+                          Chuẩn Thùng ({proposedMasterQty})
+                        </button>
+                      )}
+                    </div>
+                    {proposedMasterQty && (
+                      <p className="text-[11px] text-amber-800 mt-1 font-semibold flex items-center space-x-1">
+                        <span>💡 Đã tự động đề xuất số lượng theo tiêu chuẩn Thẻ Thùng Master Data: <strong>{proposedMasterQty} {unit}/kiện</strong></span>
+                      </p>
+                    )}
                   </div>
 
                   {/* Required Time Input */}
@@ -2271,6 +2367,111 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
             >
               Đã Hiểu / Đóng
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Call Success Confirmation Modal - Specially designed for high visibility on mobile screens */}
+      {callSuccessModalData && callSuccessModalData.isOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border-2 border-emerald-500 overflow-hidden text-left relative flex flex-col max-h-[92vh]">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 p-4 sm:p-5 text-white text-center relative shrink-0">
+              <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center mx-auto mb-2 shadow-inner ring-4 ring-white/10 animate-bounce">
+                <CheckCircle2 className="w-7 h-7 text-white" />
+              </div>
+              <h3 className="text-base sm:text-lg font-black tracking-tight uppercase">
+                Tín Hiệu Gọi Hàng Đã Phát Thành Công!
+              </h3>
+              <p className="text-[11px] sm:text-xs text-emerald-100 font-medium mt-0.5">
+                Đã đồng bộ lên Supabase Cloud & thông báo tới bộ phận Logistics
+              </p>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-4 sm:p-5 space-y-3 overflow-y-auto">
+              {/* Part Details Card */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2.5">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Mã & Tên Linh Kiện Đã Gọi
+                  </span>
+                  <span className="text-xs sm:text-sm font-black font-mono text-emerald-700 block break-words">
+                    [{callSuccessModalData.request.partCode}]
+                  </span>
+                  <span className="text-xs font-bold text-slate-800 block break-words">
+                    {callSuccessModalData.request.partName}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/80 text-xs">
+                  <div className="bg-white p-2 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 block font-semibold">Số lượng gọi:</span>
+                    <span className="font-black text-amber-700 text-base">
+                      {callSuccessModalData.request.requestedQty.toLocaleString('vi-VN')} {callSuccessModalData.request.unit}
+                    </span>
+                    {callSuccessModalData.proposedMasterQty && (
+                      <span className="text-[10px] text-emerald-700 font-bold block mt-0.5">
+                        ✓ Đúng chuẩn Thẻ Thùng
+                      </span>
+                    )}
+                  </div>
+                  <div className="bg-white p-2 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 block font-semibold">Dây chuyền nhận:</span>
+                    <span className="font-extrabold text-slate-900 text-sm">
+                      📍 {callSuccessModalData.request.assemblyLine || 'DCLR'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
+                  <div className="bg-white p-2 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 block font-semibold">Vị trí cấp hàng:</span>
+                    <span className="font-bold text-slate-800 text-[11px] block mt-0.5">
+                      {callSuccessModalData.request.isDirectKitting ? '🚚 Khu Bóc Tách Kitting' : `📦 Kệ ${callSuccessModalData.request.bufferLocation}`}
+                    </span>
+                  </div>
+                  <div className="bg-white p-2 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 block font-semibold">Giờ cần giao:</span>
+                    <span className="font-extrabold text-rose-700 text-[11px] block mt-0.5">
+                      ⏰ {callSuccessModalData.request.requiredTime || 'Ưu tiên ngay'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Note */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 text-[11px] text-emerald-950 space-y-1">
+                <p className="font-bold flex items-center space-x-1.5 text-emerald-900">
+                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Đã ghi nhận vào hệ thống & giữ nguyên trên Supabase Cloud</span>
+                </p>
+                <p className="text-slate-600 text-[10px] leading-relaxed">
+                  Đơn hàng đã được lưu trữ an toàn trên máy chủ. Bạn có thể tiếp tục phát tín hiệu gọi linh kiện khác hoặc chuyển qua tab đơn đang gọi để theo dõi giao nhận.
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setCallSuccessModalData(null)}
+                className="w-full sm:flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs sm:text-sm shadow-md transition-all cursor-pointer flex items-center justify-center space-x-1.5 active:scale-98"
+              >
+                <span>➕ Tiếp Tục Gọi Hàng</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCallSuccessModalData(null);
+                  handleTabClick('calling');
+                }}
+                className="w-full sm:flex-1 py-3 px-4 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 rounded-xl font-extrabold text-xs sm:text-sm shadow-xs transition-all cursor-pointer flex items-center justify-center space-x-1.5 active:scale-98"
+              >
+                <span>📋 Xem Đơn Đang Gọi ({callingReqs.length + 1})</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

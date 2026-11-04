@@ -215,39 +215,46 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                 <p className="text-[10px] text-slate-400">Thử gõ mã viết tắt, tên không dấu hoặc vị trí kệ</p>
               </div>
             ) : (
-              filteredOptions.map((opt) => {
-                const isSelected = opt.value === value;
-                return (
-                  <div
-                    key={opt.value}
-                    onClick={() => handleSelect(opt.value)}
-                    className={`p-2.5 sm:p-3 rounded-xl cursor-pointer text-xs flex items-start justify-between transition-colors gap-2 ${
-                      isSelected
-                        ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-200'
-                        : 'hover:bg-slate-50 text-slate-700 active:bg-emerald-50/50'
-                    }`}
-                  >
-                    <div className="min-w-0 pr-1 flex-1 space-y-1">
-                      <div className="text-xs sm:text-sm font-semibold break-words leading-snug text-slate-900">
-                        {opt.label}
+              <>
+                {filteredOptions.slice(0, 60).map((opt) => {
+                  const isSelected = opt.value === value;
+                  return (
+                    <div
+                      key={opt.value}
+                      onClick={() => handleSelect(opt.value)}
+                      className={`p-2.5 sm:p-3 rounded-xl cursor-pointer text-xs flex items-start justify-between transition-colors gap-2 ${
+                        isSelected
+                          ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-200'
+                          : 'hover:bg-slate-50 text-slate-700 active:bg-emerald-50/50'
+                      }`}
+                    >
+                      <div className="min-w-0 pr-1 flex-1 space-y-1">
+                        <div className="text-xs sm:text-sm font-semibold break-words leading-snug text-slate-900">
+                          {opt.label}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          {opt.badge && (
+                            <span className="px-1.5 py-0.5 text-[10px] bg-emerald-100/90 text-emerald-800 rounded-md font-mono shrink-0 font-bold">
+                              {opt.badge}
+                            </span>
+                          )}
+                          {opt.sublabel && (
+                            <span className="text-[11px] text-slate-500 font-normal break-words leading-tight">
+                              {opt.sublabel}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                        {opt.badge && (
-                          <span className="px-1.5 py-0.5 text-[10px] bg-emerald-100/90 text-emerald-800 rounded-md font-mono shrink-0 font-bold">
-                            {opt.badge}
-                          </span>
-                        )}
-                        {opt.sublabel && (
-                          <span className="text-[11px] text-slate-500 font-normal break-words leading-tight">
-                            {opt.sublabel}
-                          </span>
-                        )}
-                      </div>
+                      {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
                     </div>
-                    {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
+                  );
+                })}
+                {filteredOptions.length > 60 && (
+                  <div className="p-2 text-center text-[10px] sm:text-xs text-slate-500 bg-slate-50 rounded-lg border border-slate-200/60 font-medium">
+                    ⚡ Đang hiển thị 60 / {filteredOptions.length} linh kiện phù hợp nhất. Gõ thêm từ khóa để tìm chính xác hơn.
                   </div>
-                );
-              })
+                )}
+              </>
             )}
           </div>
         </div>

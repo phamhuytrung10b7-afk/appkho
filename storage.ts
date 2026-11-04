@@ -3995,6 +3995,69 @@ export const storageService = {
     supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, cleanReqs);
   },
 
+  async syncMaterialCallToCloud(targetCall: MaterialCallRequest): Promise<boolean> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return true;
+
+      // 1. Fetch current cloud array from Supabase directly
+      const { data: row } = await client
+        .from('thekho_app_data')
+        .select('data')
+        .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+        .maybeSingle();
+
+      const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
+      const deletedIds = this.getDeletedCallIds();
+
+      // 2. Smart merge into map
+      const map = new Map<string, MaterialCallRequest>();
+      for (const c of cloudCalls) {
+        if (c && c.requestId && !deletedIds.has(c.requestId)) {
+          map.set(c.requestId, c);
+        }
+      }
+
+      // Keep local calls from this device
+      const localCalls = this.getMaterialCallRequests();
+      for (const loc of localCalls) {
+        if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
+          if (!map.has(loc.requestId)) {
+            map.set(loc.requestId, loc);
+          }
+        }
+      }
+
+      // Ensure targetCall is explicitly set
+      map.set(targetCall.requestId, targetCall);
+
+      const merged = Array.from(map.values()).sort(
+        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+      );
+
+      // Save locally and update Supabase with exact timestamp
+      const nowIso = new Date().toISOString();
+      safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
+      setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
+
+      const { error: upsertErr } = await client
+        .from('thekho_app_data')
+        .upsert(
+          { key: STORAGE_KEYS.MATERIAL_CALLS, data: merged, updated_at: nowIso },
+          { onConflict: 'key' }
+        );
+
+      if (upsertErr) {
+        console.warn('[syncMaterialCallToCloud] Upsert error:', upsertErr);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn('[syncMaterialCallToCloud] Catch error:', err);
+      return false;
+    }
+  },
+
   createMaterialCallRequest(params: {
     assemblyLine: string;
     partCode: string;
@@ -4032,6 +4095,11 @@ export const storageService = {
 
     reqs.unshift(newReq);
     this.saveMaterialCallRequests(reqs);
+
+    // Reliable background sync to Cloud merging with server array
+    this.syncMaterialCallToCloud(newReq).catch((e) => {
+      console.warn('[createMaterialCallRequest] Cloud sync notice:', e);
+    });
 
     return newReq;
   },

@@ -71,10 +71,10 @@ export default function App() {
   const [partToDelete, setPartToDelete] = useState<Part | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
-  // Apply state from local storage cache
-  const applyLocalState = useCallback(() => {
-    const reconciled = storageService.reconcileAllPartsStock();
-    setParts(reconciled.length > 0 ? reconciled : storageService.getParts());
+  // Apply state from local storage cache (lightweight by default for fast mobile rendering)
+  const applyLocalState = useCallback((shouldReconcile: boolean = false) => {
+    const partsData = shouldReconcile ? storageService.reconcileAllPartsStock() : storageService.getParts();
+    setParts(partsData.length > 0 ? partsData : storageService.getParts());
     setTransactions(storageService.getTransactions());
     setKittingQueue(storageService.getKittingQueue());
     setBufferLocations(storageService.getBufferLocations());
