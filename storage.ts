@@ -3922,13 +3922,61 @@ export const storageService = {
     }
   },
 
-  addDeletedCallId(id: string): void {
+  async addDeletedCallId(id: string): Promise<void> {
     if (!id) return;
     const ids = this.getDeletedCallIds();
     ids.add(id);
     const arr = Array.from(ids);
     safeSetRaw(DELETED_CALL_IDS_KEY, JSON.stringify(arr));
-    supabaseKeyStore.set(DELETED_CALL_IDS_KEY, arr);
+
+    // Persist deleted call IDs to Supabase table thekho_app_data
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (isConfigured && client) {
+        const { data: row } = await client
+          .from('thekho_app_data')
+          .select('data')
+          .eq('key', STORAGE_KEYS.DELETED_CALL_IDS)
+          .maybeSingle();
+
+        const cloudIds: string[] = (row && Array.isArray(row.data)) ? row.data : [];
+        const unionIds = Array.from(new Set([...cloudIds, ...arr]));
+        const nowIso = new Date().toISOString();
+        await client
+          .from('thekho_app_data')
+          .upsert(
+            { key: STORAGE_KEYS.DELETED_CALL_IDS, data: unionIds, updated_at: nowIso },
+            { onConflict: 'key' }
+          );
+        safeSetRaw(DELETED_CALL_IDS_KEY, JSON.stringify(unionIds));
+      }
+    } catch (err) {
+      console.warn('[addDeletedCallId] Cloud error:', err);
+    }
+  },
+
+  async fetchDeletedCallIdsFromCloud(): Promise<Set<string>> {
+    const localIds = this.getDeletedCallIds();
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return localIds;
+
+      const { data: row } = await client
+        .from('thekho_app_data')
+        .select('data')
+        .eq('key', STORAGE_KEYS.DELETED_CALL_IDS)
+        .maybeSingle();
+
+      if (row && Array.isArray(row.data) && row.data.length > 0) {
+        const unionSet = new Set([...localIds, ...row.data]);
+        const arr = Array.from(unionSet);
+        safeSetRaw(DELETED_CALL_IDS_KEY, JSON.stringify(arr));
+        return unionSet;
+      }
+    } catch (err) {
+      console.warn('[fetchDeletedCallIdsFromCloud] error:', err);
+    }
+    return localIds;
   },
 
   // --- MATERIAL CALL REQUEST METHODS (ANDON) ---
@@ -3976,10 +4024,11 @@ export const storageService = {
   },
 
   async fetchMaterialCallsFromCloud(forceFetch: boolean = false): Promise<MaterialCallRequest[]> {
-    const deletedIds = this.getDeletedCallIds();
+    // 1. Fetch deleted call IDs from Supabase first so this device immediately knows any deleted requests!
+    const deletedIds = await this.fetchDeletedCallIdsFromCloud();
     try {
       const remoteCalls = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: forceFetch });
-      if (remoteCalls && Array.isArray(remoteCalls) && remoteCalls.length > 0) {
+      if (remoteCalls && Array.isArray(remoteCalls)) {
         const localCalls = this.getMaterialCallRequests();
         const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
 
@@ -3996,13 +4045,14 @@ export const storageService = {
             if (existing) {
               const wExisting = statusWeights[existing.status] || 0;
               const wRem = statusWeights[rem.status] || 0;
+              // CRITICAL: NEVER rollback DELIVERING or COMPLETED to CALLING!
               const finalStatus = wRem >= wExisting ? rem.status : existing.status;
               map.set(rem.requestId, {
-                ...existing,
                 ...rem,
+                ...existing,
                 status: finalStatus,
-                deliveredBy: rem.deliveredBy || existing.deliveredBy,
-                deliveredAt: rem.deliveredAt || existing.deliveredAt,
+                deliveredBy: (finalStatus === rem.status ? rem.deliveredBy : existing.deliveredBy) || rem.deliveredBy || existing.deliveredBy,
+                deliveredAt: (finalStatus === rem.status ? rem.deliveredAt : existing.deliveredAt) || rem.deliveredAt || existing.deliveredAt,
                 isStockDeducted: Boolean(existing.isStockDeducted || rem.isStockDeducted),
               });
             } else {
@@ -4011,9 +4061,12 @@ export const storageService = {
           }
         }
 
-        const merged = Array.from(map.values()).sort(
-          (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
-        );
+        const merged = Array.from(map.values())
+          .filter((item) => item && item.requestId && !deletedIds.has(item.requestId))
+          .sort(
+            (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+          );
+
         this.saveMaterialCallRequests(merged);
         return merged;
       }
@@ -4035,6 +4088,11 @@ export const storageService = {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return true;
 
+      const deletedIds = await this.fetchDeletedCallIdsFromCloud();
+      if (deletedIds.has(targetCall.requestId)) {
+        return true;
+      }
+
       // 1. Fetch current cloud array from Supabase directly
       const { data: row } = await client
         .from('thekho_app_data')
@@ -4043,32 +4101,61 @@ export const storageService = {
         .maybeSingle();
 
       const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
-      const deletedIds = this.getDeletedCallIds();
-
-      // 2. Smart merge into map
+      const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
       const map = new Map<string, MaterialCallRequest>();
+
       for (const c of cloudCalls) {
         if (c && c.requestId && !deletedIds.has(c.requestId)) {
           map.set(c.requestId, c);
         }
       }
 
-      // Keep local calls from this device
+      // Merge local calls with status hierarchy
       const localCalls = this.getMaterialCallRequests();
       for (const loc of localCalls) {
         if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
-          if (!map.has(loc.requestId)) {
+          const ex = map.get(loc.requestId);
+          if (ex) {
+            const wEx = statusWeights[ex.status] || 0;
+            const wLoc = statusWeights[loc.status] || 0;
+            const finalStatus = wLoc >= wEx ? loc.status : ex.status;
+            map.set(loc.requestId, {
+              ...ex,
+              ...loc,
+              status: finalStatus,
+              deliveredBy: (finalStatus === loc.status ? loc.deliveredBy : ex.deliveredBy) || loc.deliveredBy || ex.deliveredBy,
+              deliveredAt: (finalStatus === loc.status ? loc.deliveredAt : ex.deliveredAt) || loc.deliveredAt || ex.deliveredAt,
+              isStockDeducted: Boolean(ex.isStockDeducted || loc.isStockDeducted),
+            });
+          } else {
             map.set(loc.requestId, loc);
           }
         }
       }
 
-      // Ensure targetCall is explicitly set
-      map.set(targetCall.requestId, targetCall);
+      // Ensure targetCall is set with highest status guarantee
+      const exTarget = map.get(targetCall.requestId);
+      if (exTarget) {
+        const wEx = statusWeights[exTarget.status] || 0;
+        const wTarget = statusWeights[targetCall.status] || 0;
+        const finalStatus = wTarget >= wEx ? targetCall.status : exTarget.status;
+        map.set(targetCall.requestId, {
+          ...exTarget,
+          ...targetCall,
+          status: finalStatus,
+          deliveredBy: (finalStatus === targetCall.status ? targetCall.deliveredBy : exTarget.deliveredBy) || targetCall.deliveredBy || exTarget.deliveredBy,
+          deliveredAt: (finalStatus === targetCall.status ? targetCall.deliveredAt : exTarget.deliveredAt) || targetCall.deliveredAt || exTarget.deliveredAt,
+          isStockDeducted: Boolean(exTarget.isStockDeducted || targetCall.isStockDeducted),
+        });
+      } else {
+        map.set(targetCall.requestId, targetCall);
+      }
 
-      const merged = Array.from(map.values()).sort(
-        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
-      );
+      const merged = Array.from(map.values())
+        .filter((c) => c && c.requestId && !deletedIds.has(c.requestId))
+        .sort(
+          (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+        );
 
       // Save locally and update Supabase with exact timestamp
       const nowIso = new Date().toISOString();
@@ -4153,6 +4240,11 @@ export const storageService = {
     };
     reqs[idx] = updated;
     this.saveMaterialCallRequests(reqs);
+
+    // CRITICAL: Push status transition to Supabase Cloud immediately so it can NEVER be rolled back!
+    this.syncMaterialCallToCloud(updated).catch((err) => {
+      console.warn('[updateMaterialCallStatus] sync notice:', err);
+    });
 
     // If completed and stock was not already deducted at creation time, deduct now
     if (status === 'COMPLETED' && !current.isStockDeducted) {
@@ -4377,9 +4469,9 @@ export const storageService = {
     }
   },
 
-  deleteMaterialCallRequest(requestId: string, restoreStockIfCompleted: boolean = true): void {
+  async deleteMaterialCallRequest(requestId: string, restoreStockIfCompleted: boolean = true): Promise<void> {
     if (!requestId) return;
-    this.addDeletedCallId(requestId);
+    await this.addDeletedCallId(requestId);
     const reqs = this.getMaterialCallRequests();
     const idx = reqs.findIndex((r) => r.requestId === requestId);
     if (idx !== -1) {
@@ -4390,16 +4482,78 @@ export const storageService = {
       reqs.splice(idx, 1);
     }
     this.saveMaterialCallRequests(reqs);
+
+    // CRITICAL: Force push deletion to Supabase Cloud directly so all other devices see it removed immediately on sync
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (isConfigured && client) {
+        const nowIso = new Date().toISOString();
+        const deletedIds = this.getDeletedCallIds();
+        deletedIds.add(requestId);
+
+        const { data: row } = await client
+          .from('thekho_app_data')
+          .select('data')
+          .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+          .maybeSingle();
+
+        const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
+        const cleanCloudCalls = cloudCalls.filter(
+          (c) => c && c.requestId && !deletedIds.has(c.requestId)
+        );
+
+        await client
+          .from('thekho_app_data')
+          .upsert(
+            { key: STORAGE_KEYS.MATERIAL_CALLS, data: cleanCloudCalls, updated_at: nowIso },
+            { onConflict: 'key' }
+          );
+
+        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanCloudCalls, nowIso);
+      }
+    } catch (e) {
+      console.warn('[deleteMaterialCallRequest] Cloud push notice:', e);
+    }
   },
 
-  clearAllCallingRequests(): void {
+  async clearAllCallingRequests(): Promise<void> {
     const reqs = this.getMaterialCallRequests();
     const calling = reqs.filter((r) => r.status === 'CALLING');
-    calling.forEach((r) => {
-      if (r.requestId) this.addDeletedCallId(r.requestId);
-    });
+    for (const r of calling) {
+      if (r.requestId) await this.addDeletedCallId(r.requestId);
+    }
     const remaining = reqs.filter((r) => r.status !== 'CALLING');
     this.saveMaterialCallRequests(remaining);
+
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (isConfigured && client) {
+        const nowIso = new Date().toISOString();
+        const deletedIds = this.getDeletedCallIds();
+
+        const { data: row } = await client
+          .from('thekho_app_data')
+          .select('data')
+          .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+          .maybeSingle();
+
+        const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
+        const cleanCloud = cloudCalls.filter(
+          (c) => c && c.requestId && !deletedIds.has(c.requestId) && c.status !== 'CALLING'
+        );
+
+        await client
+          .from('thekho_app_data')
+          .upsert(
+            { key: STORAGE_KEYS.MATERIAL_CALLS, data: cleanCloud, updated_at: nowIso },
+            { onConflict: 'key' }
+          );
+
+        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanCloud, nowIso);
+      }
+    } catch (e) {
+      console.warn('[clearAllCallingRequests] Cloud push notice:', e);
+    }
   },
 
   rollbackMaterialCallStatus(requestId: string, targetStatus: 'CALLING' | 'DELIVERING'): MaterialCallRequest {
@@ -5524,6 +5678,7 @@ export const storageService = {
         STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS,
         STORAGE_KEYS.USERS,
         STORAGE_KEYS.MANUALLY_COMPLETED_VOUCHERS,
+        STORAGE_KEYS.DELETED_CALL_IDS,
       ];
 
       await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);

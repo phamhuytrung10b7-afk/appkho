@@ -39,6 +39,7 @@ export const STORAGE_KEYS = {
   CUSTOM_GENERATED_CONTAINER_TAGS: 'thekho_custom_generated_container_tags_v1',
   USERS: 'thekho_users_v1',
   MANUALLY_COMPLETED_VOUCHERS: 'thekho_manually_completed_vouchers_v1',
+  DELETED_CALL_IDS: 'thekho_deleted_call_ids_v1',
 };
 
 // Egress bandwidth savings tracker (for diagnostics & verification)
@@ -233,7 +234,7 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       return;
     }
 
-    // Material calls: filter incoming items against deleted call IDs and preserve recently created active CALLING orders from local cache
+    // Material calls: filter incoming items against deleted call IDs and strictly prevent rollbacks from COMPLETED or DELIVERING to CALLING
     if (key === STORAGE_KEYS.MATERIAL_CALLS && Array.isArray(data)) {
       let deletedSet = new Set<string>();
       try {
@@ -245,7 +246,6 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
         }
       } catch (_) {}
 
-      // Retain any recently created active CALLING orders from local cache to prevent stale overwrite
       let existingCalls: any[] = [];
       try {
         const rawCalls = localStorage.getItem(key);
@@ -256,20 +256,33 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
         }
       } catch (_) {}
 
-      const map = new Map<string, any>();
-      for (const inc of (data as any[])) {
-        if (inc && inc.requestId && !deletedSet.has(inc.requestId)) {
-          map.set(inc.requestId, inc);
+      const existingMap = new Map<string, any>();
+      for (const ex of existingCalls) {
+        if (ex && ex.requestId) {
+          existingMap.set(ex.requestId, ex);
         }
       }
 
-      // Preserve recent local calling requests (< 2 hours old) so they never disappear on cloud sync
-      const recentThreshold = Date.now() - 2 * 60 * 60 * 1000;
-      for (const ex of existingCalls) {
-        if (ex && ex.requestId && ex.status === 'CALLING') {
-          const t = new Date(ex.requestedAt || 0).getTime();
-          if (t >= recentThreshold && !map.has(ex.requestId)) {
-            map.set(ex.requestId, ex);
+      const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
+      const map = new Map<string, any>();
+
+      for (const inc of (data as any[])) {
+        if (inc && inc.requestId && !deletedSet.has(inc.requestId)) {
+          const ex = existingMap.get(inc.requestId);
+          if (ex) {
+            const wEx = statusWeights[ex.status] || 0;
+            const wInc = statusWeights[inc.status] || 0;
+            // CRITICAL: NEVER rollback DELIVERING or COMPLETED to CALLING!
+            const finalStatus = wInc >= wEx ? inc.status : ex.status;
+            map.set(inc.requestId, {
+              ...inc,
+              status: finalStatus,
+              deliveredBy: (finalStatus === inc.status ? inc.deliveredBy : ex.deliveredBy) || inc.deliveredBy || ex.deliveredBy,
+              deliveredAt: (finalStatus === inc.status ? inc.deliveredAt : ex.deliveredAt) || inc.deliveredAt || ex.deliveredAt,
+              isStockDeducted: Boolean(inc.isStockDeducted || ex.isStockDeducted),
+            });
+          } else {
+            map.set(inc.requestId, inc);
           }
         }
       }
