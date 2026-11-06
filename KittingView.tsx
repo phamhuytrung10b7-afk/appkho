@@ -55,6 +55,7 @@ export interface PendingVoucherGroup {
   totalKittedQty: number;
   remainingQty: number;
   isCompleted: boolean;
+  isManuallyCompleted?: boolean;
 }
 
 interface KittingViewProps {
@@ -197,6 +198,25 @@ export const KittingView: React.FC<KittingViewProps> = ({
     const loaded = storageService.getMasterContainerTags();
     setMasterTags(loaded);
   }, []);
+
+  // Admin Manually Completed Vouchers state
+  const [manuallyCompletedVouchers, setManuallyCompletedVouchers] = useState<string[]>(() =>
+    storageService.getManuallyCompletedVouchers()
+  );
+
+  useEffect(() => {
+    setManuallyCompletedVouchers(storageService.getManuallyCompletedVouchers());
+  }, [queue]);
+
+  const isVoucherManuallyCompleted = (vCode: string, vTitle?: string): boolean => {
+    const code = (vCode || '').trim();
+    const title = (vTitle || '').trim();
+    const groupKey = code === 'PHIẾU_XUẤT_LẺ' ? 'PHIẾU_XUẤT_LẺ' : `${code}__${title}`;
+    return (
+      manuallyCompletedVouchers.includes(groupKey) ||
+      manuallyCompletedVouchers.includes(code)
+    );
+  };
 
   useEffect(() => {
     if (currentUser) {
@@ -648,7 +668,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
       const activeForPart = rawPendingItems.filter(
         (i) =>
           i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
-          Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0
+          Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0 &&
+          !isVoucherManuallyCompleted(i.voucherCode, i.voucherTitle)
       );
       if (activeForPart.length > 0) {
         const hasMatch = activeForPart.some(
@@ -771,13 +792,25 @@ export const KittingView: React.FC<KittingViewProps> = ({
         totalKittedQty: item.kittedQuantity || 0,
         remainingQty: unkitted,
         isCompleted: false,
+        isManuallyCompleted: false,
       });
     }
   });
 
-  // Filter out vouchers where remainingQty === 0 (fully finished vouchers disappear from pending list)
+  // Apply manual completion overrides (Admin Virtual Completion)
+  groupedVouchersMap.forEach((v) => {
+    const isManuallyDone = isVoucherManuallyCompleted(v.voucherCode, v.voucherTitle);
+    if (isManuallyDone) {
+      v.isManuallyCompleted = true;
+      v.isCompleted = true;
+      v.totalKittedQty = v.totalRawQty;
+      v.remainingQty = 0;
+    }
+  });
+
+  // Filter vouchers: Keep vouchers that have remaining unkitted stock OR were manually completed by Admin
   const groupedVouchersList: PendingVoucherGroup[] = Array.from(groupedVouchersMap.values())
-    .filter((v) => v.remainingQty > 0)
+    .filter((v) => v.remainingQty > 0 || v.isManuallyCompleted)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const filteredVouchersList = groupedVouchersList.filter((v) => {
@@ -876,7 +909,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
       .filter(
         (i) =>
           i.partCode.trim().toLowerCase() === (tag.partCode || '').trim().toLowerCase() &&
-          Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0
+          Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)) > 0 &&
+          !isVoucherManuallyCompleted(i.voucherCode, i.voucherTitle)
       )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -1000,7 +1034,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
     const pendingForPart = rawPendingItems.filter(
       (item) =>
         item.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
-        Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)) > 0
+        Math.max(0, item.rawQuantity - (item.kittedQuantity || 0)) > 0 &&
+        !isVoucherManuallyCompleted(item.voucherCode, item.voucherTitle)
     );
 
     if (pendingForPart.length === 0) {
@@ -1432,6 +1467,25 @@ export const KittingView: React.FC<KittingViewProps> = ({
       partsCount: voucher.totalPartsCount,
       totalQty: voucher.remainingQty,
     });
+  };
+
+  const handleToggleCompleteVoucher = async (voucher: PendingVoucherGroup) => {
+    if (!isAdmin) {
+      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền đánh dấu hoàn thành phiếu!');
+      return;
+    }
+    const voucherUniqueKey = `${voucher.voucherCode}__${(voucher.voucherTitle || '').trim()}`;
+    const keyToUse = voucher.voucherCode === 'PHIẾU_XUẤT_LẺ' ? 'PHIẾU_XUẤT_LẺ' : voucherUniqueKey;
+
+    const isNowCompleted = await storageService.toggleVoucherManuallyCompleted(keyToUse);
+    const updated = storageService.getManuallyCompletedVouchers();
+    setManuallyCompletedVouchers(updated);
+
+    if (isNowCompleted) {
+      alert(`✅ ĐÃ HOÀN THÀNH PHIẾU [${voucher.voucherCode}]!\n\n• Tiến độ hiển thị: 100% (Ảo, độc lập hoàn toàn, không sinh giao dịch).\n• Phiếu này đã được ẩn khỏi danh sách Quét thẻ thùng Kitting Smart (Tab 1).\n• Các phiếu khác hoàn toàn không bị ảnh hưởng.`);
+    } else {
+      alert(`ℹ️ ĐÃ MỞ LẠI PHIẾU [${voucher.voucherCode}]. Phiếu đã xuất hiện lại bình thường.`);
+    }
   };
 
   const handleRequestClearAllPending = () => {
@@ -2192,6 +2246,27 @@ export const KittingView: React.FC<KittingViewProps> = ({
                             </button>
                           )}
 
+                          {/* Action Button: Hoàn Thành Phiếu (Admin Only) */}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleCompleteVoucher(voucher)}
+                              className={`px-3.5 py-2 text-xs font-bold rounded-xl border flex items-center space-x-1.5 transition-all cursor-pointer shadow-2xs active:scale-95 ${
+                                voucher.isManuallyCompleted
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 ring-2 ring-emerald-300'
+                                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-400 hover:border-emerald-500'
+                              }`}
+                              title={
+                                voucher.isManuallyCompleted
+                                  ? 'Bấm để hủy hoàn thành (Mở lại phiếu)'
+                                  : 'Đánh dấu hoàn thành 100% phiếu này (Tiến độ hiển thị 100%, độc lập, không sinh giao dịch ảo)'
+                              }
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>{voucher.isManuallyCompleted ? '✓ Đã Hoàn Thành' : '✓ Hoàn Thành Phiếu'}</span>
+                            </button>
+                          )}
+
                           {/* Toggle Expand Button */}
                           <button
                             type="button"
@@ -2209,15 +2284,38 @@ export const KittingView: React.FC<KittingViewProps> = ({
                       {/* Expanded Items Table for this Voucher */}
                       {isExpanded && (
                         <div className="border-t border-slate-200 p-4 sm:p-5 bg-white space-y-3 animate-in fade-in duration-150">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-black text-slate-800 uppercase tracking-wide flex items-center space-x-1.5">
-                              <Layers className="w-4 h-4 text-indigo-600" />
-                              <span>Chi Tiết Linh Kiện Trong Phiếu [{voucher.voucherCode}]</span>
-                            </span>
-                            <span className="text-xs text-slate-500">
-                              (Chỉ hiển thị các linh kiện xuất của mã phiếu này)
-                            </span>
-                          </div>
+                          {voucher.isManuallyCompleted ? (
+                            <div className="p-6 bg-emerald-50/80 border-2 border-emerald-200 rounded-2xl text-center space-y-2">
+                              <div className="flex items-center justify-center space-x-2 text-emerald-900 font-black text-sm sm:text-base">
+                                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                                <span>Phiếu [{voucher.voucherCode}] đã hoàn thành 100%</span>
+                              </div>
+                              <p className="text-xs text-emerald-800 max-w-lg mx-auto font-medium">
+                                Tiến độ bóc tách hiển thị 100%. Phiếu này đã được ẩn khỏi danh sách Quét thẻ thùng Kitting Smart (Tab 1).
+                              </p>
+                              {isAdmin && (
+                                <div className="pt-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleCompleteVoucher(voucher)}
+                                    className="px-3.5 py-1.5 bg-white hover:bg-slate-50 border border-emerald-300 text-emerald-800 text-xs font-bold rounded-xl cursor-pointer shadow-2xs transition-all"
+                                  >
+                                    ↺ Hủy hoàn thành (Mở lại phiếu chờ bóc)
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-black text-slate-800 uppercase tracking-wide flex items-center space-x-1.5">
+                                  <Layers className="w-4 h-4 text-indigo-600" />
+                                  <span>Chi Tiết Linh Kiện Trong Phiếu [{voucher.voucherCode}]</span>
+                                </span>
+                                <span className="text-xs text-slate-500">
+                                  (Chỉ hiển thị các linh kiện xuất của mã phiếu này)
+                                </span>
+                              </div>
 
                           <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
                             <table className="w-full text-left text-xs whitespace-nowrap">
@@ -2351,8 +2449,10 @@ export const KittingView: React.FC<KittingViewProps> = ({
                               </tbody>
                             </table>
                           </div>
-                        </div>
+                        </>
                       )}
+                    </div>
+                  )}
                     </div>
                   );
                 })}
@@ -2755,9 +2855,10 @@ export const KittingView: React.FC<KittingViewProps> = ({
                 {/* Pending queue availability check */}
                 {(() => {
                   const pendingForPart = rawPendingItems.filter(
-                    (i) => i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase()
+                    (i) => i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
+                           !isVoucherManuallyCompleted(i.voucherCode, i.voucherTitle)
                   );
-                  const totalPending = pendingForPart.reduce((sum, i) => sum + i.rawQuantity, 0);
+                  const totalPending = pendingForPart.reduce((sum, i) => sum + Math.max(0, i.rawQuantity - (i.kittedQuantity || 0)), 0);
                   const isAvailable = totalPending >= (actualQty || 1);
 
                   return (
@@ -2801,7 +2902,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
             {/* Voucher Selection & Deduction Target (User Requirement) */}
             {(() => {
               const pendingVouchersForPart = rawPendingItems.filter(
-                (i) => i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase()
+                (i) => i.partCode.trim().toLowerCase() === partCode.trim().toLowerCase() &&
+                       !isVoucherManuallyCompleted(i.voucherCode, i.voucherTitle)
               );
               const voucherMap = new Map<string, { code: string; title: string; remainingQty: number; latestCreatedAt: string }>();
               pendingVouchersForPart.forEach((i) => {
@@ -2825,7 +2927,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                 }
               });
               const voucherList = Array.from(voucherMap.values())
-                .filter((v) => v.remainingQty > 0)
+                .filter((v) => v.remainingQty > 0 && !isVoucherManuallyCompleted(v.code, v.title))
                 .sort(
                   (a, b) => new Date(b.latestCreatedAt).getTime() - new Date(a.latestCreatedAt).getTime()
                 );

@@ -38,6 +38,7 @@ export const STORAGE_KEYS = {
   DAILY_REPORTS: 'thekho_daily_reports_v1',
   CUSTOM_GENERATED_CONTAINER_TAGS: 'thekho_custom_generated_container_tags_v1',
   USERS: 'thekho_users_v1',
+  MANUALLY_COMPLETED_VOUCHERS: 'thekho_manually_completed_vouchers_v1',
 };
 
 // Egress bandwidth savings tracker (for diagnostics & verification)

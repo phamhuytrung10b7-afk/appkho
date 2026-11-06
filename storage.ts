@@ -25,6 +25,7 @@ const PRODUCTIVITY_PERSONNEL_CONFIG_KEY = 'thekho_productivity_personnel_config_
 const CUSTOM_GENERATED_CONTAINER_TAGS_KEY = 'thekho_custom_generated_container_tags_v1';
 const USERS_KEY = 'thekho_users_v1';
 const DELETED_CALL_IDS_KEY = 'thekho_deleted_call_ids_v1';
+const MANUALLY_COMPLETED_VOUCHERS_KEY = 'thekho_manually_completed_vouchers_v1';
 
 /**
  * Helper an toàn đọc dữ liệu localStorage với tự động giải nén LZ-String.
@@ -2997,6 +2998,39 @@ export const storageService = {
     return { prunedKitting, prunedCalls };
   },
 
+  // --- MANUALLY COMPLETED VOUCHERS (ADMIN VIRTUAL COMPLETION) ---
+  getManuallyCompletedVouchers(): string[] {
+    const raw = safeGetRaw(MANUALLY_COMPLETED_VOUCHERS_KEY);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map((k) => String(k).trim()).filter(Boolean);
+      return [];
+    } catch {
+      return [];
+    }
+  },
+
+  async saveManuallyCompletedVouchers(voucherKeys: string[]): Promise<void> {
+    const unique = Array.from(new Set(voucherKeys.map((k) => String(k).trim()).filter(Boolean)));
+    safeSetRaw(MANUALLY_COMPLETED_VOUCHERS_KEY, JSON.stringify(unique));
+    try {
+      await supabaseKeyStore.set(STORAGE_KEYS.MANUALLY_COMPLETED_VOUCHERS, unique);
+    } catch (err) {
+      console.error('[Storage] Error syncing manually completed vouchers to Supabase:', err);
+    }
+  },
+
+  async toggleVoucherManuallyCompleted(voucherKey: string): Promise<boolean> {
+    const key = voucherKey.trim();
+    if (!key) return false;
+    const current = this.getManuallyCompletedVouchers();
+    const isCompleted = current.includes(key);
+    const updated = isCompleted ? current.filter((k) => k !== key) : [...current, key];
+    await this.saveManuallyCompletedVouchers(updated);
+    return !isCompleted;
+  },
+
   // --- KITTING QUEUE METHODS ---
   getKittingQueue(): KittingQueueItem[] {
     const raw = safeGetRaw(KITTING_QUEUE_KEY);
@@ -4204,16 +4238,44 @@ export const storageService = {
           this.saveBufferLocations(buffers);
         }
 
-        // Update kitting queue status to DELIVERED if matching IN_BUFFER item exists
+        // Update kitting queue status to DELIVERED for matching IN_BUFFER items proportionally
         const refreshedQueue = this.getKittingQueue();
-        const kIdx = refreshedQueue.findIndex(
-          (k) =>
-            k.bufferLocation === current.bufferLocation &&
-            k.partCode.trim().toLowerCase() === current.partCode.trim().toLowerCase() &&
+        let remainingToDeliver = current.requestedQty;
+        let queueChanged = false;
+
+        for (let idx = 0; idx < refreshedQueue.length && remainingToDeliver > 0; idx++) {
+          const k = refreshedQueue[idx];
+          if (
+            k.bufferLocation?.trim().toLowerCase() === current.bufferLocation?.trim().toLowerCase() &&
+            k.partCode?.trim().toLowerCase() === current.partCode?.trim().toLowerCase() &&
             k.status === 'IN_BUFFER'
-        );
-        if (kIdx >= 0) {
-          refreshedQueue[kIdx].status = 'DELIVERED';
+          ) {
+            const kQty = k.kittedQuantity || k.rawQuantity || 0;
+            if (kQty <= remainingToDeliver) {
+              k.status = 'DELIVERED';
+              k.endTime = new Date().toISOString();
+              remainingToDeliver -= kQty;
+              queueChanged = true;
+            } else {
+              // Partial delivery: split into DELIVERED and remaining IN_BUFFER
+              const deliveredPart: KittingQueueItem = {
+                ...k,
+                id: `${k.id}-del-${Date.now()}`,
+                rawQuantity: remainingToDeliver,
+                kittedQuantity: remainingToDeliver,
+                status: 'DELIVERED',
+                endTime: new Date().toISOString(),
+              };
+              k.rawQuantity = kQty - remainingToDeliver;
+              k.kittedQuantity = kQty - remainingToDeliver;
+              refreshedQueue.push(deliveredPart);
+              remainingToDeliver = 0;
+              queueChanged = true;
+              break;
+            }
+          }
+        }
+        if (queueChanged) {
           this.saveKittingQueue(refreshedQueue);
         }
       }
@@ -5461,6 +5523,7 @@ export const storageService = {
         STORAGE_KEYS.KITTING_SCAN_LOGS,
         STORAGE_KEYS.CUSTOM_GENERATED_CONTAINER_TAGS,
         STORAGE_KEYS.USERS,
+        STORAGE_KEYS.MANUALLY_COMPLETED_VOUCHERS,
       ];
 
       await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);
