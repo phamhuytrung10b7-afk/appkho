@@ -155,6 +155,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
     try {
       const result = await storageService.reconcileBomVouchersAndQueueFromTransactions({ daysLimit: 7 });
       refreshSavedVouchers();
+      onSuccess();
 
       if (result.restoredVouchers > 0) {
         setMessage({
@@ -797,9 +798,18 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               }
             }
 
+            const allVouchers = storageService.getBomExportVouchers();
             const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            const todayCount = storageService.getBomExportVouchers().filter((v) => v.createdAt && v.createdAt.startsWith(new Date().toISOString().slice(0, 10))).length + 1;
-            const bomVoucherCode = `PXK-BOM-${todayStr}-${String(todayCount).padStart(3, '0')}`;
+            const usedCodes = new Set(
+              allVouchers
+                .map((v) => v.voucherCode?.trim())
+                .filter((c): c is string => !!c && c.startsWith(`PXK-BOM-${todayStr}-`))
+            );
+            let seq = 1;
+            while (usedCodes.has(`PXK-BOM-${todayStr}-${String(seq).padStart(3, '0')}`)) {
+              seq++;
+            }
+            const bomVoucherCode = `PXK-BOM-${todayStr}-${String(seq).padStart(3, '0')}`;
 
             const printedItems: BomExportVoucherItem[] = [];
             const roundItemsSummary: Array<{ partCode: string; quantity: number; fifoLocation?: string }> = [];

@@ -1921,7 +1921,7 @@ export const storageService = {
     this.saveTransactions(txs);
     this.saveKittingQueue(queue);
 
-    // Asynchronous cloud sync in 2 batch calls
+    // Asynchronous cloud sync in batch calls
     const affectedPartsList = Array.from(affectedPartsMap.values());
     if (affectedPartsList.length > 0) {
       supabaseRelationalStore.upsertParts(affectedPartsList).catch(() => {});
@@ -1929,6 +1929,7 @@ export const storageService = {
     if (createdTxs.length > 0) {
       supabaseRelationalStore.upsertTransactions(createdTxs).catch(() => {});
     }
+    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue).catch(() => {});
 
     return { transactions: createdTxs, updatedParts: affectedPartsList };
   },
@@ -4415,8 +4416,16 @@ export const storageService = {
   }): BomExportVoucher {
     const vouchers = this.getBomExportVouchers();
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const todayCount = vouchers.filter((v) => v.createdAt && v.createdAt.startsWith(new Date().toISOString().slice(0, 10))).length + 1;
-    const voucherCode = `PXK-BOM-${todayStr}-${String(todayCount).padStart(3, '0')}`;
+    const usedCodes = new Set(
+      vouchers
+        .map((v) => v.voucherCode?.trim())
+        .filter((c): c is string => !!c && c.startsWith(`PXK-BOM-${todayStr}-`))
+    );
+    let seq = 1;
+    while (usedCodes.has(`PXK-BOM-${todayStr}-${String(seq).padStart(3, '0')}`)) {
+      seq++;
+    }
+    const voucherCode = `PXK-BOM-${todayStr}-${String(seq).padStart(3, '0')}`;
 
     const totalQtyRequired = params.items.reduce((sum, i) => sum + (i.requiredQty ?? (i.bomQtyPerSet * params.modelQty) ?? 0), 0);
     const totalQtyOut = params.items.reduce((sum, i) => sum + (i.exportedQty ?? i.totalQtyOut ?? 0), 0);
@@ -4540,6 +4549,56 @@ export const storageService = {
     let vouchersUpdated = false;
     let queueUpdated = false;
 
+    // 0. Ensure all existing vouchers have globally unique voucher codes per day
+    const codeCountMap = new Map<string, number>();
+    vouchers.forEach((v) => {
+      const code = (v.voucherCode || '').trim();
+      if (!code) return;
+      codeCountMap.set(code, (codeCountMap.get(code) || 0) + 1);
+    });
+
+    const duplicateCodes = new Set(
+      Array.from(codeCountMap.entries())
+        .filter(([_, count]) => count > 1)
+        .map(([code]) => code)
+    );
+
+    if (duplicateCodes.size > 0) {
+      const seenCodes = new Set<string>();
+      vouchers.forEach((v) => {
+        const code = (v.voucherCode || '').trim();
+        if (duplicateCodes.has(code)) {
+          if (seenCodes.has(code)) {
+            // Re-assign a unique sequence
+            const baseDate = code.replace(/^PXK-BOM-/, '').slice(0, 8);
+            let seq = 1;
+            while (
+              vouchers.some((x) => x.voucherCode === `PXK-BOM-${baseDate}-${String(seq).padStart(3, '0')}`) ||
+              seenCodes.has(`PXK-BOM-${baseDate}-${String(seq).padStart(3, '0')}`)
+            ) {
+              seq++;
+            }
+            const oldCode = v.voucherCode;
+            const newCode = `PXK-BOM-${baseDate}-${String(seq).padStart(3, '0')}`;
+            v.voucherCode = newCode;
+            seenCodes.add(newCode);
+            vouchersUpdated = true;
+
+            // Also update any matching items in queue
+            queue.forEach((q) => {
+              if (q.voucherCode === oldCode && (q.voucherTitle?.includes(v.modelName) || !q.voucherTitle)) {
+                q.voucherCode = newCode;
+                q.voucherTitle = `Model BOM: ${v.modelName}`;
+                queueUpdated = true;
+              }
+            });
+          } else {
+            seenCodes.add(code);
+          }
+        }
+      });
+    }
+
     groupMap.forEach((group) => {
       const { modelName, date, person, modelQty, txs: groupTxs } = group;
       const matchingBom = modelBoms.find((b) => b.name.toUpperCase() === modelName);
@@ -4555,7 +4614,16 @@ export const storageService = {
 
       if (!existingVoucher) {
         const dateFormatted = date.slice(0, 10).replace(/-/g, '');
-        targetVoucherCode = `PXK-BOM-${dateFormatted}-001`;
+        const usedCodes = new Set(
+          vouchers
+            .map((v) => v.voucherCode?.trim())
+            .filter((c): c is string => !!c && c.startsWith(`PXK-BOM-${dateFormatted}-`))
+        );
+        let seq = 1;
+        while (usedCodes.has(`PXK-BOM-${dateFormatted}-${String(seq).padStart(3, '0')}`)) {
+          seq++;
+        }
+        targetVoucherCode = `PXK-BOM-${dateFormatted}-${String(seq).padStart(3, '0')}`;
 
         const txByPart = new Map<string, Transaction>();
         groupTxs.forEach((t) => txByPart.set(t.partCode.trim().toLowerCase(), t));
@@ -4643,7 +4711,9 @@ export const storageService = {
         for (const tx of groupTxs) {
           const alreadyInQueue = queue.some(
             (q) =>
-              (q.voucherCode === targetVoucherCode || q.transactionId === tx.id || q.transactionIds?.includes(tx.id)) &&
+              ((q.voucherCode === targetVoucherCode && (q.voucherTitle?.includes(modelName) || !q.voucherTitle)) ||
+                q.transactionId === tx.id ||
+                (Array.isArray(q.transactionIds) && q.transactionIds.includes(tx.id))) &&
               q.partCode.trim().toLowerCase() === tx.partCode.trim().toLowerCase()
           );
 
@@ -4675,12 +4745,14 @@ export const storageService = {
 
     if (vouchersUpdated) {
       this.saveBomExportVouchers(vouchers);
-      await supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers).catch(() => {});
     }
     if (queueUpdated) {
       this.saveKittingQueue(queue);
-      await supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue).catch(() => {});
     }
+    await Promise.all([
+      supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers).catch(() => {}),
+      supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue).catch(() => {}),
+    ]);
 
     return {
       restoredVouchers,

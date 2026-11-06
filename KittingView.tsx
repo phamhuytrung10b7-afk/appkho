@@ -326,8 +326,9 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
     queue.forEach((item) => {
       const vCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      const vTitle = (item.voucherTitle || '').trim().toLowerCase();
       const pCode = item.partCode.trim().toLowerCase();
-      const groupKey = `${vCode.toLowerCase()}__${pCode}`;
+      const groupKey = vCode === 'PHIẾU_XUẤT_LẺ' ? `phiếu_xuất_lẻ__${pCode}` : `${vCode.toLowerCase()}__${vTitle}__${pCode}`;
 
       const existing = consolidatedMap.get(groupKey);
       if (existing) {
@@ -426,7 +427,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
       const { vCode, vTitle } = getTxVoucherInfo(tx);
       const pCode = (tx.partCode || (tx as any).part_code || '').trim().toLowerCase();
       if (!pCode) return;
-      const key = `${vCode.toLowerCase()}__${pCode}`;
+      const key = `${vCode.toLowerCase()}__${vTitle.toLowerCase()}__${pCode}`;
       txByVoucherAndPart.set(key, (txByVoucherAndPart.get(key) || 0) + (Number(tx.quantity) || 0));
 
       const existingInfo = txInfoByGroupKey.get(key);
@@ -480,7 +481,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
           const expQty = Number(vItem.exportedQty ?? vItem.totalQtyOut) || 0;
           const vKittedQty = Number(vItem.kittedQty ?? (vItem as any).kittedQuantity) || 0;
           if (expQty > 0) {
-            const groupKey = `${v.voucherCode.trim().toLowerCase()}__${vItem.partCode.trim().toLowerCase()}`;
+            const vTitle = `Model BOM: ${v.modelName}`.trim().toLowerCase();
+            const groupKey = `${v.voucherCode.trim().toLowerCase()}__${vTitle}__${vItem.partCode.trim().toLowerCase()}`;
             const existing = consolidatedMap.get(groupKey);
             if (existing) {
               existing.rawQuantity = Math.max(existing.rawQuantity, expQty);
@@ -731,12 +733,21 @@ export const KittingView: React.FC<KittingViewProps> = ({
   const totalFilteredKittedQty = filteredCompletedItems.reduce((sum, i) => sum + (i.kittedQuantity || 0), 0);
   const totalFilteredScrapQty = filteredCompletedItems.reduce((sum, i) => sum + (i.scrapQuantity || 0), 0);
 
-  // Group pending items by Mã Phiếu Xuất Kho (voucherCode)
+  // Group pending items by Mã Phiếu Xuất Kho (voucherCode) và Tên Model BOM (voucherTitle)
   const groupedVouchersMap = new Map<string, PendingVoucherGroup>();
 
   rawPendingItems.forEach((item) => {
     const vCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
-    const existing = groupedVouchersMap.get(vCode);
+    const vTitle = (
+      item.voucherTitle ||
+      (vCode === 'PHIẾU_XUẤT_LẺ'
+        ? 'Linh kiện xuất lẻ (Chưa gán mã phiếu)'
+        : `Phiếu xuất ${vCode}`)
+    ).trim();
+
+    // Dùng tổ hợp voucherCode + voucherTitle làm groupKey để đảm bảo các Model khác nhau không bao giờ bị gộp chung
+    const groupKey = vCode === 'PHIẾU_XUẤT_LẺ' ? 'PHIẾU_XUẤT_LẺ' : `${vCode}__${vTitle}`;
+    const existing = groupedVouchersMap.get(groupKey);
     const unkitted = Math.max(0, item.rawQuantity - (item.kittedQuantity || 0));
 
     if (existing) {
@@ -749,13 +760,9 @@ export const KittingView: React.FC<KittingViewProps> = ({
         existing.createdAt = item.createdAt;
       }
     } else {
-      groupedVouchersMap.set(vCode, {
+      groupedVouchersMap.set(groupKey, {
         voucherCode: vCode,
-        voucherTitle:
-          item.voucherTitle ||
-          (vCode === 'PHIẾU_XUẤT_LẺ'
-            ? 'Linh kiện xuất lẻ (Chưa gán mã phiếu)'
-            : `Phiếu xuất ${vCode}`),
+        voucherTitle: vTitle,
         createdAt: item.createdAt,
         operatorName: item.operatorName,
         items: [item],
@@ -1894,7 +1901,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                   <div className="flex items-center space-x-1">
                     <button
                       type="button"
-                      onClick={() => setExpandedVoucherCodes(groupedVouchersList.map((v) => v.voucherCode))}
+                      onClick={() => setExpandedVoucherCodes(groupedVouchersList.map((v) => `${v.voucherCode}__${(v.voucherTitle || '').trim()}`))}
                       className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
                     >
                       Mở tất cả
@@ -1994,7 +2001,8 @@ export const KittingView: React.FC<KittingViewProps> = ({
             ) : (
               <div className="space-y-4">
                 {filteredVouchersList.map((voucher) => {
-                  const isExpanded = expandedVoucherCodes.includes(voucher.voucherCode);
+                  const voucherUniqueKey = `${voucher.voucherCode}__${(voucher.voucherTitle || '').trim()}`;
+                  const isExpanded = expandedVoucherCodes.includes(voucherUniqueKey) || expandedVoucherCodes.includes(voucher.voucherCode);
                   const progressPctExact =
                     voucher.totalRawQty > 0
                       ? (voucher.totalKittedQty / voucher.totalRawQty) * 100
@@ -2010,13 +2018,13 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
                   return (
                     <div
-                      key={voucher.voucherCode}
+                      key={voucherUniqueKey}
                       className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:border-indigo-300 transition-all overflow-hidden"
                     >
                       {/* Voucher Card Header */}
                       <div className="p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4 bg-gradient-to-r from-slate-50/70 via-white to-slate-50/40">
                         <div
-                          onClick={() => toggleVoucherExpanded(voucher.voucherCode)}
+                          onClick={() => toggleVoucherExpanded(voucherUniqueKey)}
                           className="flex items-center space-x-3.5 cursor-pointer flex-1 min-w-[260px]"
                         >
                           <button
@@ -2187,7 +2195,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                           {/* Toggle Expand Button */}
                           <button
                             type="button"
-                            onClick={() => toggleVoucherExpanded(voucher.voucherCode)}
+                            onClick={() => toggleVoucherExpanded(voucherUniqueKey)}
                             className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer text-xs font-bold flex items-center space-x-1"
                           >
                             <Eye className="w-3.5 h-3.5" />
