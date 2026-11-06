@@ -34,7 +34,6 @@ import {
   Sparkles,
   AlertTriangle,
   RotateCcw,
-  RefreshCw,
   ShieldAlert,
   Calendar,
   Filter,
@@ -99,55 +98,22 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
-  // Buffer locations state - TẮT REALTIME theo yêu cầu người dùng.
-  // Số tồn kệ và danh sách linh kiện KHÔNG tự động cập nhật trong nền.
-  // Phải nhấn nút "Làm mới tồn kệ" hoặc "Đồng bộ Supabase" thì mới hiển thị số tồn mới.
-  const [andonBuffers, setAndonBuffers] = useState<BufferLocationMap[]>(() => {
-    return buffers && buffers.length > 0 ? buffers : storageService.getBufferLocations();
-  });
-
   const handleSyncFromCloud = async () => {
     try {
       setIsPullingCloud(true);
       await storageService.fetchMaterialCallsFromCloud(true);
-      await storageService.fetchBufferMapFromCloud(true);
-      const freshBuffers = storageService.getBufferLocations();
-      setAndonBuffers(freshBuffers);
       onRefresh();
       if (onSyncCloud) {
         await onSyncCloud();
       }
       setMessage({
         type: 'success',
-        text: '☁️ Đã đồng bộ Supabase Cloud & cập nhật số tồn mới trên kệ Outbuffer thành công!',
+        text: '☁️ Đã kéo thành công toàn bộ dữ liệu đơn gọi hàng từ Supabase Cloud!',
       });
     } catch (err: any) {
       setMessage({
         type: 'error',
         text: `Lỗi kéo dữ liệu từ Supabase: ${err?.message || 'Không thể kết nối'}`,
-      });
-    } finally {
-      setIsPullingCloud(false);
-    }
-  };
-
-  const handleManualRefreshStock = async () => {
-    try {
-      setIsPullingCloud(true);
-      await storageService.fetchBufferMapFromCloud(true);
-      const freshBuffers = storageService.getBufferLocations();
-      setAndonBuffers(freshBuffers);
-      onRefresh();
-      setMessage({
-        type: 'success',
-        text: '🔄 Đã làm mới số tồn kệ Outbuffer thành công!',
-      });
-    } catch {
-      setAndonBuffers(storageService.getBufferLocations());
-      onRefresh();
-      setMessage({
-        type: 'success',
-        text: '🔄 Đã làm mới số tồn kệ Outbuffer từ bộ nhớ máy!',
       });
     } finally {
       setIsPullingCloud(false);
@@ -423,11 +389,10 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   }
 
   // Group available stock on Outbuffer shelves by part code (Memoized for high performance on weak phones)
-  // TẮT REALTIME: Chỉ recompute khi andonBuffers thay đổi (khi bấm nút "Làm mới tồn kệ" hoặc "Đồng bộ Supabase")
   const bufferPartsMap = React.useMemo<Map<string, BufferPartSummary>>(() => {
     const map = new Map<string, BufferPartSummary>();
 
-    andonBuffers.forEach((b) => {
+    buffers.forEach((b) => {
       if (b.status !== 'EMPTY') {
         const itemsOnShelf = (b.items && b.items.length > 0)
           ? b.items
@@ -476,7 +441,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     });
 
     return map;
-  }, [andonBuffers]);
+  }, [buffers]);
 
   // Prepare searchable options for SearchableSelect (Memoized)
   // Rule: ONLY allow parts that are either on Outbuffer shelves OR in Pending Kitting list (đã xuất kho thô)
@@ -992,27 +957,16 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={handleSyncFromCloud}
               disabled={isPullingCloud}
               className="px-4 py-2.5 bg-white/20 hover:bg-white/30 active:scale-95 text-white font-extrabold rounded-2xl border border-white/30 shadow-xs transition-all cursor-pointer flex items-center space-x-2 text-xs"
-              title="Kéo toàn bộ đơn hàng và đồng bộ số tồn kệ từ Supabase Cloud"
+              title="Kéo toàn bộ 256 đơn hàng và lịch sử từ Supabase Cloud"
             >
               <RotateCcw className={`w-4 h-4 ${isPullingCloud ? 'animate-spin' : ''}`} />
-              <span>{isPullingCloud ? 'Đang đồng bộ...' : 'Đồng Bộ Supabase Cloud'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleManualRefreshStock}
-              disabled={isPullingCloud}
-              className="px-4 py-2.5 bg-emerald-600/90 hover:bg-emerald-600 active:scale-95 text-white font-extrabold rounded-2xl border border-emerald-400/40 shadow-xs transition-all cursor-pointer flex items-center space-x-2 text-xs"
-              title="Bấm để làm mới lại số lượng tồn trên kệ Outbuffer (Thao tác thủ công theo yêu cầu)"
-            >
-              <RefreshCw className={`w-4 h-4 text-emerald-200 ${isPullingCloud ? 'animate-spin' : ''}`} />
-              <span>{isPullingCloud ? 'Đang tải tồn...' : 'Làm Mới Tồn Kệ'}</span>
+              <span>{isPullingCloud ? 'Đang kéo Supabase...' : 'Kéo Đơn Từ Supabase Cloud'}</span>
             </button>
 
             <div className="bg-white/10 backdrop-blur-md border border-white/20 p-3 sm:p-4 rounded-2xl flex items-center space-x-3">
@@ -1225,7 +1179,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                         </div>
                       ) : (
                         (() => {
-                          const shelfBuf = andonBuffers.find((b) => b.locationId === req.bufferLocation);
+                          const shelfBuf = buffers.find((b) => b.locationId === req.bufferLocation);
                           return (
                             <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs space-y-1.5">
                               <span className="font-extrabold text-blue-900 block uppercase text-[10px]">LỘ TRÌNH LẤY HÀNG OUTBUFFER:</span>
@@ -1578,21 +1532,9 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
                   {/* Searchable Select Part Code & Name */}
                   <div className="w-full min-w-0">
-                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                      <label className="block font-bold text-slate-800 text-xs sm:text-sm">
-                        2. Chọn Mã & Tên Linh Kiện Cần Gọi (Chỉ gọi linh kiện trong Danh Sách Chờ Bóc Tách hoặc Kệ Outbuffer) <span className="text-rose-500">*</span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleManualRefreshStock}
-                        disabled={isPullingCloud}
-                        className="inline-flex items-center space-x-1 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-bold cursor-pointer transition-colors shadow-2xs shrink-0 active:scale-95"
-                        title="Bấm để làm mới số tồn mới nhất trên kệ Outbuffer"
-                      >
-                        <RefreshCw className={`w-3 h-3 text-emerald-600 ${isPullingCloud ? 'animate-spin' : ''}`} />
-                        <span>Làm mới số tồn</span>
-                      </button>
-                    </div>
+                    <label className="block font-bold text-slate-800 mb-1 text-xs sm:text-sm">
+                      2. Chọn Mã & Tên Linh Kiện Cần Gọi (Chỉ gọi linh kiện trong Danh Sách Chờ Bóc Tách hoặc Kệ Outbuffer) <span className="text-rose-500">*</span>
+                    </label>
                     {partSelectOptions.length === 0 ? (
                       <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-xs text-amber-900 space-y-2">
                         <p className="font-extrabold flex items-center space-x-2 text-sm text-amber-950">

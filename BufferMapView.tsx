@@ -1,9 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
-import { BufferLocationMap, BufferPartItem, WarehouseLocation, Part } from './types';
+import { BufferLocationMap, BufferPartItem, WarehouseLocation } from './types';
 import { storageService } from './storage';
 import { LocationQrPrintModal } from './LocationQrPrintModal';
-import { smartFuzzySearch } from './fuzzySearch';
 import {
   LayoutGrid,
   QrCode,
@@ -84,41 +83,6 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
   const [newPartUnit, setNewPartUnit] = useState('Con');
   const [newPartQty, setNewPartQty] = useState(10);
 
-  // Fast Fuzzy Search in Detail Modal
-  const [shelfSearchTerm, setShelfSearchTerm] = useState('');
-
-  // Edit Part Quantity Modal State
-  const [editQtyModal, setEditQtyModal] = useState<{
-    isOpen: boolean;
-    partCode: string;
-    partName: string;
-    unit: string;
-    currentQty: number;
-    newQty: number;
-  } | null>(null);
-
-  // Add Part Modal State (Admin only)
-  const [isAddPartModalOpen, setIsAddPartModalOpen] = useState(false);
-  const [addPartSearch, setAddPartSearch] = useState('');
-  const [selectedMasterPart, setSelectedMasterPart] = useState<Part | null>(null);
-  const [addPartCustomQty, setAddPartCustomQty] = useState<number>(100);
-  const [addPartUnit, setAddPartUnit] = useState<string>('Cái');
-  const [isSavingPart, setIsSavingPart] = useState(false);
-
-  // Master Parts cache for Add Part Modal
-  const allMasterParts = useMemo<Part[]>(() => {
-    return storageService.getParts();
-  }, [isAddPartModalOpen]);
-
-  const filteredMasterParts = useMemo<Part[]>(() => {
-    if (!addPartSearch.trim()) return allMasterParts.slice(0, 30);
-    return smartFuzzySearch<Part>(
-      allMasterParts,
-      (p: Part) => [p.code, p.name, p.unit || '', p.location || ''],
-      addPartSearch
-    ).slice(0, 40);
-  }, [allMasterParts, addPartSearch]);
-
   // Add Shelf Modal state
   const [isAddShelfOpen, setIsAddShelfOpen] = useState(false);
   const [newLocId, setNewLocId] = useState('');
@@ -144,196 +108,9 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
     setNewPartCode('');
     setNewPartName('');
     setNewPartQty(10);
-    setShelfSearchTerm('');
   };
 
-  const handleOpenEditQtyModal = (item: BufferPartItem) => {
-    setEditQtyModal({
-      isOpen: true,
-      partCode: item.partCode,
-      partName: item.partName || item.partCode,
-      unit: item.unit || 'PCS',
-      currentQty: item.currentStockQty,
-      newQty: item.currentStockQty,
-    });
-  };
-
-  const handleSaveEditQty = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedBuffer || !editQtyModal) return;
-
-    if (editQtyModal.newQty < 0) {
-      alert('Số lượng tồn không thể là số âm!');
-      return;
-    }
-
-    try {
-      setIsSavingPart(true);
-      const currentItems: BufferPartItem[] = selectedBuffer.items && selectedBuffer.items.length > 0
-        ? [...selectedBuffer.items]
-        : (selectedBuffer.partCode
-          ? [{
-              id: 'bitem-' + selectedBuffer.locationId,
-              partCode: selectedBuffer.partCode,
-              partName: selectedBuffer.partName || selectedBuffer.partCode,
-              unit: selectedBuffer.unit || 'PCS',
-              currentStockQty: selectedBuffer.currentStockQty,
-              modelName: selectedBuffer.modelName,
-              lastUpdated: selectedBuffer.lastUpdated,
-            }]
-          : []);
-
-      const itemIdx = currentItems.findIndex(
-        (i) => i.partCode.trim().toLowerCase() === editQtyModal.partCode.trim().toLowerCase()
-      );
-
-      if (itemIdx >= 0) {
-        if (editQtyModal.newQty === 0) {
-          const confirmDelete = window.confirm(
-            `Số lượng nhập bằng 0. Bạn có muốn XÓA linh kiện [${editQtyModal.partCode}] khỏi Kệ ${selectedBuffer.locationId}?`
-          );
-          if (confirmDelete) {
-            currentItems.splice(itemIdx, 1);
-          } else {
-            currentItems[itemIdx] = {
-              ...currentItems[itemIdx],
-              currentStockQty: 0,
-              lastUpdated: new Date().toISOString(),
-            };
-          }
-        } else {
-          currentItems[itemIdx] = {
-            ...currentItems[itemIdx],
-            currentStockQty: editQtyModal.newQty,
-            lastUpdated: new Date().toISOString(),
-          };
-        }
-      }
-
-      // Update in storage and sync to Supabase
-      const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
-        items: currentItems,
-      });
-      await storageService.saveBufferMap(storageService.getBufferLocations());
-
-      setSelectedBuffer(updated);
-      setEditQtyModal(null);
-      setMessage({
-        type: 'success',
-        text: `Đã cập nhật số lượng linh kiện [${editQtyModal.partCode}] trên Kệ ${selectedBuffer.locationId} thành ${editQtyModal.newQty} và đồng bộ Supabase Cloud!`,
-      });
-      onRefresh();
-    } catch (err: any) {
-      alert('Lỗi cập nhật số lượng: ' + (err?.message || 'Không thể lưu'));
-    } finally {
-      setIsSavingPart(false);
-    }
-  };
-
-  const handleConfirmRemovePart = async (partCode: string, partName?: string) => {
-    if (!selectedBuffer) return;
-    if (!window.confirm(`Bạn có chắc chắn muốn XÓA linh kiện [${partCode}] ${partName ? `(${partName})` : ''} khỏi Kệ ${selectedBuffer.locationId}?`)) {
-      return;
-    }
-
-    try {
-      const currentItems = (selectedBuffer.items || []).filter(
-        (i) => i.partCode.trim().toLowerCase() !== partCode.trim().toLowerCase()
-      );
-      const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
-        items: currentItems,
-      });
-      await storageService.saveBufferMap(storageService.getBufferLocations());
-
-      setSelectedBuffer(updated);
-      setMessage({
-        type: 'success',
-        text: `Đã xóa linh kiện [${partCode}] khỏi Kệ ${selectedBuffer.locationId} và đồng bộ Supabase Cloud!`,
-      });
-      onRefresh();
-    } catch (err: any) {
-      alert('Lỗi khi xóa linh kiện: ' + (err?.message || 'Không thể lưu'));
-    }
-  };
-
-  const handleOpenAddPartModal = () => {
-    if (!isAdmin) {
-      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền thêm linh kiện vào kệ!');
-      return;
-    }
-    setAddPartSearch('');
-    setSelectedMasterPart(null);
-    setAddPartCustomQty(100);
-    setAddPartUnit('Cái');
-    setIsAddPartModalOpen(true);
-  };
-
-  const handleSaveAddPartModal = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedBuffer) return;
-
-    if (!isAdmin) {
-      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền thêm linh kiện vào kệ!');
-      return;
-    }
-
-    if (!selectedMasterPart) {
-      alert('Vui lòng chọn một linh kiện từ danh mục linh kiện!');
-      return;
-    }
-
-    if (addPartCustomQty <= 0) {
-      alert('Số lượng thêm lên kệ phải lớn hơn 0!');
-      return;
-    }
-
-    try {
-      setIsSavingPart(true);
-      const currentItems: BufferPartItem[] = selectedBuffer.items ? [...selectedBuffer.items] : [];
-      const existingIdx = currentItems.findIndex(
-        (i) => i.partCode.trim().toLowerCase() === selectedMasterPart.code.trim().toLowerCase()
-      );
-
-      if (existingIdx >= 0) {
-        currentItems[existingIdx] = {
-          ...currentItems[existingIdx],
-          partName: selectedMasterPart.name || currentItems[existingIdx].partName,
-          unit: addPartUnit || selectedMasterPart.unit || currentItems[existingIdx].unit,
-          currentStockQty: currentItems[existingIdx].currentStockQty + Number(addPartCustomQty),
-          lastUpdated: new Date().toISOString(),
-        };
-      } else {
-        currentItems.push({
-          id: 'bitem-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
-          partCode: selectedMasterPart.code,
-          partName: selectedMasterPart.name,
-          unit: addPartUnit || selectedMasterPart.unit || 'Cái',
-          currentStockQty: Number(addPartCustomQty),
-          modelName: selectedBuffer.modelName,
-          lastUpdated: new Date().toISOString(),
-        });
-      }
-
-      const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
-        items: currentItems,
-      });
-      await storageService.saveBufferMap(storageService.getBufferLocations());
-
-      setSelectedBuffer(updated);
-      setIsAddPartModalOpen(false);
-      setMessage({
-        type: 'success',
-        text: `Đã thêm thành công linh kiện [${selectedMasterPart.code}] (+${addPartCustomQty} ${addPartUnit}) vào Kệ ${selectedBuffer.locationId} và đồng bộ Supabase Cloud!`,
-      });
-      onRefresh();
-    } catch (err: any) {
-      alert('Lỗi khi thêm linh kiện: ' + (err?.message || 'Không thể lưu'));
-    } finally {
-      setIsSavingPart(false);
-    }
-  };
-
-  const handleSaveShelfInfo = async (e: React.FormEvent) => {
+  const handleSaveShelfInfo = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedBuffer || !canConfigure) return;
 
@@ -342,24 +119,18 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
         description: editLocDesc.trim() || undefined,
         modelName: shelfModelName.trim() || undefined,
       });
-      await storageService.saveBufferMap(storageService.getBufferLocations());
 
       setSelectedBuffer(updated);
-      setMessage({ type: 'success', text: `Đã lưu thông tin Model & Mô tả Kệ ${selectedBuffer.locationId} và đồng bộ Supabase Cloud!` });
+      setMessage({ type: 'success', text: `Đã lưu thông tin Model & Mô tả Kệ ${selectedBuffer.locationId}` });
       onRefresh();
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     }
   };
 
-  const handleAddPartToShelf = async (e: React.FormEvent) => {
+  const handleAddPartToShelf = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedBuffer || !canConfigure) return;
-
-    if (!isAdmin) {
-      alert('⛔ QUYỀN HẠN BỊ TỪ CHỐI!\nChỉ tài khoản Quản trị viên (ADMIN) mới có quyền thêm linh kiện vào kệ!');
-      return;
-    }
 
     if (!newPartCode.trim()) {
       setMessage({ type: 'error', text: 'Vui lòng nhập Mã Linh Kiện!' });
@@ -373,9 +144,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
 
     try {
       const currentItems: BufferPartItem[] = selectedBuffer.items ? [...selectedBuffer.items] : [];
-      const existingIdx = currentItems.findIndex(
-        (i) => i.partCode.trim().toLowerCase() === newPartCode.trim().toLowerCase()
-      );
+      const existingIdx = currentItems.findIndex((i) => i.partCode === newPartCode.trim());
 
       if (existingIdx >= 0) {
         currentItems[existingIdx] = {
@@ -401,10 +170,9 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
         modelName: shelfModelName.trim() || selectedBuffer.modelName,
         items: currentItems,
       });
-      await storageService.saveBufferMap(storageService.getBufferLocations());
 
       setSelectedBuffer(updated);
-      setMessage({ type: 'success', text: `Đã thêm thành công linh kiện [${newPartCode}] vào Kệ ${selectedBuffer.locationId} và đồng bộ Supabase Cloud!` });
+      setMessage({ type: 'success', text: `Đã thêm thành công linh kiện [${newPartCode}] vào Kệ ${selectedBuffer.locationId}` });
       setNewPartCode('');
       setNewPartName('');
       setNewPartQty(10);
@@ -414,41 +182,29 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
     }
   };
 
-  const handleRemovePartFromShelf = async (partCode: string) => {
+  const handleRemovePartFromShelf = (partCode: string) => {
     if (!selectedBuffer || !canConfigure) return;
     if (window.confirm(`Bạn có chắc muốn xóa linh kiện [${partCode}] khỏi Kệ Buffer ${selectedBuffer.locationId}?`)) {
-      try {
-        const currentItems = (selectedBuffer.items || []).filter(
-          (i) => i.partCode.trim().toLowerCase() !== partCode.trim().toLowerCase()
-        );
-        const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
-          items: currentItems,
-        });
-        await storageService.saveBufferMap(storageService.getBufferLocations());
-        setSelectedBuffer(updated);
-        setMessage({ type: 'success', text: `Đã xóa linh kiện [${partCode}] khỏi kệ và đồng bộ Supabase Cloud!` });
-        onRefresh();
-      } catch (err: any) {
-        alert('Lỗi xóa linh kiện: ' + err.message);
-      }
+      const currentItems = (selectedBuffer.items || []).filter((i) => i.partCode !== partCode);
+      const updated = storageService.updateBufferLocation(selectedBuffer.locationId, {
+        items: currentItems,
+      });
+      setSelectedBuffer(updated);
+      setMessage({ type: 'success', text: `Đã xóa linh kiện [${partCode}] khỏi kệ` });
+      onRefresh();
     }
   };
 
-  const handleClearShelf = async (locationId: string) => {
+  const handleClearShelf = (locationId: string) => {
     if (!canConfigure) {
       alert('Bạn không có quyền dọn trống kệ này!');
       return;
     }
     if (window.confirm(`Bạn có chắc muốn dọn trống tất cả linh kiện trên Kệ Buffer ${locationId}?`)) {
-      try {
-        storageService.clearBufferLocation(locationId);
-        await storageService.saveBufferMap(storageService.getBufferLocations());
-        setMessage({ type: 'success', text: `Đã dọn trống tất cả linh kiện trên kệ ${locationId} và đồng bộ Supabase!` });
-        setSelectedBuffer(null);
-        onRefresh();
-      } catch (err: any) {
-        alert('Lỗi dọn trống kệ: ' + err.message);
-      }
+      storageService.clearBufferLocation(locationId);
+      setMessage({ type: 'success', text: `Đã dọn trống tất cả linh kiện trên kệ ${locationId}` });
+      setSelectedBuffer(null);
+      onRefresh();
     }
   };
 
@@ -1039,7 +795,7 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
 
                   {/* List of Parts on Shelf */}
                   <div className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center justify-between">
                       <h4 className="font-extrabold text-slate-800 text-xs flex items-center space-x-2">
                         <Package className="w-4 h-4 text-emerald-700" />
                         <span>Danh Sách Linh Kiện Đang Lưu Trên Kệ [{selectedBuffer.locationId}]:</span>
@@ -1053,41 +809,6 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                       </span>
                     </div>
 
-                    {/* Search Bar with Fuzzy Search & Add Part Button */}
-                    <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-50 p-2.5 rounded-2xl border border-slate-200">
-                      <div className="relative flex-1 min-w-[200px]">
-                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
-                        <input
-                          type="text"
-                          value={shelfSearchTerm}
-                          onChange={(e) => setShelfSearchTerm(e.target.value)}
-                          placeholder="Tìm nhanh linh kiện trên kệ (mã, tên, không dấu)..."
-                          className="w-full pl-8 pr-8 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-hidden transition-all"
-                        />
-                        {shelfSearchTerm && (
-                          <button
-                            type="button"
-                            onClick={() => setShelfSearchTerm('')}
-                            className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </div>
-
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          onClick={handleOpenAddPartModal}
-                          className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-black flex items-center space-x-1.5 shadow-2xs transition-all cursor-pointer shrink-0 active:scale-95"
-                          title="Thêm linh kiện mới lên kệ này (Chỉ Quản trị viên Admin)"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>+ Thêm Linh Kiện</span>
-                        </button>
-                      )}
-                    </div>
-
                     {(!selectedBuffer.items || selectedBuffer.items.length === 0) && !selectedBuffer.partCode ? (
                       <div className="p-10 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-2">
                         <Box className="w-8 h-8 mx-auto text-slate-300" />
@@ -1097,108 +818,50 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                         </p>
                       </div>
                     ) : (
-                      (() => {
-                        const rawItems: BufferPartItem[] = (selectedBuffer.items && selectedBuffer.items.length > 0)
+                      <div className="space-y-2">
+                        {((selectedBuffer.items && selectedBuffer.items.length > 0)
                           ? selectedBuffer.items
-                          : (selectedBuffer.partCode
-                            ? [{
-                                id: 'bitem-' + selectedBuffer.locationId,
-                                partCode: selectedBuffer.partCode,
-                                partName: selectedBuffer.partName || selectedBuffer.partCode,
-                                unit: selectedBuffer.unit || 'PCS',
-                                currentStockQty: selectedBuffer.currentStockQty,
-                                modelName: selectedBuffer.modelName,
-                                lastUpdated: selectedBuffer.lastUpdated,
-                              }]
-                            : []);
-
-                        const filtered = !shelfSearchTerm.trim()
-                          ? rawItems
-                          : smartFuzzySearch(
-                              rawItems,
-                              (item) => [item.partCode, item.partName || '', item.modelName || ''],
-                              shelfSearchTerm
-                            );
-
-                        if (filtered.length === 0) {
-                          return (
-                            <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-2">
-                              <p className="text-xs font-bold text-slate-600">Không tìm thấy linh kiện nào phù hợp!</p>
-                              <p className="text-[11px] text-slate-400">
-                                Không có linh kiện nào trên kệ khớp với từ khóa "{shelfSearchTerm}".
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => setShelfSearchTerm('')}
-                                className="px-3 py-1 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 cursor-pointer"
-                              >
-                                Xóa từ khóa
-                              </button>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div className="space-y-2">
-                            {filtered.map((item, idx) => (
-                              <div
-                                key={item.id || item.partCode + idx}
-                                className="p-4 bg-white border border-slate-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-2xs hover:border-emerald-300 transition-colors"
-                              >
-                                <div className="space-y-1">
-                                  <div className="flex items-center space-x-2">
-                                    <span className="font-mono font-black text-sm text-purple-900">
-                                      {item.partCode}
-                                    </span>
-                                    {item.modelName && (
-                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded-md">
-                                        {item.modelName}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="font-bold text-slate-800 text-xs">{item.partName || item.partCode}</p>
-                                  {item.lastUpdated && (
-                                    <span className="text-[10px] text-slate-400 font-medium block">
-                                      Nhập khoang: {new Date(item.lastUpdated).toLocaleString('vi-VN')}
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div className="flex items-center space-x-3">
-                                  <div className="text-right">
-                                    <span className="text-[10px] text-slate-500 font-bold block uppercase">Số lượng trên kệ:</span>
-                                    <span className="font-black text-base text-emerald-800">
-                                      {item.currentStockQty.toLocaleString('vi-VN')}{' '}
-                                      <span className="text-xs font-bold text-slate-600">{item.unit || 'PCS'}</span>
-                                    </span>
-                                  </div>
-
-                                  {(isAdmin || canConfigure) && (
-                                    <div className="flex items-center space-x-1 border-l border-slate-200 pl-2.5">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleOpenEditQtyModal(item)}
-                                        className="p-2 text-blue-600 hover:bg-blue-50 hover:text-blue-800 border border-transparent hover:border-blue-200 rounded-xl cursor-pointer transition-colors shadow-2xs"
-                                        title="Chỉnh sửa số lượng linh kiện trên kệ"
-                                      >
-                                        <Edit3 className="w-4 h-4" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleConfirmRemovePart(item.partCode, item.partName)}
-                                        className="p-2 text-rose-500 hover:bg-rose-50 hover:text-rose-700 border border-transparent hover:border-rose-200 rounded-xl cursor-pointer transition-colors shadow-2xs"
-                                        title="Xóa linh kiện này khỏi kệ"
-                                      >
-                                        <Trash2 className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
+                          : [{
+                              partCode: selectedBuffer.partCode || '',
+                              partName: selectedBuffer.partName || '',
+                              unit: selectedBuffer.unit || 'PCS',
+                              currentStockQty: selectedBuffer.currentStockQty,
+                              modelName: selectedBuffer.modelName,
+                              lastUpdated: selectedBuffer.lastUpdated,
+                            }]
+                        ).map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="p-4 bg-white border border-slate-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-2xs hover:border-emerald-300 transition-colors"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center space-x-2">
+                                <span className="font-mono font-black text-sm text-purple-900">
+                                  {item.partCode}
+                                </span>
+                                {item.modelName && (
+                                  <span className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-bold rounded-md">
+                                    {item.modelName}
+                                  </span>
+                                )}
                               </div>
-                            ))}
+                              <p className="font-bold text-slate-800 text-xs">{item.partName || item.partCode}</p>
+                              {item.lastUpdated && (
+                                <span className="text-[10px] text-slate-400 font-medium block">
+                                  Nhập khoang: {new Date(item.lastUpdated).toLocaleString('vi-VN')}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="text-right">
+                              <span className="text-[10px] text-slate-500 font-bold block uppercase">Số lượng trên kệ:</span>
+                              <span className="font-black text-base text-emerald-800">
+                                {item.currentStockQty.toLocaleString('vi-VN')} <span className="text-xs font-bold text-slate-600">{item.unit || 'PCS'}</span>
+                              </span>
+                            </div>
                           </div>
-                        );
-                      })()
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1303,19 +966,12 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
                     </div>
 
                     <div className="flex justify-end pt-1">
-                      {isAdmin ? (
-                        <button
-                          type="submit"
-                          className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-black rounded-xl text-xs shadow-md cursor-pointer"
-                        >
-                          + Thêm Linh Kiện Lên Kệ
-                        </button>
-                      ) : (
-                        <div className="text-xs text-amber-800 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 flex items-center space-x-1.5">
-                          <span>🔒</span>
-                          <span>Chỉ Quản trị viên (Admin) mới có quyền thêm linh kiện lên kệ</span>
-                        </div>
-                      )}
+                      <button
+                        type="submit"
+                        className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-black rounded-xl text-xs shadow-md"
+                      >
+                        + Thêm Linh Kiện Lên Kệ
+                      </button>
                     </div>
                   </form>
 
@@ -1381,258 +1037,6 @@ export const BufferMapView: React.FC<BufferMapViewProps> = ({ buffers, onRefresh
               >
                 Đóng
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Part Quantity Modal */}
-      {editQtyModal && editQtyModal.isOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 relative">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h4 className="font-extrabold text-slate-900 text-sm flex items-center space-x-2">
-                <Edit3 className="w-4 h-4 text-blue-600" />
-                <span>Điều Chỉnh Số Lượng Linh Kiện Trên Kệ</span>
-              </h4>
-              <button
-                type="button"
-                onClick={() => setEditQtyModal(null)}
-                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-1 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500 font-bold">Vị trí kệ:</span>
-                <span className="font-black text-slate-900">{selectedBuffer?.locationId}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500 font-bold">Mã linh kiện:</span>
-                <span className="font-mono font-black text-purple-900">{editQtyModal.partCode}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500 font-bold">Tên linh kiện:</span>
-                <span className="font-bold text-slate-800 text-right truncate max-w-[200px]">{editQtyModal.partName}</span>
-              </div>
-              <div className="flex items-center justify-between pt-1 border-t border-slate-200/60">
-                <span className="text-slate-500 font-bold">Số lượng hiện tại:</span>
-                <span className="font-black text-emerald-800 font-mono">{editQtyModal.currentQty.toLocaleString('vi-VN')} {editQtyModal.unit}</span>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveEditQty} className="space-y-4">
-              <div>
-                <label className="block text-xs font-black text-slate-800 mb-1.5">
-                  Số lượng tồn mới trên kệ ({editQtyModal.unit}) <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  required
-                  autoFocus
-                  value={editQtyModal.newQty}
-                  onChange={(e) => setEditQtyModal({ ...editQtyModal, newQty: Number(e.target.value) })}
-                  className="w-full px-3.5 py-2.5 bg-white border-2 border-blue-500 rounded-xl font-mono font-black text-base text-blue-950 focus:ring-2 focus:ring-blue-500 outline-hidden"
-                />
-                <p className="text-[11px] text-slate-500 mt-1">
-                  * Nhập 0 nếu muốn dọn sạch hoặc xóa linh kiện này khỏi kệ. Dữ liệu sẽ đồng bộ ngay lập tức lên Supabase Cloud và hiển thị ngay tại tab Sản xuất gọi hàng.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setEditQtyModal(null)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl cursor-pointer"
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingPart}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-black text-xs rounded-xl shadow-md cursor-pointer flex items-center space-x-1.5 active:scale-95 transition-all"
-                >
-                  {isSavingPart ? (
-                    <span>Đang lưu...</span>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Lưu & Đồng Bộ Supabase</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Add Part To Shelf Modal (Admin Only) */}
-      {isAddPartModalOpen && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 relative max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
-              <h4 className="font-extrabold text-slate-900 text-sm flex items-center space-x-2">
-                <Plus className="w-4 h-4 text-emerald-600" />
-                <span>Thêm Linh Kiện Vào Kệ [{selectedBuffer?.locationId}]</span>
-              </h4>
-              <button
-                type="button"
-                onClick={() => setIsAddPartModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="overflow-y-auto space-y-4 grow pr-1">
-              {/* Search Master Parts with Fuzzy Search */}
-              <div>
-                <label className="block text-xs font-black text-slate-800 mb-1.5 flex items-center justify-between">
-                  <span>Tìm kiếm linh kiện từ Master Data (Fuzzy Search):</span>
-                  <span className="text-[11px] font-bold text-emerald-700">
-                    {filteredMasterParts.length} gợi ý
-                  </span>
-                </label>
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type="text"
-                    value={addPartSearch}
-                    onChange={(e) => setAddPartSearch(e.target.value)}
-                    placeholder="Gõ mã hoặc tên linh kiện (không dấu, từ khóa rời rạc)..."
-                    className="w-full pl-8 pr-8 py-2 bg-slate-50 hover:bg-white focus:bg-white border-2 border-emerald-500/40 focus:border-emerald-500 rounded-xl text-xs font-semibold text-slate-900 outline-hidden transition-all"
-                  />
-                  {addPartSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setAddPartSearch('')}
-                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Selected Part Badge or List of suggestions */}
-              {selectedMasterPart ? (
-                <div className="p-3.5 bg-emerald-50 border-2 border-emerald-300 rounded-2xl flex items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md inline-block">
-                      ✓ Đã chọn linh kiện
-                    </span>
-                    <div className="font-mono font-black text-sm text-purple-950">
-                      {selectedMasterPart.code}
-                    </div>
-                    <p className="font-bold text-xs text-slate-800">{selectedMasterPart.name}</p>
-                    <span className="text-[11px] text-slate-500 font-medium block">
-                      ĐVT: <strong>{selectedMasterPart.unit || 'Cái'}</strong> | Tồn kho chính: <strong>{selectedMasterPart.currentStock || 0}</strong>
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedMasterPart(null)}
-                    className="text-xs font-bold text-slate-500 hover:text-rose-600 bg-white border border-slate-200 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
-                  >
-                    Đổi LK khác
-                  </button>
-                </div>
-              ) : (
-                <div className="border border-slate-200 rounded-2xl overflow-hidden max-h-48 overflow-y-auto divide-y divide-slate-100 bg-white shadow-2xs">
-                  {filteredMasterParts.length === 0 ? (
-                    <p className="p-4 text-xs text-center text-slate-400 italic">
-                      Không tìm thấy linh kiện nào phù hợp.
-                    </p>
-                  ) : (
-                    filteredMasterParts.map((p) => (
-                      <div
-                        key={p.code}
-                        onClick={() => {
-                          setSelectedMasterPart(p);
-                          setAddPartUnit(p.unit || 'Cái');
-                        }}
-                        className="p-2.5 hover:bg-emerald-50/70 cursor-pointer transition-colors flex items-center justify-between gap-2"
-                      >
-                        <div className="min-w-0">
-                          <span className="font-mono font-black text-xs text-purple-900 block truncate">
-                            {p.code}
-                          </span>
-                          <span className="text-slate-700 text-[11px] block truncate">
-                            {p.name}
-                          </span>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <span className="text-[10px] text-slate-400 font-bold block">
-                            {p.unit || 'Cái'}
-                          </span>
-                          <span className="text-[10px] text-emerald-700 font-black bg-emerald-100 px-1.5 py-0.2 rounded inline-block">
-                            Tồn: {p.currentStock || 0}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-
-              <form onSubmit={handleSaveAddPartModal} className="space-y-4 pt-2">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-black text-slate-800 mb-1">
-                      Số lượng đưa lên kệ <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      step="any"
-                      required
-                      value={addPartCustomQty}
-                      onChange={(e) => setAddPartCustomQty(Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono font-black text-sm text-emerald-900 focus:ring-2 focus:ring-emerald-500 outline-hidden"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-black text-slate-800 mb-1">
-                      Đơn vị tính
-                    </label>
-                    <input
-                      type="text"
-                      value={addPartUnit}
-                      onChange={(e) => setAddPartUnit(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-emerald-500 outline-hidden"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setIsAddPartModalOpen(false)}
-                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl cursor-pointer"
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={!selectedMasterPart || isSavingPart}
-                    className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-black text-xs rounded-xl shadow-md cursor-pointer flex items-center space-x-1.5 active:scale-95 transition-all"
-                  >
-                    {isSavingPart ? (
-                      <span>Đang lưu...</span>
-                    ) : (
-                      <>
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Thêm & Đồng Bộ Supabase</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         </div>
