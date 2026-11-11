@@ -595,6 +595,17 @@ export const supabaseKeyStore = {
   },
 };
 
+// In-Memory RAM TTL Cache for Transactions (5 phút = 300,000ms)
+// Cắt giảm 100% Egress Supabase khi đọc lại giao dịch trong vòng 5 phút
+const TRANSACTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedAllTransactionsData: { data: Transaction[]; timestamp: number } | null = null;
+const pagedTransactionsMemoryCache = new Map<string, { data: Transaction[]; timestamp: number }>();
+
+export function invalidateTransactionMemoryCache(): void {
+  cachedAllTransactionsData = null;
+  pagedTransactionsMemoryCache.clear();
+}
+
 /**
  * Direct Relational Table CRUD for Supabase with Pagination, Limits & Column Select Optimization.
  */
@@ -738,14 +749,33 @@ export const supabaseRelationalStore = {
 
   // --- TRANSACTIONS CRUD ---
   /**
-   * Selects transactions with strict pagination limit (default 100 recent rows) to eliminate massive egress.
+   * Selects transactions with strict pagination limit (default 100 rows) and optional date filter to eliminate massive egress.
+   * Cắt giảm triệt để SELECT * bằng cách chỉ chọn đúng các trường bắt buộc.
    */
-  async selectTransactions(options?: { limit?: number; offset?: number; partCode?: string }): Promise<Transaction[] | null> {
+  async selectTransactions(options?: {
+    limit?: number;
+    offset?: number;
+    partCode?: string;
+    startDate?: string;
+    endDate?: string;
+    forceFresh?: boolean;
+  }): Promise<Transaction[] | null> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return null;
 
       const limit = options?.limit ?? 100;
+      const offset = options?.offset ?? 0;
+      const cacheKey = `tx_${options?.partCode || 'all'}_${options?.startDate || 'none'}_${options?.endDate || 'none'}_${limit}_${offset}`;
+
+      if (!options?.forceFresh) {
+        const cached = pagedTransactionsMemoryCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < TRANSACTIONS_CACHE_TTL_MS) {
+          egressStats.cacheHits++;
+          return cached.data;
+        }
+      }
+
       let query = client
         .from('transactions')
         .select('id, part_id, part_code, part_name, unit, type, quantity, date, person, location_id, production_order, reason_or_purpose, notes, stock_before, stock_after, created_at')
@@ -755,18 +785,28 @@ export const supabaseRelationalStore = {
         query = query.eq('part_code', options.partCode);
       }
 
-      if (options?.offset !== undefined) {
-        query = query.range(options.offset, options.offset + limit - 1);
-      } else {
-        query = query.limit(limit);
+      if (options?.startDate) {
+        query = query.gte('date', options.startDate);
       }
+      if (options?.endDate) {
+        query = query.lte('date', `${options.endDate}T23:59:59.999Z`);
+      }
+
+      query = query.range(offset, offset + limit - 1);
 
       const { data, error } = await query;
       if (error) {
         logSupabaseError('selectTransactions', error);
         return null;
       }
-      return (data || []).map(mapSupabaseRowToTransaction);
+
+      const mapped = (data || []).map(mapSupabaseRowToTransaction);
+      pagedTransactionsMemoryCache.set(cacheKey, {
+        data: mapped,
+        timestamp: Date.now(),
+      });
+      egressStats.cacheMisses++;
+      return mapped;
     } catch (err) {
       logSupabaseError('selectTransactions catch', err);
       return null;
@@ -774,12 +814,19 @@ export const supabaseRelationalStore = {
   },
 
   /**
-   * Selects ALL transactions from Supabase with fast pagination for complete FIFO & Bin Card accuracy in RAM.
+   * Selects ALL transactions from Supabase with RAM TTL Cache (5 phút).
+   * Trả về ngay lập tức từ bộ nhớ RAM nếu đã tải trong 5 phút trước đó, tiết kiệm 100% dung lượng Egress.
    */
-  async selectAllTransactions(): Promise<Transaction[]> {
+  async selectAllTransactions(forceFresh: boolean = false): Promise<Transaction[]> {
+    if (!forceFresh && cachedAllTransactionsData && Date.now() - cachedAllTransactionsData.timestamp < TRANSACTIONS_CACHE_TTL_MS) {
+      egressStats.cacheHits++;
+      egressStats.estimatedBytesSaved += JSON.stringify(cachedAllTransactionsData.data).length;
+      return cachedAllTransactionsData.data;
+    }
+
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured || !client) return [];
+      if (!isConfigured || !client) return cachedAllTransactionsData ? cachedAllTransactionsData.data : [];
 
       const allTxs: Transaction[] = [];
       let page = 0;
@@ -801,14 +848,21 @@ export const supabaseRelationalStore = {
         if (data.length < pageSize) break;
         page++;
       }
+
+      cachedAllTransactionsData = {
+        data: allTxs,
+        timestamp: Date.now(),
+      };
+      egressStats.cacheMisses++;
       return allTxs;
     } catch (err) {
       logSupabaseError('selectAllTransactions catch', err);
-      return [];
+      return cachedAllTransactionsData ? cachedAllTransactionsData.data : [];
     }
   },
 
   async insertTransaction(tx: Transaction): Promise<boolean> {
+    invalidateTransactionMemoryCache();
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return false;
@@ -826,6 +880,7 @@ export const supabaseRelationalStore = {
   },
 
   async upsertTransactions(txs: Transaction[]): Promise<boolean> {
+    invalidateTransactionMemoryCache();
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return false;

@@ -5602,6 +5602,47 @@ export const storageService = {
     return this.getProductivityPersonnelConfig();
   },
 
+  /**
+   * Truy vấn thô chỉ đúng ngày đang chọn trên báo cáo năng suất từ bảng transactions.
+   * Cắt giảm triệt để SELECT *: Chỉ chọn đúng part_code, part_name, quantity, date, type.
+   * Giới hạn trong khoảng thời gian ngày được chọn, không bao giờ kéo gộp cả 35 ngày.
+   */
+  async fetchDailyProductivityTransactionsFromCloud(dateStr: string): Promise<Array<{
+    partCode: string;
+    partName: string;
+    quantity: number;
+    date: string;
+    type: string;
+  }>> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return [];
+
+      const startIso = `${dateStr}T00:00:00.000Z`;
+      const endIso = `${dateStr}T23:59:59.999Z`;
+
+      const { data, error } = await client
+        .from('transactions')
+        .select('part_code, part_name, quantity, date, type')
+        .gte('date', startIso)
+        .lte('date', endIso)
+        .order('date', { ascending: true });
+
+      if (error || !data) return [];
+
+      return data.map((r: any) => ({
+        partCode: String(r.part_code || ''),
+        partName: String(r.part_name || ''),
+        quantity: typeof r.quantity === 'number' ? r.quantity : Number(r.quantity) || 0,
+        date: String(r.date || ''),
+        type: String(r.type || 'OUT'),
+      }));
+    } catch (e) {
+      console.warn('[fetchDailyProductivityTransactionsFromCloud] notice:', e);
+      return [];
+    }
+  },
+
   // --- CUSTOM GENERATED CONTAINER TAGS (Lưu vị trí riêng biệt với Thẻ Master Data) ---
   getCustomGeneratedContainerTags(): CustomGeneratedContainerTag[] {
     const raw = safeGetRaw(CUSTOM_GENERATED_CONTAINER_TAGS_KEY);
