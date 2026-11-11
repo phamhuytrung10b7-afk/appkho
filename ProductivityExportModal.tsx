@@ -80,65 +80,85 @@ export const ProductivityExportModal: React.FC<ProductivityExportModalProps> = (
     const factorMap = new Map<string, number>();
     factors.forEach((f) => factorMap.set(f.partCode.trim().toUpperCase(), f.hsqd));
 
-    // Fetch kitting scan logs for chosen date
-    const scanLogs = storageService.getKittingScanLogs();
-    const dateLogs = scanLogs.filter((log) => log.timestamp.startsWith(reportDate));
+    const parseDateSafe = (ts: string | Date | undefined | null): Date | null => {
+      if (!ts) return null;
+      if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+      const str = String(ts).trim();
+      if (!str) return null;
+
+      const dmyMatch = str.match(/(\b\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (dmyMatch) {
+        const day = parseInt(dmyMatch[1], 10);
+        const month = parseInt(dmyMatch[2], 10);
+        const year = parseInt(dmyMatch[3], 10);
+
+        const timeMatch = str.match(/(\d{1,2}):(\d{1,2})(:(\d{1,2}))?/);
+        const hours = timeMatch ? parseInt(timeMatch[1], 10) : 0;
+        const minutes = timeMatch ? parseInt(timeMatch[2], 10) : 0;
+        const seconds = timeMatch && timeMatch[4] ? parseInt(timeMatch[4], 10) : 0;
+        return new Date(year, month - 1, day, hours, minutes, seconds);
+      }
+
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) return d;
+      return null;
+    };
+
+    const getSlotKey = (dt: Date) => {
+      const hour = dt.getHours();
+      if (hour >= 8 && hour < 9) return '8h-9h';
+      if (hour >= 9 && hour < 10) return '9h-10h';
+      if (hour >= 10 && hour < 11) return '10h-11h';
+      if (hour >= 11 && hour < 13) return '11h-12h';
+      if (hour >= 13 && hour < 14) return '13h-14h';
+      if (hour >= 14 && hour < 15) return '14h-15h';
+      if (hour >= 15 && hour < 16) return '15h-16h';
+      if (hour >= 16 && hour < 17) return '16h-17h';
+      if (hour >= 17 && hour < 18) return '17h-18h';
+      if (hour >= 18 && hour < 19) return '18h-19h';
+      if (hour >= 19) return '19h-20h';
+      return '8h-9h';
+    };
 
     const partMap = new Map<string, ProductivityExportItem>();
 
-    // Process scan logs for selected date
-    dateLogs.forEach((log) => {
-      const codeKey = log.partCode.trim().toUpperCase();
-      const dt = new Date(log.timestamp);
-      const hour = dt.getHours();
-
-      let slotKey = '8h-9h';
-      if (hour >= 8 && hour < 9) slotKey = '8h-9h';
-      else if (hour >= 9 && hour < 10) slotKey = '9h-10h';
-      else if (hour >= 10 && hour < 11) slotKey = '10h-11h';
-      else if (hour >= 11 && hour < 12) slotKey = '11h-12h';
-      else if (hour >= 13 && hour < 14) slotKey = '13h-14h';
-      else if (hour >= 14 && hour < 15) slotKey = '14h-15h';
-      else if (hour >= 15 && hour < 16) slotKey = '15h-16h';
-      else if (hour >= 16 && hour < 17) slotKey = '16h-17h';
-      else if (hour >= 17 && hour < 18) slotKey = '17h-18h';
-      else if (hour >= 18 && hour < 19) slotKey = '18h-19h';
-      else if (hour >= 19 && hour < 20) slotKey = '19h-20h';
-
+    const initExportEntry = (pCode: string, pName: string) => {
+      const codeKey = pCode.trim().toUpperCase();
       if (!partMap.has(codeKey)) {
         const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
-        const khsx = config.khsxMap?.[log.partCode] ?? 0;
+        const khsx = config.khsxMap?.[pCode] ?? 0;
         partMap.set(codeKey, {
-          partCode: log.partCode,
-          partName: log.partName || log.partCode,
+          partCode: pCode,
+          partName: pName || pCode,
           khsx: khsx,
           actual: 0,
           conLai: khsx,
           tyLeHoanThanh: 0,
           hsqd: factor,
           hourlyQty: {
-            '8h-9h': 0,
-            '9h-10h': 0,
-            '10h-11h': 0,
-            '11h-12h': 0,
-            '13h-14h': 0,
-            '14h-15h': 0,
-            '15h-16h': 0,
-            '16h-17h': 0,
-            '17h-18h': 0,
-            '18h-19h': 0,
-            '19h-20h': 0,
+            '8h-9h': 0, '9h-10h': 0, '10h-11h': 0, '11h-12h': 0,
+            '13h-14h': 0, '14h-15h': 0, '15h-16h': 0, '16h-17h': 0,
+            '17h-18h': 0, '18h-19h': 0, '19h-20h': 0,
           },
           tongSanLuong: 0,
         });
       }
+      return partMap.get(codeKey)!;
+    };
 
-      const item = partMap.get(codeKey)!;
-      item.actual += log.quantity;
-      item.hourlyQty[slotKey] = (item.hourlyQty[slotKey] || 0) + log.quantity;
-      item.tongSanLuong += log.quantity;
-      item.conLai = Math.max(0, item.khsx - item.actual);
-      item.tyLeHoanThanh = item.khsx > 0 ? (item.actual / item.khsx) * 100 : 0;
+    // CHỈ GHI NHẬN KHI CHỦ ĐỘNG QUÉT TẠI "1. QUÉT THẺ THÙNG KITTING SMART" (KHÔNG TÍNH GỌI HÀNG ANDON THÀNH CÔNG)
+    const dateSmartScans = storageService.getSmartKittingScanLogsForDate(reportDate);
+    dateSmartScans.forEach((log) => {
+      if (log.quantity > 0) {
+        const dt = parseDateSafe(log.timestamp) || new Date(log.timestamp);
+        const slotKey = getSlotKey(dt);
+        const item = initExportEntry(log.partCode, log.partName || log.partCode);
+        item.actual += log.quantity;
+        item.hourlyQty[slotKey] = (item.hourlyQty[slotKey] || 0) + log.quantity;
+        item.tongSanLuong += log.quantity;
+        item.conLai = Math.max(0, item.khsx - item.actual);
+        item.tyLeHoanThanh = item.khsx > 0 ? (item.actual / item.khsx) * 100 : 0;
+      }
     });
 
     const items = Array.from(partMap.values());

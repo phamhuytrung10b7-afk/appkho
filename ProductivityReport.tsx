@@ -59,6 +59,25 @@ const TIME_SLOTS = [
   '19h-20h',
 ];
 
+// IN-MEMORY RAM CACHE CHO BÁO CÁO NĂNG SUẤT LAO ĐỘNG THEO KHUNG GIỜ
+// Ngày trong quá khứ (past dates): dữ liệu cố định không đổi, lưu vĩnh viễn trong RAM session (0 Egress khi xem lại)
+// Ngày hiện tại (today): lưu 5 phút TTL
+interface CachedHourlyOutput {
+  baseItems: Array<{
+    id: string;
+    partCode: string;
+    partName: string;
+    thucHien: number;
+    hsqd: number;
+    hourly: { [slot: string]: number };
+    tongSanLuong: number;
+  }>;
+  cachedAt: number;
+  isPastDate: boolean;
+}
+
+const productivityDayCache = new Map<string, CachedHourlyOutput>();
+
 export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   parts,
   onExportInventoryExcel,
@@ -71,6 +90,15 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const [khsxSavedSuccess, setKhsxSavedSuccess] = useState<string | null>(null);
   const [isSavingKhsx, setIsSavingKhsx] = useState(false);
   const [personnelConfig, setPersonnelConfig] = useState(() => storageService.getProductivityPersonnelConfig());
+
+  // Lưu trữ các giao dịch thô chỉ của ĐÚNG ngày đang chọn (reportDate) từ Supabase
+  const [cloudDayTransactions, setCloudDayTransactions] = useState<Array<{
+    partCode: string;
+    partName: string;
+    quantity: number;
+    date: string;
+    type: string;
+  }>>([]);
 
   // Local draft map for KHSX inputs (partCode -> raw string) to avoid auto-sync lag on every keystroke
   const [localKhsxMap, setLocalKhsxMap] = useState<Record<string, string>>({});
@@ -94,31 +122,71 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const minDateStr = minDateObj.toISOString().split('T')[0];
   const maxDateStr = today.toISOString().split('T')[0];
 
-  // Fetch fresh personnel allocation and daily targets directly from Supabase Cloud
+  // 1. Chỉ fetch cấu hình phân bổ nhân sự nhẹ (~200B) khi mở component hoặc refresh
   useEffect(() => {
     let isMounted = true;
     async function syncCloudConfig() {
       try {
-        setIsCloudSyncing(true);
         const cloudCfg = await storageService.fetchProductivityPersonnelConfigFromCloud();
         if (isMounted && cloudCfg) {
           setPersonnelConfig(cloudCfg);
+        }
+      } catch (_) {
+      }
+    }
+    syncCloudConfig();
+    return () => { isMounted = false; };
+  }, [refreshTrigger]);
+
+  // 2. TỐI ƯU HÓA TRUY VẤN DỮ LIỆU KHUNG GIỜ THEO NGÀY + IN-MEMORY RAM CACHE
+  // - Nếu là ngày trong quá khứ và đã có trong cache: LẤY TRỰC TIẾP TỪ RAM, 0 CALL, 0 EGRESS
+  // - Đồng bộ nhẹ timestamp với Supabase cho Kitting Queue & Buffer Map để đảm bảo dữ liệu Lịch sử bóc tách luôn mới nhất
+  useEffect(() => {
+    let isMounted = true;
+    const isPast = reportDate < maxDateStr;
+
+    if (isPast && productivityDayCache.has(reportDate)) {
+      return;
+    }
+
+    async function loadSingleDayData() {
+      try {
+        setIsCloudSyncing(true);
+        await storageService.syncKittingHistoryDataFromCloud(false);
+        if (isMounted) {
+          setRefreshTrigger((p) => p);
         }
       } catch (_) {
       } finally {
         if (isMounted) setIsCloudSyncing(false);
       }
     }
-    syncCloudConfig();
-  }, [reportDate, refreshTrigger]);
 
+    loadSingleDayData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [reportDate, maxDateStr]);
+
+  // Nút Đồng Bộ Supabase Cloud (Thao tác chủ động On-demand từ người dùng)
+  // Đồng bộ dữ liệu Lịch sử bóc tách (Kitting Queue, Sơ đồ kệ Outbuffer, Andon) và cấu hình nhân sự
   const handleManualCloudRefresh = async () => {
     try {
       setIsCloudSyncing(true);
-      await storageService.fetchInitialDataFromCloud();
-      const cloudCfg = await storageService.fetchProductivityPersonnelConfigFromCloud();
+      // Xóa toàn bộ cache RAM để kéo lại fresh và tổng hợp đầy đủ dữ liệu mới nhất
+      productivityDayCache.clear();
+
+      const [cloudCfg] = await Promise.all([
+        storageService.fetchProductivityPersonnelConfigFromCloud(),
+        storageService.syncKittingHistoryDataFromCloud(true),
+      ]);
+
       if (cloudCfg) setPersonnelConfig(cloudCfg);
+
       setRefreshTrigger((p) => p + 1);
+      setKhsxSavedSuccess(`Đã đồng bộ dữ liệu năng suất ngày ${reportDate} từ Supabase Cloud!`);
+      setTimeout(() => setKhsxSavedSuccess(null), 3500);
     } catch (err: any) {
       setCloudSaveAlert('⚠️ Lỗi đồng bộ Supabase Cloud: ' + (err?.message || 'Mất kết nối'));
       setTimeout(() => setCloudSaveAlert(null), 4000);
@@ -144,6 +212,9 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
 
       setPersonnelConfig(updatedCfg);
       const result = await storageService.saveProductivityPersonnelConfig(updatedCfg);
+
+      // Invalidate cache cho ngày đang hiển thị để cập nhật KHSX mới
+      productivityDayCache.clear();
 
       if (result.cloudSynced) {
         setKhsxSavedSuccess('✅ Đã lưu KHSX & đồng bộ thành công lên Supabase Cloud!');
@@ -176,129 +247,157 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const factorMap = new Map<string, number>();
   factors.forEach((f) => factorMap.set(f.partCode.trim().toUpperCase(), f.hsqd));
 
-  // --- REALTIME DATA AGGREGATION FROM SUPABASE CLOUD DATA ---
-  const scanLogs = storageService.getKittingScanLogs();
-  const kittingQueue = storageService.getKittingQueue();
-  const transactions = storageService.getTransactions();
+  // --- TÍNH TOÁN SẢN LƯỢNG THEO KHUNG GIỜ KẾT HỢP IN-MEMORY RAM CACHE ---
+  // CHỈ GHI NHẬN KHI CHỦ ĐỘNG QUÉT TẠI "1. QUÉT THẺ THÙNG KITTING SMART" (KHÔNG TÍNH GỌI HÀNG ANDON THÀNH CÔNG)
+  const dateSmartScans = storageService.getSmartKittingScanLogsForDate(reportDate);
 
-  const partMap = new Map<string, HourlyReportItem>();
+  const parseDateSafe = (ts: string | Date | undefined | null): Date | null => {
+    if (!ts) return null;
+    if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+    const str = String(ts).trim();
+    if (!str) return null;
+
+    // 1. Vietnamese/common format DD/MM/YYYY or DD-MM-YYYY (e.g. "14:50:42 11/11/2026" or "11/11/2026 14:50:42")
+    const dmyMatch = str.match(/(\b\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmyMatch) {
+      const day = parseInt(dmyMatch[1], 10);
+      const month = parseInt(dmyMatch[2], 10);
+      const year = parseInt(dmyMatch[3], 10);
+
+      const timeMatch = str.match(/(\d{1,2}):(\d{1,2})(:(\d{1,2}))?/);
+      const hours = timeMatch ? parseInt(timeMatch[1], 10) : 0;
+      const minutes = timeMatch ? parseInt(timeMatch[2], 10) : 0;
+      const seconds = timeMatch && timeMatch[4] ? parseInt(timeMatch[4], 10) : 0;
+      return new Date(year, month - 1, day, hours, minutes, seconds);
+    }
+
+    // 2. Standard ISO / Date constructor (e.g. "2026-11-11T14:50:42.000Z")
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) return d;
+    return null;
+  };
 
   const getSlotKey = (dt: Date) => {
     const hour = dt.getHours();
     if (hour >= 8 && hour < 9) return '8h-9h';
     if (hour >= 9 && hour < 10) return '9h-10h';
     if (hour >= 10 && hour < 11) return '10h-11h';
-    if (hour >= 11 && hour < 12) return '11h-12h';
+    if (hour >= 11 && hour < 13) return '11h-12h';
     if (hour >= 13 && hour < 14) return '13h-14h';
     if (hour >= 14 && hour < 15) return '14h-15h';
     if (hour >= 15 && hour < 16) return '15h-16h';
     if (hour >= 16 && hour < 17) return '16h-17h';
     if (hour >= 17 && hour < 18) return '17h-18h';
     if (hour >= 18 && hour < 19) return '18h-19h';
-    if (hour >= 19 && hour < 20) return '19h-20h';
+    if (hour >= 19) return '19h-20h';
     return '8h-9h';
   };
 
-  const initPartEntry = (pCode: string, pName: string) => {
-    const codeKey = pCode.trim().toUpperCase();
-    if (!partMap.has(codeKey)) {
-      const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
-      // Default to 0 / blank (no auto pre-filled default numbers like 550)
-      const khsx = personnelConfig.khsxMap?.[pCode] ?? 0;
-      partMap.set(codeKey, {
-        id: codeKey,
-        partCode: pCode,
-        partName: pName || pCode,
-        khsx: khsx,
-        thucHien: 0,
-        conLai: khsx > 0 ? khsx : 0,
-        tyLeHoanThanh: 0,
-        hsqd: factor,
-        hourly: {
-          '8h-9h': 0, '9h-10h': 0, '10h-11h': 0, '11h-12h': 0,
-          '13h-14h': 0, '14h-15h': 0, '15h-16h': 0, '16h-17h': 0,
-          '17h-18h': 0, '18h-19h': 0, '19h-20h': 0,
-        },
-        tongSanLuong: 0,
+  // Tính toán hoặc lấy từ RAM Cache dữ liệu sản lượng cơ sở cho reportDate
+  // Signature bao gồm tổng số bản ghi quét Kitting Smart và tổng sản lượng để tự động làm mới ngay khi có lượt quét mới
+  const isPast = reportDate < maxDateStr;
+  const totalSmartScanQtySignature = dateSmartScans.reduce((s, r) => s + (r.quantity || 0), 0);
+  const cacheSignature = `${reportDate}__smartonly__${dateSmartScans.length}__${totalSmartScanQtySignature}`;
+  const cachedData = productivityDayCache.get(cacheSignature);
+
+  let baseItems: Array<{
+    id: string;
+    partCode: string;
+    partName: string;
+    thucHien: number;
+    hsqd: number;
+    hourly: { [slot: string]: number };
+    tongSanLuong: number;
+  }> = [];
+
+  if (cachedData && (cachedData.isPastDate || Date.now() - cachedData.cachedAt < 5 * 60 * 1000)) {
+    // RAM Cache Hit!
+    baseItems = cachedData.baseItems;
+  } else {
+    // Cache Miss: Tổng hợp dữ liệu CHỈ từ các lượt chủ động quét tại "1. QUÉT THẺ THÙNG KITTING SMART" của ngày reportDate
+    const partMap = new Map<string, {
+      id: string;
+      partCode: string;
+      partName: string;
+      thucHien: number;
+      hsqd: number;
+      hourly: { [slot: string]: number };
+      tongSanLuong: number;
+    }>();
+
+    const initBaseEntry = (pCode: string, pName: string) => {
+      const codeKey = pCode.trim().toUpperCase();
+      if (!partMap.has(codeKey)) {
+        const factor = factorMap.get(codeKey) !== undefined ? factorMap.get(codeKey)! : 0.0;
+        partMap.set(codeKey, {
+          id: codeKey,
+          partCode: pCode,
+          partName: pName || pCode,
+          thucHien: 0,
+          hsqd: factor,
+          hourly: {
+            '8h-9h': 0, '9h-10h': 0, '10h-11h': 0, '11h-12h': 0,
+            '13h-14h': 0, '14h-15h': 0, '15h-16h': 0, '16h-17h': 0,
+            '17h-18h': 0, '18h-19h': 0, '19h-20h': 0,
+          },
+          tongSanLuong: 0,
+        });
+      }
+      return partMap.get(codeKey)!;
+    };
+
+    // dateSmartScans đã được lọc đúng ngày reportDate và sắp xếp theo thời gian quét mới nhất lên đầu
+    dateSmartScans.forEach((log) => {
+      if (log.quantity > 0) {
+        const item = initBaseEntry(log.partCode, log.partName || log.partCode);
+        const dt = parseDateSafe(log.timestamp) || new Date(log.timestamp);
+        const slotKey = getSlotKey(dt);
+        item.thucHien += log.quantity;
+        item.hourly[slotKey] = (item.hourly[slotKey] || 0) + log.quantity;
+        item.tongSanLuong += log.quantity;
+      }
+    });
+
+    baseItems = Array.from(partMap.values());
+
+    // Lưu vào In-Memory RAM Cache
+    productivityDayCache.set(cacheSignature, {
+      baseItems,
+      cachedAt: Date.now(),
+      isPastDate: isPast,
+    });
+    if (isPast) {
+      productivityDayCache.set(reportDate, {
+        baseItems,
+        cachedAt: Date.now(),
+        isPastDate: true,
       });
     }
-    return partMap.get(codeKey)!;
-  };
+  }
 
-  const isDateMatch = (tsStr: string | Date | undefined | null, targetDateStr: string): boolean => {
-    if (!tsStr) return false;
-    let str = typeof tsStr === 'string' ? tsStr.trim() : tsStr.toISOString();
-    if (str.startsWith(targetDateStr)) return true;
-
-    const d = new Date(str);
-    if (isNaN(d.getTime())) {
-      const parts = str.split(/[\sT\/.-]/);
-      if (parts.length >= 3 && parts[2].length === 4) {
-        const ymd = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-        return ymd === targetDateStr;
-      }
-      return false;
-    }
-
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}` === targetDateStr;
-  };
-
-  // 1. Process scan logs for current reportDate
-  const processedLogKeys = new Set<string>();
-  const dateLogs = scanLogs.filter((log) => isDateMatch(log.timestamp, reportDate));
-  dateLogs.forEach((log) => {
-    const item = initPartEntry(log.partCode, log.partName || log.partCode);
-    const dt = new Date(log.timestamp);
-    const slotKey = getSlotKey(dt);
-    item.thucHien += log.quantity;
-    item.hourly[slotKey] = (item.hourly[slotKey] || 0) + log.quantity;
-    item.tongSanLuong += log.quantity;
-    item.conLai = Math.max(0, item.khsx - item.thucHien);
-    item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
-    processedLogKeys.add(`${log.partCode.trim().toLowerCase()}_${log.quantity}_${slotKey}`);
-  });
-
-  // 2. Aggregate completed kittingQueue items on reportDate to complement scan logs
-  const dateQueue = kittingQueue.filter((kq) => {
-    const ts = kq.endTime || kq.startTime || kq.createdAt;
-    const isDone = kq.status === 'IN_BUFFER' || kq.status === 'DELIVERED' || (kq.kittedQuantity && kq.kittedQuantity > 0);
-    return isDone && isDateMatch(ts, reportDate);
-  });
-
-  dateQueue.forEach((kq) => {
-    const ts = kq.endTime || kq.startTime || kq.createdAt;
-    const dt = new Date(ts);
-    const slotKey = getSlotKey(dt);
-    const qty = kq.kittedQuantity || kq.rawQuantity || 0;
-    if (qty > 0) {
-      const key = `${kq.partCode.trim().toLowerCase()}_${qty}_${slotKey}`;
-      if (!processedLogKeys.has(key)) {
-        const item = initPartEntry(kq.partCode, kq.partName || kq.partCode);
-        item.thucHien += qty;
-        item.hourly[slotKey] = (item.hourly[slotKey] || 0) + qty;
-        item.tongSanLuong += qty;
-        item.conLai = Math.max(0, item.khsx - item.thucHien);
-        item.tyLeHoanThanh = item.khsx > 0 ? (item.thucHien / item.khsx) * 100 : 0;
-        processedLogKeys.add(key);
-      }
-    }
-  });
-
-  const items = Array.from(partMap.values());
-
-  // Apply draft KHSX inputs for real-time live preview without lag
-  items.forEach((item) => {
-    const draftStr = localKhsxMap[item.partCode];
+  // Gắn chỉ tiêu KHSX và tính toán tỷ lệ, sản lượng
+  const items: HourlyReportItem[] = baseItems.map((base) => {
+    const draftStr = localKhsxMap[base.partCode];
+    let khsx = personnelConfig.khsxMap?.[base.partCode] ?? 0;
     if (draftStr !== undefined) {
       const parsed = parseInt(draftStr, 10);
-      const val = isNaN(parsed) ? 0 : Math.max(0, parsed);
-      item.khsx = val;
-      item.conLai = Math.max(0, val - item.thucHien);
-      item.tyLeHoanThanh = val > 0 ? (item.thucHien / val) * 100 : 0;
+      khsx = isNaN(parsed) ? 0 : Math.max(0, parsed);
     }
+    const conLai = Math.max(0, khsx - base.thucHien);
+    const tyLeHoanThanh = khsx > 0 ? (base.thucHien / khsx) * 100 : 0;
+
+    return {
+      id: base.id,
+      partCode: base.partCode,
+      partName: base.partName,
+      khsx,
+      thucHien: base.thucHien,
+      conLai,
+      tyLeHoanThanh,
+      hsqd: base.hsqd,
+      hourly: { ...base.hourly },
+      tongSanLuong: base.tongSanLuong,
+    };
   });
 
   // Calculate hourly sums and metrics
@@ -389,6 +488,7 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
       });
     });
 
+    productivityDayCache.delete(reportDate);
     setRefreshTrigger((prev) => prev + 1);
   };
 

@@ -3079,6 +3079,129 @@ export const storageService = {
     supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, items);
   },
 
+  /**
+   * Lấy toàn bộ danh sách các bản ghi bóc tách đã hoàn thành (bao gồm cả hàng đã lên kệ Outbuffer và giao Andon)
+   * Đồng bộ 100% giữa màn hình "Lịch Sử Bóc Tách" và "Báo Cáo Năng Suất Lao Động Theo Khung Giờ".
+   */
+  getCompletedKittingRecords(): KittingQueueItem[] {
+    const queue = this.getKittingQueue();
+    const buffers = this.getBufferLocations();
+    const materialCalls = this.getMaterialCallRequests();
+
+    const queueCompleted = queue.filter(
+      (q) => q.status === 'IN_BUFFER' || q.status === 'DELIVERED'
+    );
+
+    const rackStockRecords: KittingQueueItem[] = [];
+    buffers.forEach((buf) => {
+      const bItems: BufferPartItem[] =
+        buf.items && buf.items.length > 0
+          ? buf.items
+          : buf.partCode && buf.currentStockQty > 0
+          ? [
+              {
+                partCode: buf.partCode,
+                partName: buf.partName || buf.partCode,
+                unit: buf.unit || 'Cái',
+                currentStockQty: buf.currentStockQty,
+                lastUpdated: buf.lastUpdated,
+              },
+            ]
+          : [];
+
+      bItems.forEach((bItem) => {
+        if (!bItem.currentStockQty || bItem.currentStockQty <= 0) return;
+        const matchingQueue = queueCompleted.filter(
+          (q) =>
+            q.status === 'IN_BUFFER' &&
+            q.bufferLocation?.trim().toLowerCase() === buf.locationId?.trim().toLowerCase() &&
+            q.partCode?.trim().toLowerCase() === bItem.partCode?.trim().toLowerCase()
+        );
+        const queueSum = matchingQueue.reduce(
+          (s, q) => s + (q.kittedQuantity || q.rawQuantity || 0),
+          0
+        );
+        if (bItem.currentStockQty > queueSum) {
+          const qty = bItem.currentStockQty - queueSum;
+          rackStockRecords.push({
+            id: `rack-stock-${buf.locationId}-${bItem.partCode}`,
+            transactionId: `rack-${buf.locationId}`,
+            voucherCode: 'KHO_OUTBUFFER',
+            voucherTitle: `Tồn khoang kệ ${buf.locationId}`,
+            partCode: bItem.partCode,
+            partName: bItem.partName || bItem.partCode,
+            unit: bItem.unit || 'Cái',
+            rawQuantity: qty,
+            kittedQuantity: qty,
+            scrapQuantity: 0,
+            bufferLocation: buf.locationId,
+            status: 'IN_BUFFER' as const,
+            createdAt: bItem.lastUpdated || buf.lastUpdated || new Date().toISOString(),
+            endTime: bItem.lastUpdated || buf.lastUpdated || new Date().toISOString(),
+            operatorName: 'Tuấn (Thủ Kho)',
+            durationMinutes: 15,
+          });
+        }
+      });
+    });
+
+    const completedDeliveries: KittingQueueItem[] = materialCalls
+      .filter(
+        (req) =>
+          req.status === 'COMPLETED' &&
+          req.bufferLocation &&
+          req.bufferLocation !== 'DCLR' &&
+          !req.isDirectKitting
+      )
+      .map((req) => ({
+        id: `delivery-${req.requestId}`,
+        transactionId: req.requestId,
+        voucherCode: 'GIAO_ANDON',
+        voucherTitle: `Giao cấp hàng Andon (${req.assemblyLine || 'Dây chuyền'})`,
+        partCode: req.partCode,
+        partName: req.partName,
+        unit: req.unit || 'Cái',
+        rawQuantity: req.requestedQty,
+        kittedQuantity: req.requestedQty,
+        scrapQuantity: 0,
+        bufferLocation: req.bufferLocation,
+        status: 'DELIVERED' as const,
+        createdAt: req.requestedAt,
+        endTime: req.deliveredAt || req.requestedAt,
+        operatorName: req.deliveredBy || 'Thủ Kho Logistics',
+        durationMinutes: 5,
+      }));
+
+    return [
+      ...queueCompleted,
+      ...rackStockRecords,
+      ...completedDeliveries.filter(
+        (d) =>
+          !queueCompleted.some(
+            (q) =>
+              q.status === 'DELIVERED' &&
+              q.partCode.trim().toLowerCase() === d.partCode.trim().toLowerCase() &&
+              q.bufferLocation?.trim().toLowerCase() === d.bufferLocation?.trim().toLowerCase() &&
+              q.kittedQuantity === d.kittedQuantity
+          )
+      ),
+    ].sort((a, b) => new Date(b.endTime || b.createdAt).getTime() - new Date(a.endTime || a.createdAt).getTime());
+  },
+
+  async syncKittingHistoryDataFromCloud(forceFetch: boolean = false): Promise<void> {
+    try {
+      await supabaseKeyStore.batchSyncAllKeys(
+        [
+          STORAGE_KEYS.KITTING_QUEUE,
+          STORAGE_KEYS.BUFFER_MAP,
+          STORAGE_KEYS.MATERIAL_CALLS,
+          STORAGE_KEYS.KITTING_SCAN_LOGS,
+        ],
+        forceFetch
+      );
+    } catch (_) {}
+  },
+
   addKittingQueueItemFromStockOut(
     tx: Transaction,
     meta?: {
@@ -3980,6 +4103,10 @@ export const storageService = {
   },
 
   // --- MATERIAL CALL REQUEST METHODS (ANDON) ---
+  getMaterialCalls(): MaterialCallRequest[] {
+    return this.getMaterialCallRequests();
+  },
+
   getMaterialCallRequests(): MaterialCallRequest[] {
     const deletedIds = this.getDeletedCallIds();
     const raw = safeGetRaw(MATERIAL_CALLS_KEY);
@@ -5549,6 +5676,149 @@ export const storageService = {
     return newLog;
   },
 
+  /**
+   * Lấy danh sách các lượt CHỦ ĐỘNG QUÉT tại "1. QUÉT THẺ THÙNG KITTING SMART" theo ngày.
+   * TUYỆT ĐỐI KHÔNG BAO GỒM các đơn gọi hàng Andon thành công (status === 'DELIVERED' / GIAO_ANDON / materialCalls).
+   * Tự động đối chiếu các bản ghi IN_BUFFER vừa quét lên kệ trong ngày nếu chưa kịp đồng bộ sang scanLogs,
+   * đồng thời không bao giờ cộng đè tồn kệ cũ vào các mã đã có trong scanLogs.
+   */
+  getSmartKittingScanLogsForDate(targetDateStr: string): KittingScanLog[] {
+    const parseDateSafe = (ts: string | Date | undefined | null): Date | null => {
+      if (!ts) return null;
+      if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+      const str = String(ts).trim();
+      if (!str) return null;
+
+      const dmyMatch = str.match(/(\b\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if (dmyMatch) {
+        const day = parseInt(dmyMatch[1], 10);
+        const month = parseInt(dmyMatch[2], 10);
+        const year = parseInt(dmyMatch[3], 10);
+        const timeMatch = str.match(/(\d{1,2}):(\d{1,2})(:(\d{1,2}))?/);
+        const hours = timeMatch ? parseInt(timeMatch[1], 10) : 0;
+        const minutes = timeMatch ? parseInt(timeMatch[2], 10) : 0;
+        const seconds = timeMatch && timeMatch[4] ? parseInt(timeMatch[4], 10) : 0;
+        return new Date(year, month - 1, day, hours, minutes, seconds);
+      }
+
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) return d;
+      return null;
+    };
+
+    const isDateMatch = (tsStr: string | Date | undefined | null): boolean => {
+      if (!tsStr) return false;
+      const d = parseDateSafe(tsStr);
+      if (!d) return false;
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}` === targetDateStr;
+    };
+
+    const getSlotKey = (dt: Date): string => {
+      const hour = dt.getHours();
+      if (hour >= 8 && hour < 9) return '8h-9h';
+      if (hour >= 9 && hour < 10) return '9h-10h';
+      if (hour >= 10 && hour < 11) return '10h-11h';
+      if (hour >= 11 && hour < 13) return '11h-12h';
+      if (hour >= 13 && hour < 14) return '13h-14h';
+      if (hour >= 14 && hour < 15) return '14h-15h';
+      if (hour >= 15 && hour < 16) return '15h-16h';
+      if (hour >= 16 && hour < 17) return '16h-17h';
+      if (hour >= 17 && hour < 18) return '17h-18h';
+      if (hour >= 18 && hour < 19) return '18h-19h';
+      if (hour >= 19) return '19h-20h';
+      return '8h-9h';
+    };
+
+    const resultLogs: KittingScanLog[] = [];
+    const loggedPartHourSet = new Set<string>();
+
+    // 1. Nguồn chính: Nhật ký chủ động quét tại "1. QUÉT THẺ THÙNG KITTING SMART" (KittingScanLog)
+    const allScanLogs = this.getKittingScanLogs();
+    for (const log of allScanLogs) {
+      if (!log || !log.partCode || !(log.quantity > 0)) continue;
+      if (isDateMatch(log.timestamp)) {
+        const dt = parseDateSafe(log.timestamp) || new Date(log.timestamp);
+        const slotKey = getSlotKey(dt);
+        const codeKey = log.partCode.trim().toUpperCase();
+        loggedPartHourSet.add(`${codeKey}__${slotKey}`);
+        resultLogs.push(log);
+      }
+    }
+
+    // 2. Đối chiếu các mục vừa quét lên kệ (CHỈ nhận status === 'IN_BUFFER', TUYỆT ĐỐI KHÔNG nhận 'DELIVERED' hay Andon)
+    // Chỉ bổ sung nếu khung giờ của mã linh kiện đó chưa có trong scanLogs (tránh cộng trùng tồn kệ cũ)
+    const queue = this.getKittingQueue();
+    for (const q of queue) {
+      if (q.status !== 'IN_BUFFER') continue;
+      if (q.voucherCode === 'GIAO_ANDON') continue;
+      const ts = q.endTime || q.createdAt;
+      if (!isDateMatch(ts)) continue;
+      const qty = q.kittedQuantity || q.rawQuantity || 0;
+      if (qty <= 0) continue;
+
+      const dt = parseDateSafe(ts) || new Date(ts);
+      const slotKey = getSlotKey(dt);
+      const codeKey = q.partCode.trim().toUpperCase();
+      const sig = `${codeKey}__${slotKey}`;
+
+      if (!loggedPartHourSet.has(sig)) {
+        loggedPartHourSet.add(sig);
+        resultLogs.push({
+          id: `inbuf-q-${q.id}`,
+          partCode: q.partCode,
+          partName: q.partName || q.partCode,
+          unit: q.unit || 'Cái',
+          quantity: qty,
+          timestamp: ts,
+          bufferLocation: q.bufferLocation || 'OUTBUFFER',
+          operatorName: q.operatorName || 'Thủ Kho',
+          voucherCode: q.voucherCode,
+        });
+      }
+    }
+
+    // 3. Đối chiếu linh kiện mới quét lên kệ Outbuffer (chỉ xét bItem.lastUpdated của chính linh kiện đó trong ngày)
+    const buffers = this.getBufferLocations();
+    for (const buf of buffers) {
+      const bItems = buf.items && buf.items.length > 0 ? buf.items : [];
+      for (const bItem of bItems) {
+        if (!bItem.partCode || !(bItem.currentStockQty > 0)) continue;
+        // Chỉ xét bItem.lastUpdated (không dùng buf.lastUpdated để tránh trường hợp gọi hàng Andon cập nhật kệ)
+        if (!bItem.lastUpdated || !isDateMatch(bItem.lastUpdated)) continue;
+
+        const dt = parseDateSafe(bItem.lastUpdated) || new Date(bItem.lastUpdated);
+        const slotKey = getSlotKey(dt);
+        const codeKey = bItem.partCode.trim().toUpperCase();
+        const sig = `${codeKey}__${slotKey}`;
+
+        if (!loggedPartHourSet.has(sig)) {
+          loggedPartHourSet.add(sig);
+          resultLogs.push({
+            id: `inbuf-rack-${buf.locationId}-${codeKey}`,
+            partCode: bItem.partCode,
+            partName: bItem.partName || bItem.partCode,
+            unit: bItem.unit || 'Cái',
+            quantity: bItem.currentStockQty,
+            timestamp: bItem.lastUpdated,
+            bufferLocation: buf.locationId,
+            operatorName: 'Tuấn (Thủ Kho)',
+            voucherCode: 'KITTING_SMART',
+          });
+        }
+      }
+    }
+
+    // Sắp xếp theo thời gian quét mới nhất lên đầu (tb - ta)
+    return resultLogs.sort((a, b) => {
+      const ta = parseDateSafe(a.timestamp)?.getTime() || 0;
+      const tb = parseDateSafe(b.timestamp)?.getTime() || 0;
+      return tb - ta;
+    });
+  },
+
   // --- PRODUCTIVITY PERSONNEL CONFIG (Lưu trực tiếp Supabase Cloud: thekho_staff_allocation_v1 & thekho_daily_reports_v1) ---
   getProductivityPersonnelConfig(): ProductivityPersonnelConfig {
     const raw = safeGetRaw(PRODUCTIVITY_PERSONNEL_CONFIG_KEY);
@@ -5600,6 +5870,47 @@ export const storageService = {
       }
     } catch (_) {}
     return this.getProductivityPersonnelConfig();
+  },
+
+  /**
+   * Truy vấn thô chỉ đúng ngày đang chọn trên báo cáo năng suất từ bảng transactions.
+   * Cắt giảm triệt để SELECT *: Chỉ chọn đúng part_code, part_name, quantity, date, type.
+   * Giới hạn trong khoảng thời gian ngày được chọn, không bao giờ kéo gộp cả 35 ngày.
+   */
+  async fetchDailyProductivityTransactionsFromCloud(dateStr: string): Promise<Array<{
+    partCode: string;
+    partName: string;
+    quantity: number;
+    date: string;
+    type: string;
+  }>> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return [];
+
+      const startIso = `${dateStr}T00:00:00.000Z`;
+      const endIso = `${dateStr}T23:59:59.999Z`;
+
+      const { data, error } = await client
+        .from('transactions')
+        .select('part_code, part_name, quantity, date, type')
+        .gte('date', startIso)
+        .lte('date', endIso)
+        .order('date', { ascending: true });
+
+      if (error || !data) return [];
+
+      return data.map((r: any) => ({
+        partCode: String(r.part_code || ''),
+        partName: String(r.part_name || ''),
+        quantity: typeof r.quantity === 'number' ? r.quantity : Number(r.quantity) || 0,
+        date: String(r.date || ''),
+        type: String(r.type || 'OUT'),
+      }));
+    } catch (e) {
+      console.warn('[fetchDailyProductivityTransactionsFromCloud] notice:', e);
+      return [];
+    }
   },
 
   // --- CUSTOM GENERATED CONTAINER TAGS (Lưu vị trí riêng biệt với Thẻ Master Data) ---
