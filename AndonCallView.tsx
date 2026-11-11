@@ -855,25 +855,15 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     return `${year}-${month}-${day}`;
   };
 
-  // IN-MEMORY RAM TTL CACHE (5 PHÚT = 300,000 MS)
-  // Cắt giảm 100% Egress Supabase khi chuyển đổi qua lại giữa các Tab hoặc các bộ lọc đã truy vấn
-  const ANDON_HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
-  const andonHistoryMemoryCache = React.useRef(new Map<string, { data: MaterialCallRequest[]; timestamp: number }>());
+  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'all' | 'custom'>('35days');
 
-  // 1. MẶC ĐỊNH LỌC THEO NGÀY HIỆN TẠI (TODAY):
-  // Không tự động kéo 35 ngày khi vừa mở. Chỉ nạp 35 ngày khi người dùng chủ động click nút "35 ngày"
-  const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'all' | 'custom'>('today');
-  const [historyStartDate, setHistoryStartDate] = useState<string>(getTodayStr);
+  const [historyStartDate, setHistoryStartDate] = useState<string>(() => getDaysAgoStr(34));
+
   const [historyEndDate, setHistoryEndDate] = useState<string>(getTodayStr);
   const [historySearchQuery, setHistorySearchQuery] = useState('');
 
-  // 2. PHÂN TRANG (PAGINATION) - Giới hạn 50 bản ghi/trang để triệt tiêu tải dồn DOM và tối ưu trải nghiệm
-  const [historyPage, setHistoryPage] = useState<number>(1);
-  const [historyPageSize, setHistoryPageSize] = useState<number>(50);
-
   const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days' | 'all') => {
     setHistoryPreset(preset);
-    setHistoryPage(1);
     const today = getTodayStr();
     if (preset === 'all') {
       setHistoryStartDate('');
@@ -892,15 +882,24 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
-  // Filter completed delivery records with 5-minute In-Memory RAM TTL Cache
-  const filteredCompletedReqs = React.useMemo(() => {
-    const cacheKey = `${historyStartDate || 'none'}_${historyEndDate || 'none'}_${historySearchQuery.trim().toLowerCase()}_${completedReqs.length}`;
-    const cached = andonHistoryMemoryCache.current.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < ANDON_HISTORY_CACHE_TTL_MS) {
-      return cached.data;
+  // Auto-switch to 35days preset if today has 0 records but history exists
+  useEffect(() => {
+    if (historyPreset === 'today' && completedReqs.length > 0) {
+      const today = getTodayStr();
+      const hasToday = completedReqs.some((item) => {
+        const d = (item.deliveredAt || item.requestedAt || '').substring(0, 10);
+        return d === today;
+      });
+      if (!hasToday) {
+        setHistoryPreset('35days');
+        setHistoryStartDate(getDaysAgoStr(34));
+      }
     }
+  }, [completedReqs.length]);
 
-    const filtered = completedReqs.filter((item) => {
+  // Filter completed delivery records
+  const filteredCompletedReqs = React.useMemo(() => {
+    return completedReqs.filter((item) => {
       const timeStr = item.deliveredAt || item.requestedAt;
       if (timeStr) {
         const itemDate = new Date(timeStr);
@@ -931,26 +930,11 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       }
       return true;
     });
-
-    andonHistoryMemoryCache.current.set(cacheKey, {
-      data: filtered,
-      timestamp: Date.now(),
-    });
-
-    return filtered;
   }, [completedReqs, historyStartDate, historyEndDate, historySearchQuery]);
 
   const totalFilteredDeliveredQty = React.useMemo(() => {
     return filteredCompletedReqs.reduce((sum, r) => sum + (r.requestedQty || 0), 0);
   }, [filteredCompletedReqs]);
-
-  // Phân trang dữ liệu hiển thị trên bảng
-  const totalHistoryPages = Math.max(1, Math.ceil(filteredCompletedReqs.length / historyPageSize));
-  const paginatedCompletedReqs = React.useMemo(() => {
-    const safePage = Math.min(historyPage, totalHistoryPages);
-    const start = (safePage - 1) * historyPageSize;
-    return filteredCompletedReqs.slice(start, start + historyPageSize);
-  }, [filteredCompletedReqs, historyPage, totalHistoryPages, historyPageSize]);
 
   const formatVietnamDateTime = (isoString: string) => {
     if (!isoString) return 'Chưa ghi nhận';
@@ -1968,7 +1952,6 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     onChange={(e) => {
                       setHistoryStartDate(e.target.value);
                       setHistoryPreset('custom');
-                      setHistoryPage(1);
                     }}
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
                   />
@@ -1982,7 +1965,6 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     onChange={(e) => {
                       setHistoryEndDate(e.target.value);
                       setHistoryPreset('custom');
-                      setHistoryPage(1);
                     }}
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
                   />
@@ -1993,20 +1975,14 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   <input
                     type="text"
                     value={historySearchQuery}
-                    onChange={(e) => {
-                      setHistorySearchQuery(e.target.value);
-                      setHistoryPage(1);
-                    }}
+                    onChange={(e) => setHistorySearchQuery(e.target.value)}
                     placeholder="Tìm theo mã LK, tên LK, bàn máy, người gọi, người giao, kệ..."
                     className="w-full pl-9 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
                   />
                   {historySearchQuery && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setHistorySearchQuery('');
-                        setHistoryPage(1);
-                      }}
+                      onClick={() => setHistorySearchQuery('')}
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold"
                     >
                       ✕
@@ -2089,125 +2065,54 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    paginatedCompletedReqs.map((m, idx) => {
-                      const stt = (historyPage - 1) * historyPageSize + idx + 1;
-                      return (
-                        <tr key={m.requestId} className="hover:bg-slate-50 transition-colors">
-                          <td className="p-3 text-center font-bold text-slate-400">{stt}</td>
-                          <td className="p-3 text-slate-600 font-semibold">{formatVietnamDateTime(m.deliveredAt || m.requestedAt)}</td>
-                          <td className="p-3 text-center font-mono font-bold text-rose-700 bg-rose-50/50 rounded-lg">{m.requiredTime || '---'}</td>
-                          <td className="p-3 font-bold text-slate-800">{m.assemblyLine}</td>
-                          <td className="p-3 font-mono font-bold text-purple-800">{m.partCode}</td>
-                          <td className="p-3 font-semibold text-slate-900">{m.partName}</td>
-                          <td className="p-3 text-right font-black text-emerald-800">{m.requestedQty} {m.unit}</td>
-                          <td className="p-3 font-bold text-blue-700">📍 {m.bufferLocation}</td>
-                          <td className="p-3 text-slate-600">{m.requestedBy}</td>
-                          <td className="p-3 text-slate-700 font-semibold">{m.deliveredBy || '---'}</td>
+                    filteredCompletedReqs.map((m, idx) => (
+                      <tr key={m.requestId} className="hover:bg-slate-50 transition-colors">
+                        <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
+                        <td className="p-3 text-slate-600 font-semibold">{formatVietnamDateTime(m.deliveredAt || m.requestedAt)}</td>
+                        <td className="p-3 text-center font-mono font-bold text-rose-700 bg-rose-50/50 rounded-lg">{m.requiredTime || '---'}</td>
+                        <td className="p-3 font-bold text-slate-800">{m.assemblyLine}</td>
+                        <td className="p-3 font-mono font-bold text-purple-800">{m.partCode}</td>
+                        <td className="p-3 font-semibold text-slate-900">{m.partName}</td>
+                        <td className="p-3 text-right font-black text-emerald-800">{m.requestedQty} {m.unit}</td>
+                        <td className="p-3 font-bold text-blue-700">📍 {m.bufferLocation}</td>
+                        <td className="p-3 text-slate-600">{m.requestedBy}</td>
+                        <td className="p-3 text-slate-700 font-semibold">{m.deliveredBy || '---'}</td>
+                        <td className="p-3 text-center">
+                          <span className="inline-flex items-center space-x-1 px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-extrabold rounded-lg border border-emerald-300">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span>Đã Giao Thành Công</span>
+                          </span>
+                        </td>
+                        {isAdmin && (
                           <td className="p-3 text-center">
-                            <span className="inline-flex items-center space-x-1 px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-extrabold rounded-lg border border-emerald-300">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                              <span>Đã Giao Thành Công</span>
-                            </span>
+                            <div className="flex items-center justify-center space-x-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleAdminRollbackRequest(m.requestId, 'DELIVERING')}
+                                className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[10px] rounded-lg cursor-pointer flex items-center space-x-1 shadow-2xs"
+                                title="Rollback về Đang Vận Chuyển và tự động hoàn trả tồn kho vào Kệ Outbuffer"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Rollback (Hoàn Tồn)</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleAdminDeleteRequest(m.requestId, true)}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded-lg cursor-pointer flex items-center space-x-1 shadow-2xs"
+                                title="Xóa lịch sử và tự động hoàn trả tồn kho vào Kệ Outbuffer"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Xóa (Hoàn Tồn)</span>
+                              </button>
+                            </div>
                           </td>
-                          {isAdmin && (
-                            <td className="p-3 text-center">
-                              <div className="flex items-center justify-center space-x-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdminRollbackRequest(m.requestId, 'DELIVERING')}
-                                  className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-[10px] rounded-lg cursor-pointer flex items-center space-x-1 shadow-2xs"
-                                  title="Rollback về Đang Vận Chuyển và tự động hoàn trả tồn kho vào Kệ Outbuffer"
-                                >
-                                  <RotateCcw className="w-3 h-3" />
-                                  <span>Rollback (Hoàn Tồn)</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdminDeleteRequest(m.requestId, true)}
-                                  className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded-lg cursor-pointer flex items-center space-x-1 shadow-2xs"
-                                  title="Xóa lịch sử và tự động hoàn trả tồn kho vào Kệ Outbuffer"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                  <span>Xóa (Hoàn Tồn)</span>
-                                </button>
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })
+                        )}
+                      </tr>
+                    ))
                   )}
                 </tbody>
               </table>
             </div>
-
-            {/* Pagination Controls */}
-            {filteredCompletedReqs.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 px-1 border-t border-slate-200">
-                <div className="flex items-center space-x-2 text-xs font-semibold text-slate-600">
-                  <span>
-                    Hiển thị <strong>{((historyPage - 1) * historyPageSize) + 1}</strong> - <strong>{Math.min(historyPage * historyPageSize, filteredCompletedReqs.length)}</strong> trên tổng số <strong>{filteredCompletedReqs.length}</strong> đơn hoàn tất
-                  </span>
-                  <div className="hidden sm:flex items-center space-x-1 pl-3 border-l border-slate-300">
-                    <span className="text-slate-500 text-[11px]">Dòng/trang:</span>
-                    <select
-                      value={historyPageSize}
-                      onChange={(e) => {
-                        setHistoryPageSize(Number(e.target.value));
-                        setHistoryPage(1);
-                      }}
-                      className="px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 outline-hidden cursor-pointer"
-                    >
-                      <option value={25}>25</option>
-                      <option value={50}>50</option>
-                      <option value={100}>100</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-1">
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage(1)}
-                    disabled={historyPage <= 1}
-                    className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                    title="Về trang đầu"
-                  >
-                    «
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
-                    disabled={historyPage <= 1}
-                    className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                  >
-                    ‹ Trước
-                  </button>
-
-                  <span className="px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs font-black">
-                    Trang {historyPage} / {totalHistoryPages}
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage((p) => Math.min(totalHistoryPages, p + 1))}
-                    disabled={historyPage >= totalHistoryPages}
-                    className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                  >
-                    Sau ›
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage(totalHistoryPages)}
-                    disabled={historyPage >= totalHistoryPages}
-                    className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                    title="Đến trang cuối"
-                  >
-                    »
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>

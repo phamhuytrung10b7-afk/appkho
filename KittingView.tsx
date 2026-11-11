@@ -700,23 +700,13 @@ export const KittingView: React.FC<KittingViewProps> = ({
     return `${year}-${month}-${day}`;
   };
 
-  // IN-MEMORY RAM TTL CACHE (5 PHÚT = 300,000 MS)
-  // Cắt giảm 100% Egress Supabase khi người dùng chuyển đổi qua lại giữa các Tab hoặc các bộ lọc đã chọn
-  const KITTING_HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
-  const kittingHistoryMemoryCache = React.useRef(new Map<string, { data: KittingQueueItem[]; timestamp: number }>());
-
   const [historyStartDate, setHistoryStartDate] = useState<string>(getTodayStr);
   const [historyEndDate, setHistoryEndDate] = useState<string>(getTodayStr);
   const [historyPreset, setHistoryPreset] = useState<'today' | '3days' | '7days' | '35days' | 'custom'>('today');
   const [historySearchQuery, setHistorySearchQuery] = useState('');
 
-  // Phân trang lịch sử bóc tách (Pagination 50 dòng/trang)
-  const [historyPage, setHistoryPage] = useState<number>(1);
-  const [historyPageSize, setHistoryPageSize] = useState<number>(50);
-
   const applyHistoryPreset = (preset: 'today' | '3days' | '7days' | '35days') => {
     setHistoryPreset(preset);
-    setHistoryPage(1);
     const today = getTodayStr();
     setHistoryEndDate(today);
     if (preset === 'today') {
@@ -730,67 +720,39 @@ export const KittingView: React.FC<KittingViewProps> = ({
     }
   };
 
-  // Filter completed items by date range and search keyword with 5-minute In-Memory RAM TTL Cache
-  const filteredCompletedItems = React.useMemo(() => {
-    const cacheKey = `${historyStartDate || 'none'}_${historyEndDate || 'none'}_${historySearchQuery.trim().toLowerCase()}_${completedItems.length}`;
-    const cached = kittingHistoryMemoryCache.current.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < KITTING_HISTORY_CACHE_TTL_MS) {
-      return cached.data;
-    }
-
-    const res = completedItems.filter((item) => {
-      const timeStr = item.endTime || item.createdAt;
-      if (timeStr) {
-        const itemDate = new Date(timeStr);
-        if (!isNaN(itemDate.getTime())) {
-          if (historyStartDate) {
-            const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
-            const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
-            if (itemDate.getTime() < start.getTime()) return false;
-          }
-          if (historyEndDate) {
-            const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
-            const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
-            if (itemDate.getTime() > end.getTime()) return false;
-          }
+  // Filter completed items by date range and search keyword
+  const filteredCompletedItems = completedItems.filter((item) => {
+    const timeStr = item.endTime || item.createdAt;
+    if (timeStr) {
+      const itemDate = new Date(timeStr);
+      if (!isNaN(itemDate.getTime())) {
+        if (historyStartDate) {
+          const [sYear, sMonth, sDay] = historyStartDate.split('-').map(Number);
+          const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0);
+          if (itemDate.getTime() < start.getTime()) return false;
+        }
+        if (historyEndDate) {
+          const [eYear, eMonth, eDay] = historyEndDate.split('-').map(Number);
+          const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+          if (itemDate.getTime() > end.getTime()) return false;
         }
       }
+    }
 
-      if (historySearchQuery.trim()) {
-        const q = historySearchQuery.toLowerCase().trim();
-        const match =
-          item.partCode.toLowerCase().includes(q) ||
-          item.partName.toLowerCase().includes(q) ||
-          (item.operatorName && item.operatorName.toLowerCase().includes(q)) ||
-          (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
-        if (!match) return false;
-      }
-      return true;
-    }).sort((a, b) => new Date(b.endTime || b.createdAt).getTime() - new Date(a.endTime || a.createdAt).getTime());
+    if (historySearchQuery.trim()) {
+      const q = historySearchQuery.toLowerCase().trim();
+      const match =
+        item.partCode.toLowerCase().includes(q) ||
+        item.partName.toLowerCase().includes(q) ||
+        (item.operatorName && item.operatorName.toLowerCase().includes(q)) ||
+        (item.bufferLocation && item.bufferLocation.toLowerCase().includes(q));
+      if (!match) return false;
+    }
+    return true;
+  }).sort((a, b) => new Date(b.endTime || b.createdAt).getTime() - new Date(a.endTime || a.createdAt).getTime());
 
-    kittingHistoryMemoryCache.current.set(cacheKey, {
-      data: res,
-      timestamp: Date.now(),
-    });
-
-    return res;
-  }, [completedItems, historyStartDate, historyEndDate, historySearchQuery]);
-
-  const totalFilteredKittedQty = React.useMemo(() => {
-    return filteredCompletedItems.reduce((sum, i) => sum + (i.kittedQuantity || 0), 0);
-  }, [filteredCompletedItems]);
-
-  const totalFilteredScrapQty = React.useMemo(() => {
-    return filteredCompletedItems.reduce((sum, i) => sum + (i.scrapQuantity || 0), 0);
-  }, [filteredCompletedItems]);
-
-  // Phân trang danh sách lịch sử bóc tách
-  const totalHistoryPages = Math.max(1, Math.ceil(filteredCompletedItems.length / historyPageSize));
-  const paginatedCompletedItems = React.useMemo(() => {
-    const safePage = Math.min(historyPage, totalHistoryPages);
-    const start = (safePage - 1) * historyPageSize;
-    return filteredCompletedItems.slice(start, start + historyPageSize);
-  }, [filteredCompletedItems, historyPage, totalHistoryPages, historyPageSize]);
+  const totalFilteredKittedQty = filteredCompletedItems.reduce((sum, i) => sum + (i.kittedQuantity || 0), 0);
+  const totalFilteredScrapQty = filteredCompletedItems.reduce((sum, i) => sum + (i.scrapQuantity || 0), 0);
 
   // Group pending items by Mã Phiếu Xuất Kho (voucherCode) và Tên Model BOM (voucherTitle)
   const groupedVouchersMap = new Map<string, PendingVoucherGroup>();
@@ -2578,7 +2540,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
                     onChange={(e) => {
                       setHistoryStartDate(e.target.value);
                       setHistoryPreset('custom');
-                      setHistoryPage(1);
                     }}
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-600 outline-hidden"
                   />
@@ -2592,7 +2553,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
                     onChange={(e) => {
                       setHistoryEndDate(e.target.value);
                       setHistoryPreset('custom');
-                      setHistoryPage(1);
                     }}
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-600 outline-hidden"
                   />
@@ -2603,20 +2563,14 @@ export const KittingView: React.FC<KittingViewProps> = ({
                   <input
                     type="text"
                     value={historySearchQuery}
-                    onChange={(e) => {
-                      setHistorySearchQuery(e.target.value);
-                      setHistoryPage(1);
-                    }}
+                    onChange={(e) => setHistorySearchQuery(e.target.value)}
                     placeholder="Tìm theo mã LK, tên LK, người bóc, kệ buffer..."
                     className="w-full pl-9 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-blue-600 outline-hidden"
                   />
                   {historySearchQuery && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setHistorySearchQuery('');
-                        setHistoryPage(1);
-                      }}
+                      onClick={() => setHistorySearchQuery('')}
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold"
                     >
                       ✕
@@ -2702,8 +2656,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    paginatedCompletedItems.map((item, idx) => {
-                      const stt = (historyPage - 1) * historyPageSize + idx + 1;
+                    filteredCompletedItems.map((item, idx) => {
                       const timeStr = item.endTime || item.createdAt;
                       const formattedTime = timeStr
                         ? new Date(timeStr).toLocaleString('vi-VN', {
@@ -2718,7 +2671,7 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
                       return (
                         <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="p-3 text-center font-bold text-slate-400">{stt}</td>
+                          <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
                           <td className="p-3 font-mono font-bold text-slate-700 text-[11px]">{formattedTime}</td>
                           <td className="p-3 font-mono font-bold text-blue-700">{item.partCode}</td>
                           <td className="p-3 font-semibold text-slate-900">{item.partName}</td>
@@ -2760,74 +2713,6 @@ export const KittingView: React.FC<KittingViewProps> = ({
                 </tbody>
               </table>
             </div>
-
-            {/* Pagination Controls */}
-            {filteredCompletedItems.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 px-1 border-t border-slate-200">
-                <div className="flex items-center space-x-2 text-xs font-semibold text-slate-600">
-                  <span>
-                    Hiển thị <strong>{((historyPage - 1) * historyPageSize) + 1}</strong> - <strong>{Math.min(historyPage * historyPageSize, filteredCompletedItems.length)}</strong> trên tổng số <strong>{filteredCompletedItems.length}</strong> bản ghi
-                  </span>
-                  <div className="hidden sm:flex items-center space-x-1 pl-3 border-l border-slate-300">
-                    <span className="text-slate-500 text-[11px]">Dòng/trang:</span>
-                    <select
-                      value={historyPageSize}
-                      onChange={(e) => {
-                        setHistoryPageSize(Number(e.target.value));
-                        setHistoryPage(1);
-                      }}
-                      className="px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 outline-hidden cursor-pointer"
-                    >
-                      <option value={25}>25</option>
-                      <option value={50}>50</option>
-                      <option value={100}>100</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-1">
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage(1)}
-                    disabled={historyPage <= 1}
-                    className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                    title="Về trang đầu"
-                  >
-                    «
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
-                    disabled={historyPage <= 1}
-                    className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                  >
-                    ‹ Trước
-                  </button>
-
-                  <span className="px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl text-xs font-black">
-                    Trang {historyPage} / {totalHistoryPages}
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage((p) => Math.min(totalHistoryPages, p + 1))}
-                    disabled={historyPage >= totalHistoryPages}
-                    className="px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                  >
-                    Sau ›
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHistoryPage(totalHistoryPages)}
-                    disabled={historyPage >= totalHistoryPages}
-                    className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all shadow-2xs"
-                    title="Đến trang cuối"
-                  >
-                    »
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>
