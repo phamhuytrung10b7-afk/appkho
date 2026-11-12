@@ -40,6 +40,7 @@ export const STORAGE_KEYS = {
   USERS: 'thekho_users_v1',
   MANUALLY_COMPLETED_VOUCHERS: 'thekho_manually_completed_vouchers_v1',
   DELETED_CALL_IDS: 'thekho_deleted_call_ids_v1',
+  DELETED_BOM_VOUCHER_CODES: 'thekho_deleted_bom_voucher_codes_v1',
 };
 
 // Egress bandwidth savings tracker (for diagnostics & verification)

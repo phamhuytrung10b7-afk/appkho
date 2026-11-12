@@ -314,7 +314,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
   const [bomWorkflowMode, setBomWorkflowMode] = useState<'new' | 'backorder'>('new');
   const [selectedBackorderVoucherId, setSelectedBackorderVoucherId] = useState<string>('');
   const [selectedBOMId, setSelectedBOMId] = useState<string>('');
-  const [modelQty, setModelQty] = useState<number>(1);
+  const [modelQty, setModelQty] = useState<number | ''>('');
   const [bomChecks, setBomChecks] = useState<Record<string, boolean>>({});
   const [customOutQuantities, setCustomOutQuantities] = useState<Record<string, number>>({});
 
@@ -371,10 +371,11 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
       if (selectedBom) {
         const checks: Record<string, boolean> = {};
         const qtys: Record<string, number> = {};
+        const numModelQty = typeof modelQty === 'number' && modelQty > 0 ? modelQty : 0;
         selectedBom.items.forEach((item) => {
           checks[item.partCode] = true;
           const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
-          const needed = item.quantity * modelQty;
+          const needed = item.quantity * numModelQty;
           const stock = sysPart ? sysPart.currentStock : 0;
           // Xuất theo tồn kho thực tế: nếu tồn kho < số lượng cần xuất, hệ thống vẫn cho phép xuất số lượng hiện có trong kho
           qtys[item.partCode] = Math.min(Math.max(0, stock), needed);
@@ -655,7 +656,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               ? currentBOM.items.map((item) => {
                   const rowKey = item.partCode;
                   const sysPart = parts.find((p) => p.code.toLowerCase() === item.partCode.toLowerCase());
-                  const requiredQty = item.quantity * modelQty;
+                  const numModelQty = typeof modelQty === 'number' && modelQty > 0 ? modelQty : 0;
+                  const requiredQty = item.quantity * numModelQty;
                   const currentStock = sysPart ? sysPart.currentStock : 0;
                   const prevExported = 0;
                   const remainingBeforeRound = requiredQty;
@@ -772,8 +774,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
               setMessage({ type: 'error', text: 'Vui lòng chọn Model (Lệnh Sản Xuất)!' });
               return;
             }
-            if (modelQty <= 0) {
-              setMessage({ type: 'error', text: 'Số lượng sản xuất phải lớn hơn 0!' });
+            if (typeof modelQty !== 'number' || modelQty <= 0) {
+              setMessage({ type: 'error', text: '⛔ BẮT BUỘC ĐIỀN SỐ LƯỢNG SẢN XUẤT (BỘ)! Vui lòng nhập số lượng sản xuất lớn hơn 0 trước khi xuất kho.' });
               return;
             }
             if (checkedItems.length === 0) {
@@ -799,12 +801,20 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
             }
 
             const allVouchers = storageService.getBomExportVouchers();
+            const allQueue = storageService.getKittingQueue();
+            const allTxs = storageService.getTransactions();
             const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            const usedCodes = new Set(
-              allVouchers
-                .map((v) => v.voucherCode?.trim())
-                .filter((c): c is string => !!c && c.startsWith(`PXK-BOM-${todayStr}-`))
-            );
+            const usedCodes = new Set<string>();
+            allVouchers.forEach((v) => {
+              if (v.voucherCode?.trim()) usedCodes.add(v.voucherCode.trim().toUpperCase());
+            });
+            allQueue.forEach((q) => {
+              if (q.voucherCode?.trim()) usedCodes.add(q.voucherCode.trim().toUpperCase());
+            });
+            allTxs.forEach((t) => {
+              const m = (t.notes || '').match(/(PXK-BOM-\d{8}-\d{3})/i);
+              if (m) usedCodes.add(m[1].toUpperCase());
+            });
             let seq = 1;
             while (usedCodes.has(`PXK-BOM-${todayStr}-${String(seq).padStart(3, '0')}`)) {
               seq++;
@@ -842,8 +852,8 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                   productionOrder: currentBOM.name,
                   reasonOrPurpose: item.isExtraConsumable ? `Tiêu hao thêm Model BOM: ${currentBOM.name}` : 'Sản xuất theo Model (BOM)',
                   notes: item.isExtraConsumable
-                    ? `[Tiêu hao thêm] Model ${currentBOM.name} (${item.extraNote || 'Tiêu hao ngoài định mức'})`
-                    : `[Đợt 1] Model ${currentBOM.name} (${modelQty} bộ) ${item.remainingAfterRound > 0 ? `(Nợ: ${item.remainingAfterRound} ${item.unit})` : '(Đủ)'}`,
+                    ? `[${bomVoucherCode}] [Tiêu hao thêm] Model ${currentBOM.name} (${item.extraNote || 'Tiêu hao ngoài định mức'})`
+                    : `[${bomVoucherCode}] [Đợt 1] Model ${currentBOM.name} (${modelQty} bộ) ${item.remainingAfterRound > 0 ? `(Nợ: ${item.remainingAfterRound} ${item.unit})` : '(Đủ)'}`,
                   locationId: locationName,
                   voucherCode: bomVoucherCode,
                   voucherTitle: `Model BOM: ${currentBOM.name}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`,
@@ -1186,8 +1196,21 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     type="number"
                     min={1}
                     value={modelQty}
-                    onChange={(e) => setModelQty(Math.max(1, Number(e.target.value) || 1))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold text-center focus:ring-2 focus:ring-pink-500 outline-hidden"
+                    placeholder="-- Điền số bộ (bắt buộc) --"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '') {
+                        setModelQty('');
+                      } else {
+                        const parsed = parseInt(val, 10);
+                        setModelQty(isNaN(parsed) ? '' : Math.max(1, parsed));
+                      }
+                    }}
+                    className={`w-full px-3 py-2 border rounded-xl text-sm font-black text-center focus:ring-2 focus:ring-pink-500 outline-hidden transition-all ${
+                      !modelQty
+                        ? 'bg-amber-50/60 border-amber-300 text-amber-900 placeholder:text-amber-500 placeholder:font-normal'
+                        : 'bg-slate-50 border-slate-300 text-pink-700 font-extrabold'
+                    }`}
                   />
                 </div>
               </div>
@@ -1243,6 +1266,16 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
             {/* INTERACTIVE COMPONENT TABLE WITH PARTIAL QUANTITY OVERRIDES & LIVE SHORTAGE TRACKING */}
             {((bomWorkflowMode === 'new' && selectedBOMId) || (bomWorkflowMode === 'backorder' && selectedBackorderVoucher)) && (
               <div className="space-y-4 animate-in fade-in duration-150">
+                {bomWorkflowMode === 'new' && (!modelQty || Number(modelQty) <= 0) && (
+                  <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-amber-950 text-xs font-bold flex items-center space-x-3 shadow-xs animate-in fade-in">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 animate-pulse" />
+                    <div>
+                      <p className="font-black text-sm text-amber-900">⚠️ BẮT BUỘC ĐIỀN SỐ LƯỢNG SẢN XUẤT (BỘ)!</p>
+                      <p className="font-semibold text-amber-800 mt-0.5">Vui lòng điền số bộ cần sản xuất vào ô "Số Lượng Sản Xuất (Bộ)" ở trên để hệ thống tự động tính toán định mức và số lượng linh kiện cần xuất.</p>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center space-x-2">
                     <FileCode className="w-4 h-4 text-pink-600" />
@@ -1382,7 +1415,13 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                               )}
                             </td>
                             <td className="p-3 text-right font-black text-slate-800">
-                              {item.requiredQty.toLocaleString('vi-VN')} {item.unit}
+                              {bomWorkflowMode === 'new' && (!modelQty || Number(modelQty) <= 0) && !item.isExtraConsumable ? (
+                                <span className="text-amber-600 font-bold italic text-[11px] bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                                  Chờ nhập số bộ
+                                </span>
+                              ) : (
+                                `${item.requiredQty.toLocaleString('vi-VN')} ${item.unit}`
+                              )}
                             </td>
                             <td className="p-3 text-right">
                               <span
@@ -1555,19 +1594,24 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
 
                   <button
                     type="button"
+                    disabled={bomWorkflowMode === 'new' && (!modelQty || Number(modelQty) <= 0)}
                     onClick={handleExecuteBomOut}
-                    className={`w-full sm:w-auto px-6 py-4 rounded-xl text-sm font-black shadow-lg transition-all cursor-pointer flex items-center justify-center space-x-2 shrink-0 ${
-                      bomWorkflowMode === 'new'
+                    className={`w-full sm:w-auto px-6 py-4 rounded-xl text-sm font-black shadow-lg transition-all flex items-center justify-center space-x-2 shrink-0 ${
+                      bomWorkflowMode === 'new' && (!modelQty || Number(modelQty) <= 0)
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none border border-slate-300'
+                        : bomWorkflowMode === 'new'
                         ? totalRemainingAfterQty > 0
-                          ? 'bg-amber-500 hover:bg-amber-600 text-slate-950'
-                          : 'bg-pink-600 hover:bg-pink-700 text-white'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                          ? 'bg-amber-500 hover:bg-amber-600 text-slate-950 cursor-pointer'
+                          : 'bg-pink-600 hover:bg-pink-700 text-white cursor-pointer'
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
                     }`}
                   >
                     <ArrowUpRight className="w-5 h-5" />
                     <span>
                       {bomWorkflowMode === 'new'
-                        ? totalRemainingAfterQty > 0
+                        ? (!modelQty || Number(modelQty) <= 0)
+                          ? 'VUI LÒNG ĐIỀN SỐ LƯỢNG SẢN XUẤT'
+                          : totalRemainingAfterQty > 0
                           ? 'XUẤT KHO ĐỢT 1 & LƯU PHIẾU XUẤT BÙ (PARTIAL)'
                           : 'XUẤT KHO HÀNG LOẠT THEO BOM (HOÀN TẤT 100%)'
                         : `XÁC NHẬN XUẤT BÙ ĐỢT ${(selectedBackorderVoucher?.dispatchRounds || 1) + 1}`}
@@ -1702,14 +1746,17 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                     return (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {filteredVouchers.map((v) => {
-                          const isPartial = v.status === 'PARTIAL' || (v.totalQtyRemaining && v.totalQtyRemaining > 0);
+                          const isRolledBack = v.status === 'ROLLED_BACK';
+                          const isPartial = !isRolledBack && (v.status === 'PARTIAL' || (v.totalQtyRemaining && v.totalQtyRemaining > 0));
                           const currentRounds = v.dispatchRounds || 1;
 
                           return (
                             <div
                               key={v.id}
                               className={`p-4 rounded-2xl border transition-all space-y-3 flex flex-col justify-between ${
-                                isPartial
+                                isRolledBack
+                                  ? 'bg-slate-100/70 border-slate-300 opacity-75'
+                                  : isPartial
                                   ? 'bg-amber-50/40 border-amber-300 hover:border-amber-400 shadow-xs'
                                   : 'bg-slate-50 hover:bg-pink-50/50 border-slate-200 hover:border-pink-300'
                               }`}
@@ -1721,7 +1768,11 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                                       <span className="font-mono font-black text-pink-700 text-xs px-2 py-0.5 bg-pink-100 rounded-md inline-block">
                                         {v.voucherCode}
                                       </span>
-                                      {isPartial ? (
+                                      {isRolledBack ? (
+                                        <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-rose-100 text-rose-800 border border-rose-300 rounded-md">
+                                          ↩️ Đã Rollback Hoàn Kho
+                                        </span>
+                                      ) : isPartial ? (
                                         <span className="text-[10px] font-black uppercase px-2 py-0.5 bg-amber-400 text-slate-950 rounded-md border border-amber-500 shadow-xs">
                                           ⏳ Đang Xuất Bù (Đợt {currentRounds})
                                         </span>
@@ -1769,10 +1820,15 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
                               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/60">
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    if (confirm(`Bạn có chắc muốn xóa lịch sử phiếu ${v.voucherCode}?`)) {
-                                      storageService.deleteBomExportVoucher(v.id);
+                                  onClick={async () => {
+                                    if (confirm(`Bạn có chắc muốn xóa lịch sử phiếu ${v.voucherCode}?\n\n• Phiếu này sẽ bị xóa vĩnh viễn và đồng bộ lên Supabase Cloud.\n• Toàn bộ linh kiện của phiếu này sẽ biến mất khỏi Danh sách chờ bóc tách.\n• Khi bấm "Đối soát & Bù phiếu BOM" hệ thống tuyệt đối không bao giờ tái lập lại phiếu này.`)) {
+                                      await storageService.deleteBomExportVoucher(v.id);
                                       refreshSavedVouchers();
+                                      onSuccess();
+                                      setMessage({
+                                        type: 'success',
+                                        text: `✅ Đã xóa vĩnh viễn phiếu [${v.voucherCode}] và đồng bộ lên Supabase Cloud! Phiếu này đã được dọn khỏi danh sách chờ bóc tách và sẽ không bị đối soát bù lại.`,
+                                      });
                                     }
                                   }}
                                   className="px-2.5 py-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-semibold transition-colors cursor-pointer"

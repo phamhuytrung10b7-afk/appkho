@@ -333,28 +333,46 @@ export const KittingView: React.FC<KittingViewProps> = ({
   // FIFO Dynamic Reconciliation: Automatically allocate completed history & scan logs onto pending queue items
   // QUY TẮC NGHIỆP VỤ: Nếu xuất kho nhiều đợt sẽ phải CỘNG DỒN vào SL đề nghị ban đầu
   const rawPendingItems = (() => {
-    // 1. Get all OUT transactions to establish the true export quantity and source shelves
     const allTxs = storageService.getTransactions();
     const outTxs = allTxs.filter((t) => t.type === 'OUT');
     const txMap = new Map(outTxs.map((t) => [t.id, t]));
 
-    // 2. Consolidate items by voucherCode + partCode (Cộng dồn nhiều đợt xuất theo đúng số lượng đề nghị ban đầu)
+    // Build set of rolled-back or deleted voucher codes so they NEVER reappear
+    const bomVouchers = storageService.getBomExportVouchers();
+    const excludedVoucherCodes = new Set<string>();
+    const deletedBomCodes = storageService.getDeletedBomVoucherCodes();
+    deletedBomCodes.forEach((c) => excludedVoucherCodes.add(c.trim().toLowerCase()));
+
+    bomVouchers.forEach((v) => {
+      if (v.status === 'ROLLED_BACK' || (v as any).isDeletedFromKitting) {
+        if (v.voucherCode) excludedVoucherCodes.add(v.voucherCode.trim().toLowerCase());
+      }
+    });
+    allTxs.forEach((t) => {
+      if (t.type === 'IN' && ((t.reasonOrPurpose || '').includes('Rollback') || (t.notes || '').includes('Rollback'))) {
+        const m = (t.notes || '').match(/\[(PXK-[^\]]+)\]/i);
+        if (m) excludedVoucherCodes.add(m[1].trim().toLowerCase());
+      }
+    });
+
+    // Consolidate ONLY active PENDING_KITTING items from queue by voucherCode + partCode
     const consolidatedMap = new Map<
       string,
       KittingQueueItem & { distinctTxIds: Set<string>; hasPendingQueue: boolean }
     >();
 
     queue.forEach((item) => {
+      if (item.status !== 'PENDING_KITTING') return;
       const vCode = (item.voucherCode || 'PHIẾU_XUẤT_LẺ').trim();
+      if (excludedVoucherCodes.has(vCode.toLowerCase())) return;
+
       const vTitle = (item.voucherTitle || '').trim().toLowerCase();
       const pCode = item.partCode.trim().toLowerCase();
       const groupKey = vCode === 'PHIẾU_XUẤT_LẺ' ? `phiếu_xuất_lẻ__${pCode}` : `${vCode.toLowerCase()}__${vTitle}__${pCode}`;
 
       const existing = consolidatedMap.get(groupKey);
       if (existing) {
-        if (item.status === 'PENDING_KITTING') {
-          existing.hasPendingQueue = true;
-        }
+        existing.hasPendingQueue = true;
         if (item.sourceBin && !existing.sourceBin?.includes(item.sourceBin)) {
           existing.sourceBin = existing.sourceBin ? `${existing.sourceBin}, ${item.sourceBin}` : item.sourceBin;
         }
@@ -403,162 +421,24 @@ export const KittingView: React.FC<KittingViewProps> = ({
           allItemIds: [item.id],
           batchCount: 1,
           distinctTxIds,
-          hasPendingQueue: item.status === 'PENDING_KITTING',
+          hasPendingQueue: true,
           rawQuantity: item.rawQuantity,
         });
       }
     });
 
-    // Match transactions directly from outTxs for voucherCode and partCode
-    const bomVouchers = storageService.getBomExportVouchers();
-    const modelToVoucher = new Map<string, { voucherCode: string; modelName: string }>();
-    bomVouchers.forEach((v) => {
-      if (v.modelName && v.voucherCode) {
-        modelToVoucher.set(v.modelName.trim().toUpperCase(), {
-          voucherCode: v.voucherCode.trim(),
-          modelName: v.modelName.trim(),
-        });
-      }
-    });
-
-    const getTxVoucherInfo = (tx: any): { vCode: string; vTitle: string } => {
-      const explicitVc = (tx.voucherCode || tx.voucher_code || '').trim();
-      if (explicitVc) {
-        return { vCode: explicitVc, vTitle: `Phiếu xuất ${explicitVc}` };
-      }
-      const str = `${tx.notes || ''} ${tx.reasonOrPurpose || tx.reason_or_purpose || ''} ${tx.productionOrder || tx.production_order || ''}`;
-      const pxkMatch = str.match(/PXK-[A-Z0-9-]+/i);
-      if (pxkMatch) {
-        const vc = pxkMatch[0].trim();
-        return { vCode: vc, vTitle: `Phiếu xuất ${vc}` };
-      }
-      for (const [model, info] of modelToVoucher.entries()) {
-        if (str.toUpperCase().includes(model)) {
-          return { vCode: info.voucherCode, vTitle: `Model BOM: ${info.modelName}` };
-        }
-      }
-      return { vCode: 'PHIẾU_XUẤT_LẺ', vTitle: 'Linh kiện xuất lẻ (Chưa gán mã phiếu)' };
-    };
-
-    const txByVoucherAndPart = new Map<string, number>();
-    const txInfoByGroupKey = new Map<string, { vCode: string; vTitle: string; sampleTx: any; txs: any[] }>();
-
-    outTxs.forEach((tx) => {
-      const { vCode, vTitle } = getTxVoucherInfo(tx);
-      const pCode = (tx.partCode || (tx as any).part_code || '').trim().toLowerCase();
-      if (!pCode) return;
-      const key = `${vCode.toLowerCase()}__${vTitle.toLowerCase()}__${pCode}`;
-      txByVoucherAndPart.set(key, (txByVoucherAndPart.get(key) || 0) + (Number(tx.quantity) || 0));
-
-      const existingInfo = txInfoByGroupKey.get(key);
-      if (existingInfo) {
-        existingInfo.txs.push(tx);
-      } else {
-        txInfoByGroupKey.set(key, { vCode, vTitle, sampleTx: tx, txs: [tx] });
-      }
-    });
-
-    // Synthesize entries for any OUT transactions matching a voucherCode that aren't yet in consolidatedMap
-    txByVoucherAndPart.forEach((txSum, groupKey) => {
-      if (!consolidatedMap.has(groupKey) && txSum > 0) {
-        const info = txInfoByGroupKey.get(groupKey);
-        if (info) {
-          const sampleTx: any = info.sampleTx;
-          const matchingTxs = info.txs;
-          const sourceBins = Array.from(new Set(matchingTxs.map((t: any) => t.locationId || t.location_id).filter(Boolean))).join(', ') || 'Kho chính';
-
-          consolidatedMap.set(groupKey, {
-            id: 'kit-synth-' + sampleTx.id,
-            transactionId: sampleTx.id,
-            transactionIds: matchingTxs.map((t: any) => t.id),
-            voucherCode: info.vCode,
-            voucherTitle: info.vTitle,
-            sourceBin: sourceBins,
-            partCode: sampleTx.partCode || sampleTx.part_code,
-            partName: sampleTx.partName || sampleTx.part_name || sampleTx.partCode,
-            unit: sampleTx.unit || 'Cái',
-            rawQuantity: txSum,
-            kittedQuantity: 0,
-            scrapQuantity: 0,
-            bufferLocation: 'BUFFER-A1-01',
-            status: 'PENDING_KITTING',
-            createdAt: sampleTx.date || sampleTx.created_at || new Date().toISOString(),
-            operatorName: sampleTx.person || 'Lê Hoàng Nam',
-            allItemIds: matchingTxs.map((t: any) => t.id),
-            batchCount: matchingTxs.length,
-            distinctTxIds: new Set(matchingTxs.map((t: any) => t.id)),
-            hasPendingQueue: true,
-          });
-        }
-      }
-    });
-
-    // Reconcile with saved BomExportVouchers (storageService.getBomExportVouchers)
-    // Ensures that 100% of exported items in a voucher (e.g. 87 items) are always present in consolidatedMap
-    bomVouchers.forEach((v) => {
-      if (v.status !== 'ROLLED_BACK' && Array.isArray(v.items)) {
-        v.items.forEach((vItem) => {
-          const expQty = Number(vItem.exportedQty ?? vItem.totalQtyOut) || 0;
-          const vKittedQty = Number(vItem.kittedQty ?? (vItem as any).kittedQuantity) || 0;
-          if (expQty > 0) {
-            const vTitle = `Model BOM: ${v.modelName}`.trim().toLowerCase();
-            const groupKey = `${v.voucherCode.trim().toLowerCase()}__${vTitle}__${vItem.partCode.trim().toLowerCase()}`;
-            const existing = consolidatedMap.get(groupKey);
-            if (existing) {
-              existing.rawQuantity = Math.max(existing.rawQuantity, expQty);
-              existing.kittedQuantity = Math.max(existing.kittedQuantity || 0, vKittedQty);
-              if (vItem.fifoLocation && !existing.sourceBin?.includes(vItem.fifoLocation)) {
-                existing.sourceBin = existing.sourceBin ? `${existing.sourceBin}, ${vItem.fifoLocation}` : vItem.fifoLocation;
-              }
-            } else {
-              consolidatedMap.set(groupKey, {
-                id: 'kit-vch-' + v.id + '-' + vItem.partCode,
-                transactionId: 'tx-vch-' + v.id,
-                transactionIds: [],
-                voucherCode: v.voucherCode,
-                voucherTitle: `Model BOM: ${v.modelName}`,
-                sourceBin: vItem.fifoLocation || 'Kho chính',
-                partCode: vItem.partCode,
-                partName: vItem.partName,
-                unit: vItem.unit || 'Cái',
-                rawQuantity: expQty,
-                kittedQuantity: vKittedQty,
-                scrapQuantity: 0,
-                bufferLocation: 'BUFFER-A1-01',
-                status: 'PENDING_KITTING',
-                createdAt: v.createdAt || v.dateTime || new Date().toISOString(),
-                operatorName: v.person || 'Lê Hoàng Nam',
-                allItemIds: ['kit-vch-' + v.id + '-' + vItem.partCode],
-                batchCount: 1,
-                distinctTxIds: new Set<string>(),
-                hasPendingQueue: true,
-              });
-            }
-          }
-        });
-      }
-    });
-
-    // Reconcile rawQuantity so it always reflects the maximum of accumulated queue quantity or transaction sum
-    consolidatedMap.forEach((entry, key) => {
-      let txTotal = 0;
+    // Enrich sourceBin from explicitly linked transaction IDs without inflating rawQuantity from unrelated transactions
+    consolidatedMap.forEach((entry) => {
       if (entry.distinctTxIds.size > 0) {
         entry.distinctTxIds.forEach((tId) => {
           const t = txMap.get(tId);
           if (t) {
-            txTotal += Number(t.quantity) || 0;
             const loc = (t.locationId || '').trim();
             if (loc && !entry.sourceBin?.includes(loc)) {
               entry.sourceBin = entry.sourceBin ? `${entry.sourceBin}, ${loc}` : loc;
             }
           }
         });
-      }
-
-      const txVoucherTotal = txByVoucherAndPart.get(key) || 0;
-      const trueMaxQty = Math.max(entry.rawQuantity, txTotal, txVoucherTotal);
-      if (trueMaxQty > 0) {
-        entry.rawQuantity = trueMaxQty;
       }
     });
 
@@ -1604,18 +1484,20 @@ export const KittingView: React.FC<KittingViewProps> = ({
       return;
     }
     const targetVCode = rollbackModalData.voucher.voucherCode;
+    const voucherItems = rollbackModalData.voucher.items || [];
     setIsRollbacking(true);
     try {
       const result = await storageService.rollbackVoucherStockOut(
         targetVCode,
-        currentUser ? `${currentUser.fullName} (Admin)` : 'Admin Quản Trị'
+        currentUser ? `${currentUser.fullName} (Admin)` : 'Admin Quản Trị',
+        voucherItems
       );
       if (result.success) {
         setResultModal({
           isOpen: true,
           isSuccess: true,
           title: 'ROLLBACK HOÀN KHO THÀNH CÔNG',
-          message: `✅ ĐÃ ROLLBACK THÀNH CÔNG PHIẾU [${targetVCode}]!\nĐã hoàn trả ${result.totalPartsRolledBack} linh kiện (tổng số lượng: ${result.totalQtyRolledBack.toLocaleString('vi-VN')}) về ĐÚNG CÁC VỊ TRÍ BIN gốc đã xuất trước đó trong kho. Dữ liệu tồn kho và thẻ kho đã được cập nhật chính xác!`,
+          message: `✅ ĐÃ ROLLBACK THÀNH CÔNG PHIẾU [${targetVCode}]!\nĐã hoàn trả ${result.totalPartsRolledBack} linh kiện (tổng số lượng: ${result.totalQtyRolledBack.toLocaleString('vi-VN')}) về ĐÚNG CÁC VỊ TRÍ BIN gốc đã xuất trước đó trong kho.\nPhiếu chờ đã được xóa khỏi danh sách chờ bóc tách và đồng bộ lên Supabase Cloud!`,
         });
         setRollbackModalData({ isOpen: false, voucher: null });
         onRefresh();
