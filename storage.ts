@@ -5596,14 +5596,28 @@ export const storageService = {
     deletedBomCodes.forEach((c) => rolledBackOrDeletedCodes.add(c.trim().toUpperCase()));
 
     vouchers.forEach((v) => {
+      const vCode = v.voucherCode?.trim().toUpperCase();
+      if (!vCode) return;
       if (v.status === 'ROLLED_BACK' || (v as any).isDeletedFromKitting) {
-        if (v.voucherCode) rolledBackOrDeletedCodes.add(v.voucherCode.trim().toUpperCase());
+        rolledBackOrDeletedCodes.add(vCode);
+      } else {
+        // Phiếu đang HOẠT ĐỘNG (chưa rollback) TUYỆT ĐỐI không bị xem là đã xóa
+        rolledBackOrDeletedCodes.delete(vCode);
       }
     });
+
     txs.forEach((t) => {
       if (t.type === 'IN' && ((t.reasonOrPurpose || '').includes('Rollback') || (t.notes || '').includes('Rollback'))) {
         const m = (t.notes || '').match(/\[(PXK-[^\]]+)\]/i);
-        if (m) rolledBackOrDeletedCodes.add(m[1].trim().toUpperCase());
+        if (m) {
+          const rbCode = m[1].trim().toUpperCase();
+          const isActive = vouchers.some(
+            (v) => (v.voucherCode || '').trim().toUpperCase() === rbCode && v.status !== 'ROLLED_BACK' && !(v as any).isDeletedFromKitting
+          );
+          if (!isActive) {
+            rolledBackOrDeletedCodes.add(rbCode);
+          }
+        }
       }
     });
 
@@ -5636,9 +5650,11 @@ export const storageService = {
       }
 
       return (
-        t.productionOrder?.toUpperCase().includes('SHA') ||
+        !!pxkMatch ||
+        !!t.voucherCode ||
         t.notes?.toUpperCase().includes('MODEL') ||
-        (t.reasonOrPurpose && t.reasonOrPurpose.includes('BOM'))
+        (t.reasonOrPurpose && t.reasonOrPurpose.includes('BOM')) ||
+        t.productionOrder?.toUpperCase().includes('SHA')
       );
     });
 
