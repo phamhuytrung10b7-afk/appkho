@@ -267,15 +267,17 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
       const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
       const map = new Map<string, any>();
 
+      // 1. Process all incoming calls from data
       for (const inc of (data as any[])) {
         if (inc && inc.requestId && !deletedSet.has(inc.requestId)) {
           const ex = existingMap.get(inc.requestId);
           if (ex) {
-            const wEx = statusWeights[ex.status] || 0;
-            const wInc = statusWeights[inc.status] || 0;
+            const wEx = statusWeights[ex.status] ?? 0;
+            const wInc = statusWeights[inc.status] ?? 0;
             // CRITICAL: NEVER rollback DELIVERING or COMPLETED to CALLING!
             const finalStatus = wInc >= wEx ? inc.status : ex.status;
             map.set(inc.requestId, {
+              ...ex,
               ...inc,
               status: finalStatus,
               deliveredBy: (finalStatus === inc.status ? inc.deliveredBy : ex.deliveredBy) || inc.deliveredBy || ex.deliveredBy,
@@ -285,6 +287,14 @@ export function setLocalCacheData<T>(key: string, data: T, timestamp?: string): 
           } else {
             map.set(inc.requestId, inc);
           }
+        }
+      }
+
+      // 2. CRITICAL FIX: Retain ALL existing local calls that were not in incoming data!
+      // This permanently stops calls waiting in "Đơn yêu cầu đang gọi" from disappearing when another order is accepted or synced!
+      for (const ex of existingCalls) {
+        if (ex && ex.requestId && !deletedSet.has(ex.requestId) && !map.has(ex.requestId)) {
+          map.set(ex.requestId, ex);
         }
       }
 
@@ -1120,13 +1130,21 @@ export const supabaseRelationalStore = {
       if (!remoteCalls || !Array.isArray(remoteCalls)) return null;
 
       const statuses = options?.statuses;
-      const limit = options?.limit ?? 200;
-      let filtered = remoteCalls;
       if (statuses && statuses.length > 0) {
         const statusSet = new Set(statuses);
-        filtered = remoteCalls.filter((c) => c && statusSet.has(c.status));
+        const filtered = remoteCalls.filter((c) => c && statusSet.has(c.status));
+        return options.limit ? filtered.slice(0, options.limit) : filtered;
       }
-      return filtered.slice(0, limit);
+
+      // Always return 100% of active calls (CALLING and DELIVERING), plus recent completed calls
+      // to ensure no active orders are ever lost or truncated!
+      const activeCalls = remoteCalls.filter((c) => c && (c.status === 'CALLING' || c.status === 'DELIVERING'));
+      const completedCalls = remoteCalls.filter((c) => c && c.status === 'COMPLETED');
+      const limitCompleted = options?.limit ?? 500;
+      const combined = [...activeCalls, ...completedCalls.slice(0, limitCompleted)].sort(
+        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+      );
+      return combined;
     } catch (err) {
       logSupabaseError('selectActiveMaterialCalls catch', err);
       return null;

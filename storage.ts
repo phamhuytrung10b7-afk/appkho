@@ -4750,9 +4750,7 @@ export const storageService = {
         safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(filtered));
         return filtered;
       }
-      const filtered = INITIAL_MATERIAL_CALLS.filter((c) => c && c.requestId && !deletedIds.has(c.requestId));
-      safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(filtered));
-      return filtered;
+      return [];
     }
     try {
       const items: MaterialCallRequest[] = JSON.parse(raw);
@@ -4779,7 +4777,7 @@ export const storageService = {
       }
       return validItems;
     } catch {
-      return INITIAL_MATERIAL_CALLS.filter((c) => c && c.requestId && !deletedIds.has(c.requestId));
+      return [];
     }
   },
 
@@ -4789,7 +4787,6 @@ export const storageService = {
     try {
       const remoteCalls = await supabaseRelationalStore.selectActiveMaterialCalls({
         forceFresh: forceFetch,
-        limit: 300,
       });
       if (remoteCalls && Array.isArray(remoteCalls)) {
         const localCalls = this.getMaterialCallRequests();
@@ -4806,8 +4803,8 @@ export const storageService = {
           if (rem && rem.requestId && !deletedIds.has(rem.requestId)) {
             const existing = map.get(rem.requestId);
             if (existing) {
-              const wExisting = statusWeights[existing.status] || 0;
-              const wRem = statusWeights[rem.status] || 0;
+              const wExisting = statusWeights[existing.status] ?? 0;
+              const wRem = statusWeights[rem.status] ?? 0;
               // CRITICAL: NEVER rollback DELIVERING or COMPLETED to CALLING!
               const finalStatus = wRem >= wExisting ? rem.status : existing.status;
               map.set(rem.requestId, {
@@ -4830,7 +4827,6 @@ export const storageService = {
             (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
           );
 
-        // Chỉ cập nhật bộ nhớ đệm cục bộ, tuyệt đối KHÔNG ghi ngược toàn bộ mảng lên Cloud khi vừa tải về!
         const nowIso = new Date().toISOString();
         safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
         setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
@@ -4854,21 +4850,24 @@ export const storageService = {
   },
 
   /**
-   * Đồng bộ đơn gọi hàng Andon theo `requestId` với cơ chế kiểm tra timestamp nhẹ (~50B),
-   * không tải lại toàn bộ lịch sử nếu Cloud không có thay đổi mới hơn.
+   * Đồng bộ đơn gọi hàng Andon theo `requestId` trực tiếp lên Supabase Cloud:
+   * 1. Kéo mảng mới nhất từ Cloud (forceFresh) để không bị đè bởi snapshot cũ của máy khác.
+   * 2. Hợp nhất 2 chiều (2-way merge) bảo toàn 100% tất cả đơn gọi hàng hiện có của cả 2 phía.
+   * 3. Áp dụng quy tắc trạng thái đơn điệu (COMPLETED > DELIVERING > CALLING), tuyệt đối không rollback.
+   * 4. Ghi trực tiếp tức thời lên Supabase Cloud, không phụ thuộc setTimeout hay debounce.
    */
   async syncMaterialCallToCloud(targetCall: MaterialCallRequest): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return true;
 
-      const deletedIds = this.getDeletedCallIds();
+      const deletedIds = await this.fetchDeletedCallIdsFromCloud();
       if (deletedIds.has(targetCall.requestId)) {
         return true;
       }
 
-      // Sử dụng supabaseKeyStore.get (chỉ kiểm tra updated_at ~50B nếu cache đã mới nhất, tránh kéo toàn bộ JSONB)
-      const cloudCallsRaw = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS);
+      // Kéo mảng mới nhất thực tế từ Supabase Cloud để chống tình trạng ghi đè chéo giữa các thiết bị
+      const cloudCallsRaw = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: true });
       const cloudCalls: MaterialCallRequest[] = Array.isArray(cloudCallsRaw) ? cloudCallsRaw : [];
       const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
       const map = new Map<string, MaterialCallRequest>();
@@ -4884,8 +4883,8 @@ export const storageService = {
         if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
           const ex = map.get(loc.requestId);
           if (ex) {
-            const wEx = statusWeights[ex.status] || 0;
-            const wLoc = statusWeights[loc.status] || 0;
+            const wEx = statusWeights[ex.status] ?? 0;
+            const wLoc = statusWeights[loc.status] ?? 0;
             const finalStatus = wLoc >= wEx ? loc.status : ex.status;
             map.set(loc.requestId, {
               ...ex,
@@ -4904,8 +4903,8 @@ export const storageService = {
       // Cập nhật đúng bản ghi theo `requestId` với bảo toàn trạng thái cao nhất
       const exTarget = map.get(targetCall.requestId);
       if (exTarget) {
-        const wEx = statusWeights[exTarget.status] || 0;
-        const wTarget = statusWeights[targetCall.status] || 0;
+        const wEx = statusWeights[exTarget.status] ?? 0;
+        const wTarget = statusWeights[targetCall.status] ?? 0;
         const finalStatus = wTarget >= wEx ? targetCall.status : exTarget.status;
         map.set(targetCall.requestId, {
           ...exTarget,
@@ -4928,8 +4927,10 @@ export const storageService = {
       const nowIso = new Date().toISOString();
       safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
       setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
-      pendingMaterialCallsSnapshot = merged;
-      scheduleDebouncedWriteFlush();
+      pendingMaterialCallsSnapshot = null;
+
+      // Ghi trực tiếp tức thời lên Supabase Cloud
+      await supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, merged);
       return true;
     } catch (err) {
       console.warn('[syncMaterialCallToCloud] Catch error:', err);
@@ -5254,7 +5255,7 @@ export const storageService = {
     await flushWriteQueueToSupabase();
   },
 
-  rollbackMaterialCallStatus(requestId: string, targetStatus: 'CALLING' | 'DELIVERING'): MaterialCallRequest {
+  async rollbackMaterialCallStatus(requestId: string, targetStatus: 'CALLING' | 'DELIVERING'): Promise<MaterialCallRequest> {
     const reqs = this.getMaterialCallRequests();
     const idx = reqs.findIndex((r) => r.requestId === requestId);
     if (idx === -1) throw new Error('Không tìm thấy đơn yêu cầu cần rollback');
@@ -5272,7 +5273,10 @@ export const storageService = {
     };
 
     reqs[idx] = updated;
-    this.saveMaterialCallRequests(reqs);
+    const nowIso = new Date().toISOString();
+    safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
+    setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, reqs, nowIso);
+    await supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, reqs);
     return updated;
   },
 

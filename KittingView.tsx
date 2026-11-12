@@ -581,6 +581,11 @@ export const KittingView: React.FC<KittingViewProps> = ({
 
       for (const pItem of sortedByFifo) {
         if (andonRemaining <= 0) break;
+        // CRITICAL: Tuyệt đối KHÔNG trừ tồn Andon vào các phiếu xuất BOM chính thức (PXK-BOM-...)
+        // Tiến độ bóc tách của phiếu BOM CHỈ ghi nhận khi thủ kho chủ động quét thẻ thùng Kitting Smart
+        const vCode = (pItem.voucherCode || '').trim().toUpperCase();
+        if (vCode.startsWith('PXK-')) continue;
+
         const unkitted = Math.max(0, pItem.rawQuantity - (pItem.kittedQuantity || 0));
         if (unkitted <= 0) continue;
 

@@ -796,13 +796,13 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
-  const handleAdminRollbackRequest = (requestId: string, targetStatus: 'CALLING' | 'DELIVERING') => {
+  const handleAdminRollbackRequest = async (requestId: string, targetStatus: 'CALLING' | 'DELIVERING') => {
     const statusLabel = targetStatus === 'CALLING' ? '1. ĐANG GỌI HÀNG' : '2. ĐANG VẬN CHUYỂN';
     if (!window.confirm(`ADMIN XÁC NHẬN: Bạn có muốn ROLLBACK đơn này về trạng thái [${statusLabel}] không?`)) {
       return;
     }
     try {
-      storageService.rollbackMaterialCallStatus(requestId, targetStatus);
+      await storageService.rollbackMaterialCallStatus(requestId, targetStatus);
       setMessage({
         type: 'success',
         text: `↩️ [ADMIN] Đã rollback thành công yêu cầu về trạng thái ${statusLabel}! (Tồn kho kệ Buffer đã được cập nhật tự động nếu cần)`,
