@@ -70,6 +70,28 @@ export function exportProductivityExcel(
   const hourlyNsldRatio: { [slot: string]: number } = {};
   let grandRequiredSp = 0;
 
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const isToday = reportDate === todayStr;
+  const currentHour = now.getHours();
+
+  const TIME_SLOT_HOURS: Record<string, { start: number; end: number }> = {
+    '8h-9h': { start: 8, end: 9 },
+    '9h-10h': { start: 9, end: 10 },
+    '10h-11h': { start: 10, end: 11 },
+    '11h-12h': { start: 11, end: 12 },
+    '13h-14h': { start: 13, end: 14 },
+    '14h-15h': { start: 14, end: 15 },
+    '15h-16h': { start: 15, end: 16 },
+    '16h-17h': { start: 16, end: 17 },
+    '17h-18h': { start: 17, end: 18 },
+    '18h-19h': { start: 18, end: 19 },
+    '19h-20h': { start: 19, end: 20 },
+  };
+
+  let elapsedConvertedSp = 0;
+  let elapsedRequiredSp = 0;
+
   config.hourlySlots.forEach((slotCfg) => {
     const s = slotCfg.slot;
     const required = slotCfg.nhanSuMoiGio * 1069.125;
@@ -82,9 +104,21 @@ export function exportProductivityExcel(
     } else {
       hourlyNsldRatio[s] = 0;
     }
+
+    const slotRange = TIME_SLOT_HOURS[s];
+    const isElapsedOrActive = actualConverted > 0 || (slotRange && currentHour >= slotRange.end);
+    if (isElapsedOrActive) {
+      elapsedConvertedSp += actualConverted;
+      elapsedRequiredSp += required;
+    }
   });
 
-  const grandNsldRatio = grandRequiredSp > 0 ? (grandConvertedSp / grandRequiredSp) * 100 : 0;
+  // Năng suất lao động tổng cộng:
+  // - Nếu là ngày hôm nay: chỉ tính trung bình lũy kế tới thời điểm hiện tại (các khung giờ đã đến / có sản lượng)
+  // - Nếu là ngày hôm qua trở về trước: tính hết toàn bộ cả ngày
+  const grandNsldRatio = isToday
+    ? (elapsedRequiredSp > 0 ? (elapsedConvertedSp / elapsedRequiredSp) * 100 : 0)
+    : (grandRequiredSp > 0 ? (grandConvertedSp / grandRequiredSp) * 100 : 0);
 
   // Build Styled HTML Table string
   const formattedDate = reportDate.split('-').reverse().join('/'); // YYYY-MM-DD -> DD/MM/YYYY

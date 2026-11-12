@@ -413,6 +413,30 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   let grandTotalConvertedSp = 0;
   let grandTotalRequiredSp = 0;
 
+  // Xác định ngày hôm nay và giờ hiện tại để tính trung bình lũy kế tới thời điểm hiện tại
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const isToday = reportDate === todayStr;
+  const currentHour = now.getHours();
+
+  const TIME_SLOT_HOURS: Record<string, { start: number; end: number }> = {
+    '8h-9h': { start: 8, end: 9 },
+    '9h-10h': { start: 9, end: 10 },
+    '10h-11h': { start: 10, end: 11 },
+    '11h-12h': { start: 11, end: 12 },
+    '13h-14h': { start: 13, end: 14 },
+    '14h-15h': { start: 14, end: 15 },
+    '15h-16h': { start: 15, end: 16 },
+    '16h-17h': { start: 16, end: 17 },
+    '17h-18h': { start: 17, end: 18 },
+    '18h-19h': { start: 18, end: 19 },
+    '19h-20h': { start: 19, end: 20 },
+  };
+
+  let elapsedConvertedSp = 0;
+  let elapsedRequiredSp = 0;
+  let elapsedSlotsCount = 0;
+
   TIME_SLOTS.forEach((slot) => {
     let slotActual = 0;
     let slotConverted = 0;
@@ -438,6 +462,15 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
     } else {
       hourlyNsldRatio[slot] = 0;
     }
+
+    // Khung giờ tính vào tiến độ hiện tại: có sản lượng thực tế HOẶC đã trôi qua mốc kết thúc
+    const slotRange = TIME_SLOT_HOURS[slot];
+    const isElapsedOrActive = slotConverted > 0 || (slotRange && currentHour >= slotRange.end);
+    if (isElapsedOrActive) {
+      elapsedConvertedSp += slotConverted;
+      elapsedRequiredSp += required;
+      elapsedSlotsCount++;
+    }
   });
 
   items.forEach((i) => {
@@ -447,7 +480,13 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
     grandTotalSanLuong += i.tongSanLuong;
   });
 
-  const grandNsldRatio = grandTotalRequiredSp > 0 ? (grandTotalConvertedSp / grandTotalRequiredSp) * 100 : 0;
+  // NĂNG SUẤT LAO ĐỘNG TỔNG CỘNG:
+  // - Nếu là ngày hiện tại (Hôm nay): tính trung bình lũy kế tới thời điểm hiện tại (các khung giờ đã đến / có sản lượng)
+  //   không tính trước cả ngày làm tụt % năng suất vô lý.
+  // - Nếu là ngày hôm sau / ngày trong quá khứ (past dates): tính hết toàn bộ cả ngày.
+  const grandNsldRatio = isToday
+    ? (elapsedRequiredSp > 0 ? (elapsedConvertedSp / elapsedRequiredSp) * 100 : 0)
+    : (grandTotalRequiredSp > 0 ? (grandTotalConvertedSp / grandTotalRequiredSp) * 100 : 0);
 
   // Prepare chart data for all time slots including overtime
   const chartData = TIME_SLOTS.map((slot) => {
@@ -949,7 +988,23 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
                     {hourlyNsldRatio[slot] > 0 ? `${Math.round(hourlyNsldRatio[slot])}%` : '-'}
                   </td>
                 ))}
-                <td className="p-2.5 border border-slate-400 text-center text-emerald-800">{grandNsldRatio > 0 ? `${Math.round(grandNsldRatio)}%` : '0%'}</td>
+                <td
+                  className="p-2.5 border border-slate-400 text-center text-emerald-800"
+                  title={
+                    isToday
+                      ? `Năng suất trung bình lũy kế tới thời điểm hiện tại (${elapsedSlotsCount} khung giờ đã tính: ${Math.round(elapsedConvertedSp).toLocaleString('vi-VN')} / ${Math.round(elapsedRequiredSp).toLocaleString('vi-VN')} SPQĐ)`
+                      : `Năng suất lao động cả ngày (${TIME_SLOTS.length} khung giờ: ${Math.round(grandTotalConvertedSp).toLocaleString('vi-VN')} / ${Math.round(grandTotalRequiredSp).toLocaleString('vi-VN')} SPQĐ)`
+                  }
+                >
+                  <div className="flex flex-col items-center justify-center">
+                    <span>{grandNsldRatio > 0 ? `${Math.round(grandNsldRatio)}%` : '0%'}</span>
+                    {isToday && elapsedSlotsCount < TIME_SLOTS.length && (
+                      <span className="text-[9px] font-semibold text-emerald-600 leading-none mt-0.5">
+                        (Tới hiện tại)
+                      </span>
+                    )}
+                  </div>
+                </td>
               </tr>
 
               {/* Row 4: NS CHÍNH THỨC (Bold Red) */}
