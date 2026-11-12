@@ -5294,10 +5294,84 @@ export const storageService = {
   saveBomExportVouchers(vouchers: BomExportVoucher[]): void {
     safeSetRaw(BOM_VOUCHERS_KEY, JSON.stringify(vouchers));
     supabaseKeyStore.set(STORAGE_KEYS.BOM_VOUCHERS, vouchers);
+
+    // CRITICAL: Tự động gỡ các mã phiếu đang HOẠT ĐỘNG (chưa rollback) khỏi danh sách đã xóa
+    const activeCodes = vouchers
+      .filter((v) => v.status !== 'ROLLED_BACK' && !(v as any).isDeletedFromKitting)
+      .map((v) => v.voucherCode?.trim().toUpperCase())
+      .filter((c): c is string => !!c);
+
+    if (activeCodes.length > 0) {
+      const raw = safeGetRaw(DELETED_BOM_VOUCHER_CODES_KEY);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const cleaned = parsed.filter((c: string) => !activeCodes.includes(c.trim().toUpperCase()));
+            if (cleaned.length !== parsed.length) {
+              safeSetRaw(DELETED_BOM_VOUCHER_CODES_KEY, JSON.stringify(cleaned));
+              supabaseKeyStore.set('thekho_deleted_bom_voucher_codes_v1', cleaned).catch(() => {});
+            }
+          }
+        } catch (_) {}
+      }
+    }
   },
 
   saveBomVouchers(vouchers: BomExportVoucher[]): void {
     this.saveBomExportVouchers(vouchers);
+  },
+
+  /**
+   * Đảm bảo mọi linh kiện đã xuất kho của phiếu BOM đang hoạt động đều có mặt trong hàng chờ bóc tách
+   */
+  syncActiveVoucherToKittingQueue(voucher: BomExportVoucher): void {
+    if (!voucher || voucher.status === 'ROLLED_BACK' || (voucher as any).isDeletedFromKitting) return;
+    const vCode = voucher.voucherCode?.trim();
+    if (!vCode) return;
+    const vTitle = `Model BOM: ${voucher.modelName}`;
+    const queue = this.getKittingQueue();
+    let updated = false;
+
+    (voucher.items || []).forEach((item) => {
+      const exportedQty = item.exportedQty ?? item.currentBatchQty ?? item.totalQtyOut ?? 0;
+      if (exportedQty <= 0) return;
+      const pCode = (item.partCode || '').trim();
+      if (!pCode) return;
+
+      const fullVTitle = `${vTitle}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`.trim().toLowerCase();
+      const existing = queue.find(
+        (q) =>
+          q.status === 'PENDING_KITTING' &&
+          (q.voucherCode || '').trim().toUpperCase() === vCode.toUpperCase() &&
+          ((q.voucherTitle || '').trim().toLowerCase() === fullVTitle || !q.voucherTitle) &&
+          q.partCode.trim().toUpperCase() === pCode.toUpperCase()
+      );
+
+      if (!existing) {
+        queue.unshift({
+          id: 'kit-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+          voucherCode: vCode,
+          voucherTitle: `${vTitle}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`,
+          sourceBin: item.fifoLocation || 'Kho chính',
+          partCode: pCode,
+          partName: item.partName || pCode,
+          unit: item.unit || 'Cái',
+          rawQuantity: exportedQty,
+          kittedQuantity: 0,
+          scrapQuantity: 0,
+          bufferLocation: 'BUFFER-A1-01',
+          status: 'PENDING_KITTING',
+          createdAt: voucher.dateTime || voucher.createdAt || new Date().toISOString(),
+          operatorName: voucher.person || 'Thủ kho',
+        });
+        updated = true;
+      }
+    });
+
+    if (updated) {
+      this.saveKittingQueue(queue);
+    }
   },
 
   getBomVoucherById(id: string): BomExportVoucher | undefined {
@@ -5329,12 +5403,19 @@ export const storageService = {
     notes?: string;
   }): BomExportVoucher {
     const vouchers = this.getBomExportVouchers();
+    const deletedCodes = this.getDeletedBomVoucherCodes();
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const usedCodes = new Set(
       vouchers
-        .map((v) => v.voucherCode?.trim())
+        .map((v) => v.voucherCode?.trim().toUpperCase())
         .filter((c): c is string => !!c && c.startsWith(`PXK-BOM-${todayStr}-`))
     );
+    deletedCodes.forEach((c) => {
+      if (c && c.toUpperCase().startsWith(`PXK-BOM-${todayStr}-`)) {
+        usedCodes.add(c.trim().toUpperCase());
+      }
+    });
+
     let seq = 1;
     while (usedCodes.has(`PXK-BOM-${todayStr}-${String(seq).padStart(3, '0')}`)) {
       seq++;
@@ -5369,18 +5450,49 @@ export const storageService = {
 
     vouchers.unshift(newVoucher);
     this.saveBomExportVouchers(vouchers);
+    this.syncActiveVoucherToKittingQueue(newVoucher);
     return newVoucher;
   },
 
   getDeletedBomVoucherCodes(): string[] {
     const raw = safeGetRaw(DELETED_BOM_VOUCHER_CODES_KEY);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
+    let parsed: string[] = [];
+    if (raw) {
+      try {
+        const arr = JSON.parse(raw);
+        parsed = Array.isArray(arr) ? arr : [];
+      } catch {
+        parsed = [];
+      }
     }
+
+    // CRITICAL: Các phiếu đang ACTIVE trong bomVouchers TUYỆT ĐỐI không bị xem là đã xóa
+    const activeVouchers = this.getBomExportVouchers().filter(
+      (v) => v.status !== 'ROLLED_BACK' && !(v as any).isDeletedFromKitting
+    );
+    const activeCodes = new Set(
+      activeVouchers.map((v) => v.voucherCode?.trim().toUpperCase()).filter((c): c is string => !!c)
+    );
+
+    return parsed.filter((c) => !activeCodes.has(c.trim().toUpperCase()));
+  },
+
+  async removeDeletedBomVoucherCode(code: string): Promise<void> {
+    const clean = code.trim().toUpperCase();
+    if (!clean) return;
+    const raw = safeGetRaw(DELETED_BOM_VOUCHER_CODES_KEY);
+    let parsed: string[] = [];
+    if (raw) {
+      try {
+        const arr = JSON.parse(raw);
+        parsed = Array.isArray(arr) ? arr : [];
+      } catch {
+        parsed = [];
+      }
+    }
+    const updated = parsed.filter((c) => c.trim().toUpperCase() !== clean);
+    safeSetRaw(DELETED_BOM_VOUCHER_CODES_KEY, JSON.stringify(updated));
+    await supabaseKeyStore.set('thekho_deleted_bom_voucher_codes_v1', updated).catch(() => {});
   },
 
   async addDeletedBomVoucherCode(code: string): Promise<void> {

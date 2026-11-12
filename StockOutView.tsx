@@ -803,6 +803,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
             const allVouchers = storageService.getBomExportVouchers();
             const allQueue = storageService.getKittingQueue();
             const allTxs = storageService.getTransactions();
+            const deletedBomCodes = storageService.getDeletedBomVoucherCodes();
             const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
             const usedCodes = new Set<string>();
             allVouchers.forEach((v) => {
@@ -810,6 +811,9 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
             });
             allQueue.forEach((q) => {
               if (q.voucherCode?.trim()) usedCodes.add(q.voucherCode.trim().toUpperCase());
+            });
+            deletedBomCodes.forEach((c) => {
+              if (c?.trim()) usedCodes.add(c.trim().toUpperCase());
             });
             allTxs.forEach((t) => {
               const m = (t.notes || '').match(/(PXK-BOM-\d{8}-\d{3})/i);
@@ -925,6 +929,7 @@ export const StockOutView: React.FC<StockOutViewProps> = ({ parts, settings, onS
             const existingVouchers = storageService.getBomExportVouchers();
             existingVouchers.unshift(savedVoucher);
             storageService.saveBomExportVouchers(existingVouchers);
+            storageService.syncActiveVoucherToKittingQueue(savedVoucher);
             refreshSavedVouchers();
 
             setMessage({

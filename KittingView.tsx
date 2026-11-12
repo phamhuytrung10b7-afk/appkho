@@ -344,14 +344,27 @@ export const KittingView: React.FC<KittingViewProps> = ({
     deletedBomCodes.forEach((c) => excludedVoucherCodes.add(c.trim().toLowerCase()));
 
     bomVouchers.forEach((v) => {
+      const vCode = (v.voucherCode || '').trim().toLowerCase();
+      if (!vCode) return;
       if (v.status === 'ROLLED_BACK' || (v as any).isDeletedFromKitting) {
-        if (v.voucherCode) excludedVoucherCodes.add(v.voucherCode.trim().toLowerCase());
+        excludedVoucherCodes.add(vCode);
+      } else {
+        // Phiếu đang HOẠT ĐỘNG (chưa rollback) TUYỆT ĐỐI không bị loại trừ khỏi danh sách chờ bóc tách
+        excludedVoucherCodes.delete(vCode);
       }
     });
     allTxs.forEach((t) => {
       if (t.type === 'IN' && ((t.reasonOrPurpose || '').includes('Rollback') || (t.notes || '').includes('Rollback'))) {
         const m = (t.notes || '').match(/\[(PXK-[^\]]+)\]/i);
-        if (m) excludedVoucherCodes.add(m[1].trim().toLowerCase());
+        if (m) {
+          const rbCode = m[1].trim().toLowerCase();
+          const isActive = bomVouchers.some(
+            (v) => (v.voucherCode || '').trim().toLowerCase() === rbCode && v.status !== 'ROLLED_BACK' && !(v as any).isDeletedFromKitting
+          );
+          if (!isActive) {
+            excludedVoucherCodes.add(rbCode);
+          }
+        }
       }
     });
 
@@ -425,6 +438,46 @@ export const KittingView: React.FC<KittingViewProps> = ({
           rawQuantity: item.rawQuantity,
         });
       }
+    });
+
+    // Đảm bảo mọi linh kiện đã xuất kho của phiếu BOM đang hoạt động đều hiển thị đầy đủ ngay lập tức
+    bomVouchers.forEach((v) => {
+      const vCode = (v.voucherCode || '').trim();
+      if (!vCode || excludedVoucherCodes.has(vCode.toLowerCase())) return;
+      if (v.status === 'ROLLED_BACK' || (v as any).isDeletedFromKitting) return;
+
+      const vTitle = `Model BOM: ${v.modelName}`;
+      (v.items || []).forEach((item) => {
+        const exportedQty = item.exportedQty ?? item.currentBatchQty ?? item.totalQtyOut ?? 0;
+        if (exportedQty <= 0) return;
+        const pCode = (item.partCode || '').trim().toLowerCase();
+        const fullVTitle = `${vTitle}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`.trim().toLowerCase();
+        const groupKey = `${vCode.toLowerCase()}__${fullVTitle}__${pCode}`;
+
+        if (!consolidatedMap.has(groupKey)) {
+          consolidatedMap.set(groupKey, {
+            id: `kit-vch-${vCode}-${pCode}`,
+            transactionId: `tx-vch-${vCode}-${pCode}`,
+            voucherCode: vCode,
+            voucherTitle: `${vTitle}${item.isExtraConsumable ? ' (Tiêu hao thêm)' : ''}`,
+            sourceBin: item.fifoLocation || 'Kho chính',
+            partCode: item.partCode,
+            partName: item.partName || item.partCode,
+            unit: item.unit || 'Cái',
+            rawQuantity: exportedQty,
+            kittedQuantity: 0,
+            scrapQuantity: 0,
+            bufferLocation: 'BUFFER-A1-01',
+            status: 'PENDING_KITTING',
+            createdAt: v.dateTime || v.createdAt || new Date().toISOString(),
+            operatorName: v.person || 'Thủ kho',
+            allItemIds: [`kit-vch-${vCode}-${pCode}`],
+            batchCount: 1,
+            distinctTxIds: new Set<string>(),
+            hasPendingQueue: true,
+          });
+        }
+      });
     });
 
     // Enrich sourceBin from explicitly linked transaction IDs without inflating rawQuantity from unrelated transactions
