@@ -69,7 +69,108 @@ function safeSetRaw(key: string, value: string): boolean {
 // In-Memory RAM Caches for high-volume entities (Transactions & Master Container Tags).
 // Eliminates localStorage bloating (keeping localStorage < 500KB) while ensuring instant UI access.
 let inMemoryTransactions: Transaction[] = [];
+let lastSyncedTransactionTimestamp: string | null = null;
+let hasLoadedFullReconcileLedger: boolean = false;
 let inMemoryMasterContainerTags: MasterKittingTag[] | null = null;
+
+// --- RAM TTL CACHE CHO BINCARD HISTORY & RECONCILE (TTL: 4 PHÚT = 240,000ms) ---
+// Cắt giảm triệt để việc quét/kéo lại toàn bộ transaction ledger khi dữ liệu vừa được đọc gần đây
+const BIN_CARD_CACHE_TTL_MS = 4 * 60 * 1000;
+interface BinCardCacheEntry {
+  data: Transaction[];
+  timestamp: number;
+  txCount: number;
+  firstTxId: string;
+  lastTxId: string;
+}
+const binCardHistoryRamCache = new Map<string, BinCardCacheEntry>();
+let lastReconcileCloudFetchAt = 0;
+
+function invalidateBinCardHistoryCache(): void {
+  binCardHistoryRamCache.clear();
+}
+
+// --- HÀNG ĐỢI GOM LÔ GHI DỮ LIỆU (WRITE DEBOUNCE 400ms & BATCH QUEUE MAX 150 RECORDS) ---
+// Cắt giảm triệt để Log Ingestion và các lệnh upsert lẻ tẻ lên Supabase Free Tier
+const WRITE_QUEUE_DEBOUNCE_MS = 400;
+const MAX_BATCH_UPSERT_RECORDS = 150;
+
+const pendingPartsUpsertQueue = new Map<string, Part>();
+const pendingPartsDeleteQueue = new Set<string>();
+let pendingFullPartsKvSnapshot: Part[] | null = null;
+let pendingSettingsSnapshot: AppSettings | null = null;
+let pendingMaterialCallsSnapshot: MaterialCallRequest[] | null = null;
+let writeQueueDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function flushWriteQueueToSupabase(): Promise<void> {
+  if (writeQueueDebounceTimer) {
+    clearTimeout(writeQueueDebounceTimer);
+    writeQueueDebounceTimer = null;
+  }
+
+  const settingsToFlush = pendingSettingsSnapshot;
+  const fullPartsKvToFlush = pendingFullPartsKvSnapshot;
+  const materialCallsToFlush = pendingMaterialCallsSnapshot;
+  const partsToUpsert = Array.from(pendingPartsUpsertQueue.values());
+  const partIdsToDelete = Array.from(pendingPartsDeleteQueue.values());
+
+  pendingSettingsSnapshot = null;
+  pendingFullPartsKvSnapshot = null;
+  pendingMaterialCallsSnapshot = null;
+  pendingPartsUpsertQueue.clear();
+  pendingPartsDeleteQueue.clear();
+
+  const tasks: Promise<any>[] = [];
+
+  // 1. Flush Settings (KV + Relational)
+  if (settingsToFlush) {
+    tasks.push(
+      supabaseKeyStore.set(STORAGE_KEYS.SETTINGS, settingsToFlush),
+      supabaseRelationalStore.upsertSettings(settingsToFlush)
+    );
+  }
+
+  // 2. Flush Full Parts KV Snapshot (1 lệnh duy nhất thay vì bắn liên tục)
+  if (fullPartsKvToFlush) {
+    tasks.push(supabaseKeyStore.set(STORAGE_KEYS.PARTS, fullPartsKvToFlush));
+  }
+
+  // 2b. Flush Material Calls Snapshot (Debounced)
+  if (materialCallsToFlush) {
+    tasks.push(supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, materialCallsToFlush));
+  }
+
+  // 3. Flush Relational Parts Upsert theo lô tối đa 150 bản ghi/lần gửi
+  if (partsToUpsert.length > 0) {
+    for (let i = 0; i < partsToUpsert.length; i += MAX_BATCH_UPSERT_RECORDS) {
+      const chunk = partsToUpsert.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
+      tasks.push(supabaseRelationalStore.upsertParts(chunk));
+    }
+  }
+
+  // 4. Flush Relational Parts Delete theo lô tối đa 150 ID/lần gửi
+  if (partIdsToDelete.length > 0) {
+    for (let i = 0; i < partIdsToDelete.length; i += MAX_BATCH_UPSERT_RECORDS) {
+      const chunk = partIdsToDelete.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
+      tasks.push(supabaseRelationalStore.deletePartsBatch(chunk));
+    }
+  }
+
+  if (tasks.length > 0) {
+    try {
+      await Promise.allSettled(tasks);
+    } catch (_) {}
+  }
+}
+
+function scheduleDebouncedWriteFlush(): void {
+  if (writeQueueDebounceTimer) {
+    clearTimeout(writeQueueDebounceTimer);
+  }
+  writeQueueDebounceTimer = setTimeout(() => {
+    flushWriteQueueToSupabase();
+  }, WRITE_QUEUE_DEBOUNCE_MS);
+}
 
 export interface CustomGeneratedContainerTag extends MasterKittingTag {
   createdAt: string;
@@ -590,8 +691,28 @@ export function normalizeShelfKey(name: string | undefined | null): string {
   return (cleaned || strippedQty)
     .trim()
     .toLowerCase()
-    .replace(/^(kệ|ke|khay|o|ô|khoang|khu|dãy|day)\s+/i, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/^(?:ke|khay|o|khoang|khu|day|tang|vi\s*tri)[\s:\-_./]*/i, '')
     .replace(/[^a-z0-9]/g, '');
+}
+
+// Generate normalized key variants (e.g. "a01" <-> "a1") for resilient shelf lookup
+export function getShelfKeyVariants(name: string | undefined | null): string[] {
+  const norm = normalizeShelfKey(name);
+  if (!norm) return [];
+  const variants = new Set<string>([norm]);
+  const m = norm.match(/^([a-z]+)(0*)([1-9]\d*)$/);
+  if (m) {
+    const prefix = m[1];
+    const numStr = m[3];
+    variants.add(`${prefix}${numStr}`);
+    if (numStr.length === 1) {
+      variants.add(`${prefix}0${numStr}`);
+    }
+  }
+  return Array.from(variants);
 }
 
 // Helper for location matching that handles accents, case, prefixes, and sub-compartments accurately
@@ -611,25 +732,160 @@ export function isLocationMatch(locA: string | undefined | null, locB: string | 
   const strippedB = cleanWarehousePrefix(cleanB);
   if (strippedA && strippedB && strippedA.toLowerCase() === strippedB.toLowerCase()) return true;
 
-  const normA = normalizeShelfKey(cleanA);
-  const normB = normalizeShelfKey(cleanB);
-  if (normA && normB && normA === normB) return true;
+  const variantsA = getShelfKeyVariants(cleanA);
+  const variantsB = new Set(getShelfKeyVariants(cleanB));
+  if (variantsA.some((va) => variantsB.has(va))) return true;
 
-  // Split both by [-/._] into sub-segments and check for matching shelf key
+  // Split both by [-/._,;] into sub-segments and check for matching shelf key
   const segsA = cleanA
-    .split(/\s*[-/]\s*/)
-    .map((s) => normalizeShelfKey(s))
+    .split(/\s*[-/,;+]\s*/)
+    .flatMap((s) => getShelfKeyVariants(s))
     .filter(Boolean);
-  const segsB = cleanB
-    .split(/\s*[-/]\s*/)
-    .map((s) => normalizeShelfKey(s))
-    .filter(Boolean);
+  const segsB = new Set(
+    cleanB
+      .split(/\s*[-/,;+]\s*/)
+      .flatMap((s) => getShelfKeyVariants(s))
+      .filter(Boolean)
+  );
 
-  if (segsA.some((sa) => segsB.includes(sa))) {
+  if (segsA.some((sa) => segsB.has(sa))) {
     return true;
   }
 
   return false;
+}
+
+/**
+ * Helper chuẩn hóa & tách danh sách kệ từ chuỗi `part.location` (hỗ trợ dấu phẩy, chấm phẩy, gạch chéo).
+ */
+function parseShelfLocationsFromString(locationStr: string | undefined | null, fallbackStock: number): PartLocationStock[] {
+  if (!locationStr || !locationStr.trim()) return [];
+  const raw = locationStr.trim();
+  const lower = raw.toLowerCase();
+  if (lower.includes('chưa phân') || lower.includes('hết hàng')) return [];
+
+  const segments = raw.includes(',')
+    ? raw.split(',')
+    : raw.includes(';')
+    ? raw.split(';')
+    : raw.includes(' / ')
+    ? raw.split(' / ')
+    : [raw];
+
+  const result: PartLocationStock[] = [];
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
+    if (match) {
+      const rawShelfName = match[1].trim();
+      const cleanShelfName = cleanWarehousePrefix(rawShelfName) || rawShelfName;
+      const parsedQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
+      if (parsedQty > 0 && isRealShelfLocation(cleanShelfName)) {
+        result.push({ locationName: cleanShelfName, quantity: parsedQty });
+      }
+    } else {
+      const cleanShelfName = cleanWarehousePrefix(trimmed) || trimmed;
+      if (isRealShelfLocation(cleanShelfName)) {
+        const defaultQty =
+          segments.length === 1
+            ? Math.max(1, fallbackStock)
+            : Math.max(1, Math.round(fallbackStock / segments.length));
+        result.push({ locationName: cleanShelfName, quantity: defaultQty });
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Tính toán chính xác tồn kho thực tế từ sổ cái giao dịch (Transaction Ledger),
+ * có tính đến tồn kho khởi tạo ban đầu (`stockBefore` của giao dịch đầu tiên) và `stockAfter` của kiểm kê/giao dịch cuối.
+ */
+function computeTrueStockFromHistory(part: Part, history: Transaction[]): number {
+  if (!history || history.length === 0) {
+    return typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
+  }
+
+  let totalIn = 0;
+  let totalOut = 0;
+  for (let h = 0; h < history.length; h++) {
+    const tx = history[h];
+    const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+    if (q <= 0) continue;
+    if (tx.type === 'IN') {
+      totalIn += q;
+    } else if (
+      tx.type === 'OUT' ||
+      tx.type === 'TRANSFER_TO_NG' ||
+      tx.type === 'EXPORT_NG_RTV' ||
+      tx.type === 'EXPORT_NG_SCRAP'
+    ) {
+      totalOut += q;
+    }
+  }
+
+  const firstTx = history[0];
+  let initialBaseline = 0;
+  if (firstTx) {
+    const sb = typeof firstTx.stockBefore === 'number' ? firstTx.stockBefore : Number(firstTx.stockBefore) || 0;
+    const sa = typeof firstTx.stockAfter === 'number' ? firstTx.stockAfter : Number(firstTx.stockAfter) || 0;
+    const fq = typeof firstTx.quantity === 'number' ? firstTx.quantity : Number(firstTx.quantity) || 0;
+    if (sb > 0) {
+      initialBaseline = sb;
+    } else if (firstTx.type === 'IN' && sa > fq) {
+      initialBaseline = sa - fq;
+    } else if (
+      (firstTx.type === 'OUT' || firstTx.type === 'TRANSFER_TO_NG') &&
+      sa >= 0 &&
+      fq > 0
+    ) {
+      initialBaseline = sa + fq;
+    }
+  }
+
+  let runningStock = initialBaseline;
+  for (let h = 0; h < history.length; h++) {
+    const tx = history[h];
+    const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
+    if (q <= 0) continue;
+
+    if (tx.type === 'IN') {
+      runningStock += q;
+    } else if (
+      tx.type === 'OUT' ||
+      tx.type === 'TRANSFER_TO_NG' ||
+      tx.type === 'EXPORT_NG_RTV' ||
+      tx.type === 'EXPORT_NG_SCRAP'
+    ) {
+      const sb = typeof tx.stockBefore === 'number' ? tx.stockBefore : Number(tx.stockBefore) || 0;
+      if (runningStock < q && sb >= q) {
+        runningStock = sb - q;
+      } else {
+        runningStock = Math.max(0, runningStock - q);
+      }
+    } else if (tx.type === 'AUDIT_ADJUSTMENT') {
+      const isTransfer =
+        (tx.reasonOrPurpose && /điều chuyển|chuyển/i.test(tx.reasonOrPurpose)) ||
+        (tx.notes && /chuyển.*từ.*sang/i.test(tx.notes));
+      if (!isTransfer && typeof tx.stockAfter === 'number' && tx.stockAfter >= 0) {
+        runningStock = tx.stockAfter;
+      }
+    }
+  }
+
+  const pureLedgerStock = Math.max(0, Math.round((totalIn - totalOut) * 100) / 100);
+  const runningRounded = Math.max(0, Math.round(runningStock * 100) / 100);
+  const lastTx = history[history.length - 1];
+  const lastStockAfter =
+    lastTx && typeof lastTx.stockAfter === 'number' && lastTx.stockAfter > 0
+      ? Math.round(lastTx.stockAfter * 100) / 100
+      : 0;
+
+  if (runningRounded > 0) return runningRounded;
+  if (pureLedgerStock > 0) return pureLedgerStock;
+  if (lastStockAfter > 0) return lastStockAfter;
+  return 0;
 }
 
 // Helper for initial load
@@ -638,7 +894,6 @@ export const storageService = {
   getSettings(): AppSettings {
     const raw = safeGetRaw(SETTINGS_KEY);
     if (!raw) {
-      safeSetRaw(SETTINGS_KEY, JSON.stringify(initialSettings));
       return initialSettings;
     }
     try {
@@ -646,6 +901,7 @@ export const storageService = {
       return {
         ...initialSettings,
         ...parsed,
+        locations: Array.isArray(parsed.locations) && parsed.locations.length > 0 ? parsed.locations : initialSettings.locations,
         staffList: parsed.staffList && parsed.staffList.length ? parsed.staffList : initialSettings.staffList,
         stockInReasons: parsed.stockInReasons && parsed.stockInReasons.length ? parsed.stockInReasons : initialSettings.stockInReasons,
         stockOutPurposes: parsed.stockOutPurposes && parsed.stockOutPurposes.length ? parsed.stockOutPurposes : initialSettings.stockOutPurposes,
@@ -659,8 +915,13 @@ export const storageService = {
 
   saveSettings(settings: AppSettings): void {
     safeSetRaw(SETTINGS_KEY, JSON.stringify(settings));
-    supabaseKeyStore.set(STORAGE_KEYS.SETTINGS, settings);
-    supabaseRelationalStore.upsertSettings(settings);
+    setLocalCacheData(STORAGE_KEYS.SETTINGS, settings, new Date().toISOString());
+    pendingSettingsSnapshot = settings;
+    scheduleDebouncedWriteFlush();
+  },
+
+  async flushWriteQueue(): Promise<void> {
+    await flushWriteQueueToSupabase();
   },
 
   // Parts
@@ -691,32 +952,32 @@ export const storageService = {
   /**
    * Reconcile part currentStock and locations with chronological transaction ledger.
    * Ensures stock never diverges from the true bin card transactions history.
+   * Sử dụng kết quả từ RAM TTL Cache (getBinCardHistory) và chỉ đọc các cột tinh gọn khi cần đồng bộ từ Cloud.
    */
   reconcilePartStock(partIdOrCode: string): Part | null {
     const part = this.getPartById(partIdOrCode) || this.getPartByCode(partIdOrCode);
     if (!part) return null;
+
+    if (!hasLoadedFullReconcileLedger && Date.now() - lastReconcileCloudFetchAt > BIN_CARD_CACHE_TTL_MS) {
+      lastReconcileCloudFetchAt = Date.now();
+      supabaseRelationalStore
+        .selectReconcileTransactions()
+        .then((lightweightTxs) => {
+          if (lightweightTxs && lightweightTxs.length > 0) {
+            inMemoryTransactions = lightweightTxs;
+            hasLoadedFullReconcileLedger = true;
+            invalidateBinCardHistoryCache();
+          }
+        })
+        .catch(() => {});
+    }
+
     const history = this.getBinCardHistory(part.id);
     if (history.length === 0) return part;
 
-    let totalIn = 0;
-    let totalOut = 0;
-    for (let h = 0; h < history.length; h++) {
-      const tx = history[h];
-      const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
-      if (q <= 0) continue;
-      if (tx.type === 'IN') {
-        totalIn += q;
-      } else if (
-        tx.type === 'OUT' ||
-        tx.type === 'TRANSFER_TO_NG' ||
-        tx.type === 'EXPORT_NG_RTV' ||
-        tx.type === 'EXPORT_NG_SCRAP'
-      ) {
-        totalOut += q;
-      }
-    }
-    const trueStock = Math.max(0, Math.round((totalIn - totalOut) * 100) / 100);
-    const activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(part, history) : [];
+    const trueStock = computeTrueStockFromHistory(part, history);
+    const partWithTrueStock: Part = { ...part, currentStock: trueStock };
+    const activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(partWithTrueStock, history) : [];
     const newLocSummary = this.formatPartLocationSummary(activeLocs);
 
     const locationsChanged = JSON.stringify(part.locations || []) !== JSON.stringify(activeLocs);
@@ -737,114 +998,138 @@ export const storageService = {
    * Scan and reconcile all parts against the transaction ledger.
    * Restores accurate shelf locations (locations array and location summary)
    * for any parts that were imported without shelves or had desynchronized locations.
+   * Chỉ đẩy các linh kiện thực sự có thay đổi vào hàng đợi gom lô (tối đa 150 bản ghi/lần).
    */
   reconcileAllPartsStock(): Part[] {
     const parts = this.getParts();
-    let hasChanges = false;
+    if (parts.length === 0) return parts;
+
+    // Nếu chưa nạp đầy đủ sổ cái tinh gọn vào RAM, nạp ngầm từ bảng transactions (chỉ select các cột cần thiết, cache 5 phút)
+    if (!hasLoadedFullReconcileLedger && Date.now() - lastReconcileCloudFetchAt > BIN_CARD_CACHE_TTL_MS) {
+      lastReconcileCloudFetchAt = Date.now();
+      supabaseRelationalStore
+        .selectReconcileTransactions()
+        .then((lightweightTxs) => {
+          if (lightweightTxs && lightweightTxs.length > 0) {
+            inMemoryTransactions = lightweightTxs;
+            hasLoadedFullReconcileLedger = true;
+            invalidateBinCardHistoryCache();
+          }
+        })
+        .catch(() => {});
+    }
+
+    const changedParts: Part[] = [];
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
       const history = this.getBinCardHistory(p.id);
 
       if (history.length === 0) {
-        // Transactions might be stored on Supabase and not loaded into localStorage.
-        // If part has stock > 0 but locations is empty, parse valid shelf locations from part.location string
         const stock = typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0;
-        if (stock > 0 && (!p.locations || p.locations.length === 0) && p.location && p.location.trim()) {
+        if (stock > 0) {
           const parsed = this.getPartLocations(p);
           if (parsed && parsed.length > 0) {
-            parts[i] = {
-              ...p,
-              locations: parsed,
-              location: this.formatPartLocationSummary(parsed),
-              updatedAt: new Date().toISOString(),
-            };
-            hasChanges = true;
+            const formatted = this.formatPartLocationSummary(parsed);
+            if (JSON.stringify(p.locations || []) !== JSON.stringify(parsed) || p.location !== formatted) {
+              const updatedP: Part = {
+                ...p,
+                locations: parsed,
+                location: formatted,
+                updatedAt: new Date().toISOString(),
+              };
+              parts[i] = updatedP;
+              changedParts.push(updatedP);
+            }
           }
         }
         continue;
       }
 
-      // Compute true physical stock from transaction ledger (Double-entry source of truth)
-      let totalIn = 0;
-      let totalOut = 0;
-      const inLots: { loc: string; qty: number }[] = [];
+      // Если chưa tải xong toàn bộ sổ cái (chỉ có 1 phần), không bao giờ được ghi đè giảm tồn kho hay xóa kệ hiện có
+      const computedStock = computeTrueStockFromHistory(p, history);
+      const trueStock = hasLoadedFullReconcileLedger
+        ? computedStock
+        : Math.max(computedStock, typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0);
 
-      for (let h = 0; h < history.length; h++) {
-        const tx = history[h];
-        const q = typeof tx.quantity === 'number' ? tx.quantity : Number(tx.quantity) || 0;
-        if (q <= 0) continue;
-        if (tx.type === 'IN') {
-          totalIn += q;
-          inLots.push({ loc: (tx.locationId || '').trim() || 'Kho chính', qty: q });
-        } else if (
-          tx.type === 'OUT' ||
-          tx.type === 'TRANSFER_TO_NG' ||
-          tx.type === 'EXPORT_NG_RTV' ||
-          tx.type === 'EXPORT_NG_SCRAP'
-        ) {
-          totalOut += q;
+      // Tạo bản sao linh kiện với trueStock đã khôi phục để deriveLocationsFromTransactions không bị chặn bởi p.currentStock cũ (= 0)
+      const partWithTrueStock: Part = { ...p, currentStock: trueStock };
+
+      // 1. Lấy phân bổ kệ từ sổ cái giao dịch (Thẻ kho)
+      let activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(partWithTrueStock, history) : [];
+
+      // 2. Gom nhóm và đối soát bổ sung với dữ liệu kệ trong bảng linh kiện (p.locations & p.location)
+      // để đảm bảo không bỏ sót bất kỳ kệ có hàng nào từ dữ liệu khởi tạo ban đầu
+      if (trueStock > 0) {
+        const existingValidLocs: PartLocationStock[] = [];
+        if (Array.isArray(p.locations) && p.locations.length > 0) {
+          for (const l of p.locations) {
+            const cleanName = cleanWarehousePrefix((l.locationName || '').trim()) || (l.locationName || '').trim();
+            const q = Math.max(0, Number(l.quantity) || 0);
+            if (q > 0 && isRealShelfLocation(cleanName)) {
+              existingValidLocs.push({ locationName: cleanName, quantity: q });
+            }
+          }
         }
-      }
+        const parsedFromLocationStr = parseShelfLocationsFromString(p.location, trueStock);
+        for (const pl of parsedFromLocationStr) {
+          if (!existingValidLocs.some((el) => isLocationMatch(el.locationName, pl.locationName))) {
+            existingValidLocs.push(pl);
+          }
+        }
 
-      const ledgerStock = Math.max(0, Math.round((totalIn - totalOut) * 100) / 100);
-
-      // Verify against active FIFO lots (sum of remaining unconsumed lots)
-      let remOut = totalOut;
-      const fifoLotShelves = new Map<string, number>();
-      for (const lot of inLots) {
-        if (remOut >= lot.qty) {
-          remOut -= lot.qty;
-        } else {
-          const rem = lot.qty - remOut;
-          remOut = 0;
-          const locClean = lot.loc;
-          if (locClean && isRealShelfLocation(locClean)) {
-            fifoLotShelves.set(locClean, (fifoLotShelves.get(locClean) || 0) + rem);
+        if (activeLocs.length === 0 && existingValidLocs.length > 0) {
+          activeLocs = existingValidLocs;
+        } else if (activeLocs.length > 0 && existingValidLocs.length > 0) {
+          const derivedSum = activeLocs.reduce((s, item) => s + item.quantity, 0);
+          if (derivedSum < trueStock) {
+            let unallocated = trueStock - derivedSum;
+            for (const ex of existingValidLocs) {
+              if (unallocated <= 0) break;
+              const alreadyInActive = activeLocs.find((a) => isLocationMatch(a.locationName, ex.locationName));
+              if (!alreadyInActive) {
+                const addQty = Math.min(ex.quantity, unallocated);
+                if (addQty > 0) {
+                  activeLocs.push({ locationName: ex.locationName, quantity: addQty });
+                  unallocated -= addQty;
+                }
+              }
+            }
           }
         }
       }
 
-      const trueStock = ledgerStock;
-
-      // Derive physical shelf locations
-      let activeLocs = trueStock > 0 ? this.deriveLocationsFromTransactions(p, history) : [];
-      if (activeLocs.length === 0 && trueStock > 0 && fifoLotShelves.size > 0) {
-        // Fallback to active FIFO lot shelf distribution
-        for (const [sName, sQty] of fifoLotShelves.entries()) {
-          if (sQty > 0) {
-            activeLocs.push({ locationName: sName, quantity: sQty });
-          }
-        }
-      }
-      if (activeLocs.length === 0 && p.locations && p.locations.length > 0 && trueStock > 0) {
-        activeLocs = p.locations;
-      }
-
-      const newSummary = activeLocs.length > 0 ? this.formatPartLocationSummary(activeLocs) : (trueStock > 0 ? (p.location || 'Kho chính') : 'Chưa phân vị trí');
+      const newSummary =
+        activeLocs.length > 0
+          ? this.formatPartLocationSummary(activeLocs)
+          : trueStock > 0
+          ? p.location && !p.location.toLowerCase().includes('chưa phân')
+            ? p.location
+            : 'Kho chính'
+          : 'Chưa phân vị trí';
 
       const locsChanged = JSON.stringify(p.locations || []) !== JSON.stringify(activeLocs);
       const stockChanged = p.currentStock !== trueStock;
 
       if (stockChanged || locsChanged || (activeLocs.length > 0 && p.location !== newSummary)) {
-        parts[i] = {
+        const updatedP: Part = {
           ...p,
           currentStock: trueStock,
           locations: activeLocs,
           location: newSummary,
           updatedAt: new Date().toISOString(),
         };
-        hasChanges = true;
+        parts[i] = updatedP;
+        changedParts.push(updatedP);
       }
     }
-    if (hasChanges) {
-      this.saveParts(parts);
+    if (changedParts.length > 0) {
+      this.saveParts(parts, changedParts);
     }
     return parts;
   },
 
-  saveParts(parts: Part[]): void {
-    // Lưu bản snapshot tinh gọn cho LocalStorage (chỉ các trường cần thiết để hiển thị & kiểm kê)
-    // Cắt giảm 75% dung lượng thekho_parts_v1, luôn giữ bộ nhớ dưới mức an toàn 500KB
+  saveParts(parts: Part[], specificChangedParts?: Part[]): void {
+    // Lưu bản snapshot tinh gọn cho LocalStorage ngay lập tức
     const compactParts = parts.map((p) => ({
       id: p.id,
       code: p.code,
@@ -858,8 +1143,18 @@ export const storageService = {
       updatedAt: p.updatedAt,
     }));
     safeSetRaw(PARTS_KEY, JSON.stringify(compactParts));
-    supabaseKeyStore.set(STORAGE_KEYS.PARTS, parts);
-    supabaseRelationalStore.upsertParts(parts);
+    setLocalCacheData(STORAGE_KEYS.PARTS, parts, new Date().toISOString());
+
+    // Đưa vào hàng đợi gom lô (Debounce 400ms, tối đa 150 bản ghi/lần gửi)
+    pendingFullPartsKvSnapshot = parts;
+    const recordsToQueue = specificChangedParts !== undefined ? specificChangedParts : parts;
+    for (const p of recordsToQueue) {
+      if (p && p.id) {
+        pendingPartsDeleteQueue.delete(p.id);
+        pendingPartsUpsertQueue.set(p.id, p);
+      }
+    }
+    scheduleDebouncedWriteFlush();
   },
 
   addPart(partData: Omit<Part, 'id' | 'createdAt' | 'updatedAt'>): Part {
@@ -871,8 +1166,8 @@ export const storageService = {
       updatedAt: new Date().toISOString(),
     };
     parts.unshift(newPart);
-    this.saveParts(parts);
-    supabaseRelationalStore.insertPart(newPart);
+    // Gom nhóm vào hàng đợi Debounce 400ms thay vì bắn insertPart lẻ tẻ
+    this.saveParts(parts, [newPart]);
     return newPart;
   },
 
@@ -884,29 +1179,41 @@ export const storageService = {
     }
     if (index === -1) throw new Error('Không tìm thấy linh kiện');
 
-    const realId = parts[index].id;
     const updatedPart: Part = {
       ...parts[index],
       ...updatedData,
       updatedAt: new Date().toISOString(),
     };
     parts[index] = updatedPart;
-    this.saveParts(parts);
-    supabaseRelationalStore.updatePart(realId, updatedData);
+    // Gom nhóm vào hàng đợi Debounce 400ms thay vì bắn updatePart lẻ tẻ
+    this.saveParts(parts, [updatedPart]);
     return updatedPart;
   },
 
   deletePart(id: string): void {
-    const parts = this.getParts().filter((p) => p.id !== id && p.code !== id);
-    this.saveParts(parts);
+    const allParts = this.getParts();
+    const matchedToDelete = allParts.filter((p) => p.id === id || p.code === id);
+    const remainingParts = allParts.filter((p) => p.id !== id && p.code !== id);
 
-    // Remove transactions for this part
+    for (const p of matchedToDelete) {
+      pendingPartsUpsertQueue.delete(p.id);
+      pendingPartsDeleteQueue.add(p.id);
+    }
+    if (matchedToDelete.length === 0 && id) {
+      pendingPartsUpsertQueue.delete(id);
+      pendingPartsDeleteQueue.add(id);
+    }
+
+    // Đưa vào hàng đợi Debounce 400ms
+    this.saveParts(remainingParts, []);
+
+    // Remove transactions for this part in memory & delete only matching rows in relational table
     const txs = this.getTransactions().filter((t) => t.partId !== id && t.partCode !== id);
-    this.saveTransactions(txs);
-    supabaseRelationalStore.deletePart(id);
+    this.setTransactionsInMemory(txs);
+    supabaseRelationalStore.deleteTransactionsByPart(id);
   },
 
-  // Transactions (The Kho) - SOURCE OF TRUTH LÀ SUPABASE, TUYỆT ĐỐI KHÔNG LƯU LOCALSTORAGE
+  // Transactions (The Kho) - SOURCE OF TRUTH LÀ BẢNG RELATIONAL `transactions`, TUYỆT ĐỐI KHÔNG GHI TRÙNG LẶP VÀO KEY-VALUE
   getTransactions(): Transaction[] {
     // Trả về cache trong RAM nếu đã tải
     if (inMemoryTransactions.length > 0) {
@@ -921,18 +1228,36 @@ export const storageService = {
 
   setTransactionsInMemory(txs: Transaction[]): void {
     inMemoryTransactions = txs;
+    invalidateBinCardHistoryCache();
     try {
       localStorage.removeItem(TRANSACTIONS_KEY);
     } catch (_) {}
   },
 
-  saveTransactions(txs: Transaction[]): void {
+  /**
+   * Lưu giao dịch vào RAM và CHỈ INSERT/UPSERT các bản ghi giao dịch MỚI phát sinh (`changedTxs`) vào bảng `transactions`.
+   * - Chấm dứt hoàn toàn việc gọi `supabaseKeyStore.setCloudOnly(STORAGE_KEYS.TRANSACTIONS, txs)`.
+   * - Chấm dứt hoàn toàn việc đẩy lại toàn bộ mảng `txs` cũ lên Supabase gây Write Amplification.
+   */
+  saveTransactions(txs: Transaction[], changedTxs?: Transaction[]): void {
     inMemoryTransactions = txs;
+    invalidateBinCardHistoryCache();
     try {
       localStorage.removeItem(TRANSACTIONS_KEY);
     } catch (_) {}
-    supabaseKeyStore.setCloudOnly(STORAGE_KEYS.TRANSACTIONS, txs);
-    supabaseRelationalStore.upsertTransactions(txs);
+
+    if (changedTxs && changedTxs.length > 0) {
+      for (const tx of changedTxs) {
+        if (tx.date && (!lastSyncedTransactionTimestamp || tx.date > lastSyncedTransactionTimestamp)) {
+          lastSyncedTransactionTimestamp = tx.date;
+        }
+      }
+      if (changedTxs.length === 1) {
+        supabaseRelationalStore.insertTransaction(changedTxs[0]);
+      } else {
+        supabaseRelationalStore.upsertTransactions(changedTxs);
+      }
+    }
   },
 
   // --- KHO NG (HÀNG LỖI) HELPERS & BATCH PROCESSOR ---
@@ -957,14 +1282,47 @@ export const storageService = {
   },
 
   // Get transactions for a specific part chronologically (ascending for bin card calculations)
-  // Logic lọc giao dịch linh hoạt: kiểm tra đồng thời cả partId, partCode và partName để không bị sót dữ liệu Thẻ kho
+  // Áp dụng bộ nhớ đệm RAM (TTL Cache 4 phút) để không quét/kéo lại toàn bộ transaction ledger khi vừa đọc gần đây
   getBinCardHistory(partIdOrCode: string): Transaction[] {
+    if (!partIdOrCode) return [];
+    const rawKey = partIdOrCode.trim().toLowerCase();
+    const allTxs = this.getTransactions();
+    const currentTxCount = allTxs.length;
+    const currentFirstId = currentTxCount > 0 ? allTxs[0]?.id || '' : '';
+    const currentLastId = currentTxCount > 0 ? allTxs[currentTxCount - 1]?.id || '' : '';
+    const now = Date.now();
+
+    // 1. Kiểm tra RAM TTL Cache (4 phút)
+    const cachedByRaw = binCardHistoryRamCache.get(rawKey);
+    if (
+      cachedByRaw &&
+      now - cachedByRaw.timestamp < BIN_CARD_CACHE_TTL_MS &&
+      cachedByRaw.txCount === currentTxCount &&
+      cachedByRaw.firstTxId === currentFirstId &&
+      cachedByRaw.lastTxId === currentLastId
+    ) {
+      return cachedByRaw.data;
+    }
+
     const part = this.getPartById(partIdOrCode) || this.getPartByCode(partIdOrCode);
     const targetIdClean = (part?.id || partIdOrCode)?.trim().toLowerCase();
     const targetCodeClean = (part?.code || partIdOrCode)?.trim().toLowerCase();
     const targetNameClean = part?.name?.trim().toLowerCase();
 
-    const txs = this.getTransactions().filter((t) => {
+    if (targetIdClean && targetIdClean !== rawKey) {
+      const cachedById = binCardHistoryRamCache.get(targetIdClean);
+      if (
+        cachedById &&
+        now - cachedById.timestamp < BIN_CARD_CACHE_TTL_MS &&
+        cachedById.txCount === currentTxCount &&
+        cachedById.firstTxId === currentFirstId &&
+        cachedById.lastTxId === currentLastId
+      ) {
+        return cachedById.data;
+      }
+    }
+
+    const txs = allTxs.filter((t) => {
       const tPartIdClean = (t.partId || '').trim().toLowerCase();
       const tPartCodeClean = (t.partCode || '').trim().toLowerCase();
       const tPartNameClean = (t.partName || '').trim().toLowerCase();
@@ -987,7 +1345,21 @@ export const storageService = {
     });
 
     // Sort by date ascending
-    return txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const sorted = txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // 2. Lưu kết quả vào RAM TTL Cache (4 phút) cho cả ID và Code của linh kiện
+    const entry: BinCardCacheEntry = {
+      data: sorted,
+      timestamp: now,
+      txCount: currentTxCount,
+      firstTxId: currentFirstId,
+      lastTxId: currentLastId,
+    };
+    binCardHistoryRamCache.set(rawKey, entry);
+    if (targetIdClean) binCardHistoryRamCache.set(targetIdClean, entry);
+    if (targetCodeClean) binCardHistoryRamCache.set(targetCodeClean, entry);
+
+    return sorted;
   },
 
   /**
@@ -995,15 +1367,49 @@ export const storageService = {
    * This is the immutable source of truth for shelf distribution (as seen in Thẻ kho).
    */
   deriveLocationsFromTransactions(part: Part, txs?: Transaction[]): PartLocationStock[] {
-    const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
-    if (currentStock <= 0) return [];
-
     const history = txs || this.getBinCardHistory(part.id);
+    const currentStock =
+      typeof part.currentStock === 'number' && part.currentStock > 0
+        ? part.currentStock
+        : history && history.length > 0
+        ? computeTrueStockFromHistory(part, history)
+        : 0;
+    if (currentStock <= 0) return [];
     if (!history || history.length === 0) return [];
 
-    // Track stock per shelf
+    // Track stock per shelf in FIFO insertion order
     // Key: normalized shelf key, Value: { displayName: string, quantity: number }
     const shelfMap = new Map<string, { displayName: string; quantity: number }>();
+    const allSeenRealShelves = new Map<string, string>(); // key -> displayName
+
+    // Seed initial baseline stock (nếu linh kiện có tồn đầu kỳ trước khi phát sinh giao dịch đầu tiên)
+    const firstTx = history[0];
+    let initialBaseline = 0;
+    if (firstTx) {
+      const sb = typeof firstTx.stockBefore === 'number' ? firstTx.stockBefore : Number(firstTx.stockBefore) || 0;
+      const sa = typeof firstTx.stockAfter === 'number' ? firstTx.stockAfter : Number(firstTx.stockAfter) || 0;
+      const fq = typeof firstTx.quantity === 'number' ? firstTx.quantity : Number(firstTx.quantity) || 0;
+      if (sb > 0) {
+        initialBaseline = sb;
+      } else if (firstTx.type === 'IN' && sa > fq) {
+        initialBaseline = sa - fq;
+      } else if ((firstTx.type === 'OUT' || firstTx.type === 'TRANSFER_TO_NG') && sa >= 0 && fq > 0) {
+        initialBaseline = sa + fq;
+      }
+    }
+
+    if (initialBaseline > 0) {
+      const baselineShelves = parseShelfLocationsFromString(part.location, initialBaseline);
+      if (baselineShelves.length > 0) {
+        for (const bs of baselineShelves) {
+          const key = normalizeShelfKey(bs.locationName) || bs.locationName.toLowerCase();
+          shelfMap.set(key, { displayName: bs.locationName, quantity: bs.quantity });
+          allSeenRealShelves.set(key, bs.locationName);
+        }
+      } else {
+        shelfMap.set('__baseline_pool__', { displayName: 'Kho chính', quantity: initialBaseline });
+      }
+    }
 
     for (let i = 0; i < history.length; i++) {
       const tx = history[i];
@@ -1022,8 +1428,8 @@ export const storageService = {
         const transferText = `${tx.reasonOrPurpose || ''} ${tx.notes || ''}`;
         const match = transferText.match(/(?:từ|vị trí:?)\s*([^\s➔\->]+)\s*(?:➔|->|sang)\s*([^\s\.\,]+)/i);
         if (match) {
-          const fromLoc = match[1].trim();
-          const toLoc = match[2].trim();
+          const fromLoc = cleanWarehousePrefix(match[1].trim()) || match[1].trim();
+          const toLoc = cleanWarehousePrefix(match[2].trim()) || match[2].trim();
           if (fromLoc && toLoc) {
             const fromKey = normalizeShelfKey(fromLoc) || fromLoc.toLowerCase();
             const toKey = normalizeShelfKey(toLoc) || toLoc.toLowerCase();
@@ -1037,13 +1443,22 @@ export const storageService = {
             } else {
               shelfMap.set(toKey, { displayName: toLoc, quantity: qty });
             }
+            if (isRealShelfLocation(toLoc)) {
+              allSeenRealShelves.set(toKey, toLoc);
+            }
             continue;
           }
         }
       }
 
-      // Normal IN/OUT operations
-      const segments = locRaw.includes(',') ? locRaw.split(',') : [locRaw];
+      // Normal IN/OUT operations (support splitting by comma, semicolon, or slash)
+      const segments = locRaw.includes(',')
+        ? locRaw.split(',')
+        : locRaw.includes(';')
+        ? locRaw.split(';')
+        : locRaw.includes(' / ')
+        ? locRaw.split(' / ')
+        : [locRaw];
 
       if (tx.type === 'IN') {
         let anyShelfAdded = false;
@@ -1051,15 +1466,17 @@ export const storageService = {
           const trimmed = seg.trim();
           if (!trimmed) continue;
           const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
-          let shelfName = trimmed;
-          let shelfQty = qty;
+          let rawShelfName = trimmed;
+          let shelfQty = segments.length > 1 ? Math.max(1, Math.round(qty / segments.length)) : qty;
           if (match) {
-            shelfName = match[1].trim();
-            shelfQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || qty;
+            rawShelfName = match[1].trim();
+            shelfQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || shelfQty;
           }
+          const shelfName = cleanWarehousePrefix(rawShelfName) || rawShelfName;
           if (isRealShelfLocation(shelfName)) {
             anyShelfAdded = true;
             const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
+            allSeenRealShelves.set(key, shelfName);
             const existing = shelfMap.get(key);
             if (existing) {
               existing.quantity += shelfQty;
@@ -1073,14 +1490,26 @@ export const storageService = {
         if (!anyShelfAdded) {
           const noteMatch = (tx.notes || '').match(/(?:kệ|vị trí|khoang)\s*([a-zA-Z0-9_\-]+)/i);
           if (noteMatch && isRealShelfLocation(noteMatch[1])) {
-            const shelfName = noteMatch[1].trim();
+            const shelfName = cleanWarehousePrefix(noteMatch[1].trim()) || noteMatch[1].trim();
             const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
+            allSeenRealShelves.set(key, shelfName);
             const existing = shelfMap.get(key);
             if (existing) {
               existing.quantity += qty;
             } else {
               shelfMap.set(key, { displayName: shelfName, quantity: qty });
             }
+            anyShelfAdded = true;
+          }
+        }
+
+        // Nếu giao dịch IN chỉ ghi chung "Kho chính" / "2BVL", đưa vào pool chung để khi OUT trừ FIFO từ pool trước, không làm mất tồn trên kệ thật
+        if (!anyShelfAdded) {
+          const pool = shelfMap.get('__unassigned_pool__');
+          if (pool) {
+            pool.quantity += qty;
+          } else {
+            shelfMap.set('__unassigned_pool__', { displayName: 'Kho chính', quantity: qty });
           }
         }
       } else if (
@@ -1096,25 +1525,42 @@ export const storageService = {
           const trimmed = seg.trim();
           if (!trimmed) continue;
           const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
-          let shelfName = trimmed;
+          let rawShelfName = trimmed;
           let shelfDeductQty = remainingToDeduct;
           if (match) {
-            shelfName = match[1].trim();
+            rawShelfName = match[1].trim();
             shelfDeductQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || remainingToDeduct;
           }
-          const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
-          const existing = shelfMap.get(key);
-          if (existing && existing.quantity > 0) {
-            const deduct = Math.min(existing.quantity, shelfDeductQty, remainingToDeduct);
-            existing.quantity -= deduct;
-            remainingToDeduct -= deduct;
+          const shelfName = cleanWarehousePrefix(rawShelfName) || rawShelfName;
+          if (isRealShelfLocation(shelfName)) {
+            const key = normalizeShelfKey(shelfName) || shelfName.toLowerCase();
+            allSeenRealShelves.set(key, shelfName);
+            const existing = shelfMap.get(key);
+            if (existing && existing.quantity > 0) {
+              const deduct = Math.min(existing.quantity, shelfDeductQty, remainingToDeduct);
+              existing.quantity -= deduct;
+              remainingToDeduct -= deduct;
+            }
           }
         }
 
-        // 2. If remaining to deduct > 0, deduct FIFO from any positive shelves
+        // 2. If remaining to deduct > 0, deduct from unassigned/baseline pool FIRST before touching real shelves
+        if (remainingToDeduct > 0) {
+          for (const poolKey of ['__baseline_pool__', '__unassigned_pool__']) {
+            const pool = shelfMap.get(poolKey);
+            if (pool && pool.quantity > 0) {
+              const deduct = Math.min(pool.quantity, remainingToDeduct);
+              pool.quantity -= deduct;
+              remainingToDeduct -= deduct;
+              if (remainingToDeduct <= 0) break;
+            }
+          }
+        }
+
+        // 3. Finally deduct FIFO from positive real shelves
         if (remainingToDeduct > 0) {
           for (const val of shelfMap.values()) {
-            if (val.quantity > 0) {
+            if (val.quantity > 0 && isRealShelfLocation(val.displayName)) {
               const deduct = Math.min(val.quantity, remainingToDeduct);
               val.quantity -= deduct;
               remainingToDeduct -= deduct;
@@ -1136,11 +1582,25 @@ export const storageService = {
       }
     }
 
+    // Nếu linh kiện vẫn còn tồn kho > 0 (ví dụ chỉ có giao dịch OUT xuất từ kệ gốc khởi tạo), khôi phục kệ gốc từ allSeenRealShelves
+    if (activeShelves.length === 0 && currentStock > 0 && allSeenRealShelves.size > 0) {
+      const seenList = Array.from(allSeenRealShelves.values());
+      const perShelf = Math.max(1, Math.round(currentStock / seenList.length));
+      let rem = currentStock;
+      for (let idx = 0; idx < seenList.length; idx++) {
+        const q = idx === seenList.length - 1 ? rem : Math.min(rem, perShelf);
+        if (q > 0) {
+          activeShelves.push({ locationName: seenList[idx], quantity: q });
+          rem -= q;
+        }
+      }
+    }
+
     if (activeShelves.length === 0) {
       return [];
     }
 
-    // Align sum with part.currentStock if shelves hold more than current physical stock
+    // Align sum with currentStock if shelves hold more than current physical stock
     const derivedSum = activeShelves.reduce((acc, s) => acc + s.quantity, 0);
     if (derivedSum > currentStock) {
       let excess = derivedSum - currentStock;
@@ -1158,89 +1618,83 @@ export const storageService = {
   // Helper to get normalized location breakdown array for a part (only real shelves with stock > 0)
   getPartLocations(part: Part): PartLocationStock[] {
     const currentStock = typeof part.currentStock === 'number' ? part.currentStock : Number(part.currentStock) || 0;
-    
+
     // If current stock is 0, no shelves hold inventory
     if (currentStock <= 0) {
       return [];
     }
 
-    // 1. Check if part already has valid non-empty locations array
+    // 1. Collect valid shelves from part.locations
+    const fromLocationsArr: PartLocationStock[] = [];
     if (Array.isArray(part.locations) && part.locations.length > 0) {
-      const active = part.locations
-        .map((l) => ({
-          locationName: cleanWarehousePrefix((l.locationName || '').trim()) || (l.locationName || '').trim(),
-          quantity: Math.max(0, Number(l.quantity) || 0),
-        }))
-        .filter((l) => l.quantity > 0 && isRealShelfLocation(l.locationName));
-
-      if (active.length > 0) {
-        return active;
+      for (const l of part.locations) {
+        const cleanName = cleanWarehousePrefix((l.locationName || '').trim()) || (l.locationName || '').trim();
+        const qty = Math.max(0, Number(l.quantity) || 0);
+        if (qty > 0 && isRealShelfLocation(cleanName)) {
+          fromLocationsArr.push({ locationName: cleanName, quantity: qty });
+        }
       }
     }
 
-    // 2. Derive directly from the Bin Card transaction ledger (if history is present)
+    // 2. Collect shelves from Bin Card transaction ledger (if history is present in memory)
     const derived = this.deriveLocationsFromTransactions(part);
-    if (derived && derived.length > 0) {
-      // In-memory cache on part for high-performance repeated calls
-      part.locations = derived;
-      part.location = this.formatPartLocationSummary(derived);
-      return derived;
+
+    // 3. Collect shelves parsed from part.location string
+    const fromLocationStr = parseShelfLocationsFromString(part.location, currentStock);
+
+    // Merge all sources so no valid occupied shelf is ever dropped
+    const mergedMap = new Map<string, PartLocationStock>();
+    const primaryList = derived.length > 0 ? derived : fromLocationsArr;
+
+    for (const item of primaryList) {
+      const key = normalizeShelfKey(item.locationName) || item.locationName.toLowerCase();
+      const existing = mergedMap.get(key);
+      if (existing) {
+        existing.quantity += item.quantity;
+      } else {
+        mergedMap.set(key, { locationName: item.locationName, quantity: item.quantity });
+      }
     }
 
-    // 3. Fallback to parsing part.location string
-    if (part.location && part.location.trim()) {
-      const raw = part.location.trim();
-      if (!raw.toLowerCase().includes('chưa phân') && !raw.toLowerCase().includes('hết hàng')) {
-        // Split by comma or semicolon FIRST to evaluate each shelf segment independently
-        const segments = raw.includes(',') ? raw.split(',') : (raw.includes(';') ? raw.split(';') : [raw]);
-        const result: PartLocationStock[] = [];
-        let allocatedQty = 0;
+    let currentSum = Array.from(mergedMap.values()).reduce((s, i) => s + i.quantity, 0);
 
-        for (const seg of segments) {
-          const trimmed = seg.trim();
-          if (!trimmed) continue;
-
-          // Check format "H02 (1.670)" or "Kệ A1 (500)"
-          const match = trimmed.match(/^(.+?)\s*\(([\d\.\,\s]+)\)$/);
-          if (match) {
-            const rawShelfName = match[1].trim();
-            const cleanShelfName = cleanWarehousePrefix(rawShelfName) || rawShelfName;
-            const parsedQty = parseFloat(match[2].replace(/\./g, '').replace(',', '.').trim()) || 0;
-            if (parsedQty > 0 && isRealShelfLocation(cleanShelfName)) {
-              result.push({ locationName: cleanShelfName, quantity: parsedQty });
-              allocatedQty += parsedQty;
-            }
-          } else {
-            const cleanShelfName = cleanWarehousePrefix(trimmed) || trimmed;
-            if (isRealShelfLocation(cleanShelfName)) {
-              const defaultQty = segments.length === 1 ? currentStock : Math.max(1, Math.round(currentStock / segments.length));
-              result.push({ locationName: cleanShelfName, quantity: defaultQty });
-              allocatedQty += defaultQty;
-            }
-          }
-        }
-
-        if (result.length > 0) {
-          // If total allocated quantity exceeds current stock, proportionally clamp
-          if (allocatedQty > currentStock) {
-            let excess = allocatedQty - currentStock;
-            for (let j = result.length - 1; j >= 0; j--) {
-              if (excess <= 0) break;
-              const deduct = Math.min(result[j].quantity, excess);
-              result[j].quantity -= deduct;
-              excess -= deduct;
-            }
-          }
-          const validResult = result.filter((r) => r.quantity > 0);
-          if (validResult.length > 0) {
-            part.locations = validResult;
-            return validResult;
+    // If primary source sum is less than currentStock, supplement with remaining shelves from secondary sources
+    if (currentSum < currentStock) {
+      let unallocated = currentStock - currentSum;
+      const secondaryCandidates = [...fromLocationsArr, ...fromLocationStr];
+      for (const cand of secondaryCandidates) {
+        if (unallocated <= 0) break;
+        const key = normalizeShelfKey(cand.locationName) || cand.locationName.toLowerCase();
+        if (!mergedMap.has(key)) {
+          const addQty = Math.min(cand.quantity, unallocated);
+          if (addQty > 0) {
+            mergedMap.set(key, { locationName: cand.locationName, quantity: addQty });
+            unallocated -= addQty;
           }
         }
       }
     }
 
-    // 4. Return empty array [] if no real shelf locations are assigned
+    const finalResult = Array.from(mergedMap.values()).filter((r) => r.quantity > 0);
+    if (finalResult.length > 0) {
+      // Clamp if sum exceeds currentStock
+      const totalAllocated = finalResult.reduce((s, r) => s + r.quantity, 0);
+      if (totalAllocated > currentStock) {
+        let excess = totalAllocated - currentStock;
+        for (let j = finalResult.length - 1; j >= 0; j--) {
+          if (excess <= 0) break;
+          const deduct = Math.min(finalResult[j].quantity, excess);
+          finalResult[j].quantity -= deduct;
+          excess -= deduct;
+        }
+      }
+      const validFinal = finalResult.filter((r) => r.quantity > 0);
+      if (validFinal.length > 0) {
+        part.locations = validFinal;
+        return validFinal;
+      }
+    }
+
     return [];
   },
 
@@ -1381,8 +1835,7 @@ export const storageService = {
 
     const txs = this.getTransactions();
     txs.push(newTx);
-    this.saveTransactions(txs);
-    supabaseRelationalStore.insertTransaction(newTx);
+    this.saveTransactions(txs, [newTx]);
 
     return newTx;
   },
@@ -1457,7 +1910,7 @@ export const storageService = {
     this.saveParts(updatedParts);
 
     const allTxs = [...newTxs, ...txs];
-    this.saveTransactions(allTxs);
+    this.saveTransactions(allTxs, newTxs);
 
     return newTxs;
   },
@@ -1602,7 +2055,7 @@ export const storageService = {
     this.saveParts(updatedParts);
 
     const allTxs = [...newTxs, ...txs];
-    this.saveTransactions(allTxs);
+    this.saveTransactions(allTxs, newTxs);
 
     const updatedQueue = [...newQueueItems, ...queue];
     this.saveKittingQueue(updatedQueue);
@@ -1739,8 +2192,7 @@ export const storageService = {
 
     const txs = this.getTransactions();
     txs.push(newTx);
-    this.saveTransactions(txs);
-    supabaseRelationalStore.insertTransaction(newTx);
+    this.saveTransactions(txs, [newTx]);
 
     // Automatically trigger Kitting Queue item for pre-assembly processing!
     try {
@@ -1917,20 +2369,11 @@ export const storageService = {
       }
     }
 
-    // 1 single atomic save to disk & memory
-    this.saveParts(parts);
-    this.saveTransactions(txs);
-    this.saveKittingQueue(queue);
-
-    // Asynchronous cloud sync in batch calls
+    // 1 single atomic save to disk & memory (chỉ đẩy đúng các linh kiện và giao dịch mới phát sinh)
     const affectedPartsList = Array.from(affectedPartsMap.values());
-    if (affectedPartsList.length > 0) {
-      supabaseRelationalStore.upsertParts(affectedPartsList).catch(() => {});
-    }
-    if (createdTxs.length > 0) {
-      supabaseRelationalStore.upsertTransactions(createdTxs).catch(() => {});
-    }
-    supabaseKeyStore.set(STORAGE_KEYS.KITTING_QUEUE, queue).catch(() => {});
+    this.saveParts(parts, affectedPartsList);
+    this.saveTransactions(txs, createdTxs);
+    this.saveKittingQueue(queue);
 
     return { transactions: createdTxs, updatedParts: affectedPartsList };
   },
@@ -2016,8 +2459,7 @@ export const storageService = {
 
     const txs = this.getTransactions();
     txs.push(newTx);
-    this.saveTransactions(txs);
-    supabaseRelationalStore.insertTransaction(newTx);
+    this.saveTransactions(txs, [newTx]);
 
     return { updatedPart, transaction: newTx };
   },
@@ -2087,7 +2529,7 @@ export const storageService = {
 
       const txs = this.getTransactions();
       txs.push(adjustmentTx);
-      this.saveTransactions(txs);
+      this.saveTransactions(txs, [adjustmentTx]);
     }
 
     return { checkRecord, adjustmentTx };
@@ -3422,7 +3864,7 @@ export const storageService = {
     this.saveParts(updatedParts);
 
     const allTxs = [...newTxs, ...txs];
-    this.saveTransactions(allTxs);
+    this.saveTransactions(allTxs, newTxs);
 
     this.saveKittingQueue(queue);
 
@@ -4151,10 +4593,13 @@ export const storageService = {
   },
 
   async fetchMaterialCallsFromCloud(forceFetch: boolean = false): Promise<MaterialCallRequest[]> {
-    // 1. Fetch deleted call IDs from Supabase first so this device immediately knows any deleted requests!
+    // 1. Fetch deleted call IDs using smart timestamp check (0 JSONB egress if unchanged)
     const deletedIds = await this.fetchDeletedCallIdsFromCloud();
     try {
-      const remoteCalls = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: forceFetch });
+      const remoteCalls = await supabaseRelationalStore.selectActiveMaterialCalls({
+        forceFresh: forceFetch,
+        limit: 300,
+      });
       if (remoteCalls && Array.isArray(remoteCalls)) {
         const localCalls = this.getMaterialCallRequests();
         const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
@@ -4194,7 +4639,10 @@ export const storageService = {
             (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
           );
 
-        this.saveMaterialCallRequests(merged);
+        // Chỉ cập nhật bộ nhớ đệm cục bộ, tuyệt đối KHÔNG ghi ngược toàn bộ mảng lên Cloud khi vừa tải về!
+        const nowIso = new Date().toISOString();
+        safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
+        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
         return merged;
       }
       return this.getMaterialCallRequests();
@@ -4206,28 +4654,31 @@ export const storageService = {
   saveMaterialCallRequests(reqs: MaterialCallRequest[]): void {
     const deletedIds = this.getDeletedCallIds();
     const cleanReqs = reqs.filter((r) => r && r.requestId && !deletedIds.has(r.requestId));
+    const nowIso = new Date().toISOString();
     safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(cleanReqs));
-    supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, cleanReqs);
+    setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanReqs, nowIso);
+    // Đưa vào hàng đợi Debounce 400ms để tránh bắn nhiều lệnh ghi đè mảng lớn liên tiếp
+    pendingMaterialCallsSnapshot = cleanReqs;
+    scheduleDebouncedWriteFlush();
   },
 
+  /**
+   * Đồng bộ đơn gọi hàng Andon theo `requestId` với cơ chế kiểm tra timestamp nhẹ (~50B),
+   * không tải lại toàn bộ lịch sử nếu Cloud không có thay đổi mới hơn.
+   */
   async syncMaterialCallToCloud(targetCall: MaterialCallRequest): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return true;
 
-      const deletedIds = await this.fetchDeletedCallIdsFromCloud();
+      const deletedIds = this.getDeletedCallIds();
       if (deletedIds.has(targetCall.requestId)) {
         return true;
       }
 
-      // 1. Fetch current cloud array from Supabase directly
-      const { data: row } = await client
-        .from('thekho_app_data')
-        .select('data')
-        .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
-        .maybeSingle();
-
-      const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
+      // Sử dụng supabaseKeyStore.get (chỉ kiểm tra updated_at ~50B nếu cache đã mới nhất, tránh kéo toàn bộ JSONB)
+      const cloudCallsRaw = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS);
+      const cloudCalls: MaterialCallRequest[] = Array.isArray(cloudCallsRaw) ? cloudCallsRaw : [];
       const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
       const map = new Map<string, MaterialCallRequest>();
 
@@ -4237,7 +4688,6 @@ export const storageService = {
         }
       }
 
-      // Merge local calls with status hierarchy
       const localCalls = this.getMaterialCallRequests();
       for (const loc of localCalls) {
         if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
@@ -4260,7 +4710,7 @@ export const storageService = {
         }
       }
 
-      // Ensure targetCall is set with highest status guarantee
+      // Cập nhật đúng bản ghi theo `requestId` với bảo toàn trạng thái cao nhất
       const exTarget = map.get(targetCall.requestId);
       if (exTarget) {
         const wEx = statusWeights[exTarget.status] || 0;
@@ -4284,22 +4734,11 @@ export const storageService = {
           (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
         );
 
-      // Save locally and update Supabase with exact timestamp
       const nowIso = new Date().toISOString();
       safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
       setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
-
-      const { error: upsertErr } = await client
-        .from('thekho_app_data')
-        .upsert(
-          { key: STORAGE_KEYS.MATERIAL_CALLS, data: merged, updated_at: nowIso },
-          { onConflict: 'key' }
-        );
-
-      if (upsertErr) {
-        console.warn('[syncMaterialCallToCloud] Upsert error:', upsertErr);
-        return false;
-      }
+      pendingMaterialCallsSnapshot = merged;
+      scheduleDebouncedWriteFlush();
       return true;
     } catch (err) {
       console.warn('[syncMaterialCallToCloud] Catch error:', err);
@@ -4608,39 +5047,9 @@ export const storageService = {
       }
       reqs.splice(idx, 1);
     }
+    // Lưu và đẩy qua hàng đợi Debounce mà không cần tải lại toàn bộ mảng MATERIAL_CALLS từ Cloud
     this.saveMaterialCallRequests(reqs);
-
-    // CRITICAL: Force push deletion to Supabase Cloud directly so all other devices see it removed immediately on sync
-    try {
-      const { client, isConfigured } = getActiveSupabaseClient();
-      if (isConfigured && client) {
-        const nowIso = new Date().toISOString();
-        const deletedIds = this.getDeletedCallIds();
-        deletedIds.add(requestId);
-
-        const { data: row } = await client
-          .from('thekho_app_data')
-          .select('data')
-          .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
-          .maybeSingle();
-
-        const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
-        const cleanCloudCalls = cloudCalls.filter(
-          (c) => c && c.requestId && !deletedIds.has(c.requestId)
-        );
-
-        await client
-          .from('thekho_app_data')
-          .upsert(
-            { key: STORAGE_KEYS.MATERIAL_CALLS, data: cleanCloudCalls, updated_at: nowIso },
-            { onConflict: 'key' }
-          );
-
-        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanCloudCalls, nowIso);
-      }
-    } catch (e) {
-      console.warn('[deleteMaterialCallRequest] Cloud push notice:', e);
-    }
+    await flushWriteQueueToSupabase();
   },
 
   async clearAllCallingRequests(): Promise<void> {
@@ -4651,36 +5060,7 @@ export const storageService = {
     }
     const remaining = reqs.filter((r) => r.status !== 'CALLING');
     this.saveMaterialCallRequests(remaining);
-
-    try {
-      const { client, isConfigured } = getActiveSupabaseClient();
-      if (isConfigured && client) {
-        const nowIso = new Date().toISOString();
-        const deletedIds = this.getDeletedCallIds();
-
-        const { data: row } = await client
-          .from('thekho_app_data')
-          .select('data')
-          .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
-          .maybeSingle();
-
-        const cloudCalls: MaterialCallRequest[] = (row && Array.isArray(row.data)) ? row.data : [];
-        const cleanCloud = cloudCalls.filter(
-          (c) => c && c.requestId && !deletedIds.has(c.requestId) && c.status !== 'CALLING'
-        );
-
-        await client
-          .from('thekho_app_data')
-          .upsert(
-            { key: STORAGE_KEYS.MATERIAL_CALLS, data: cleanCloud, updated_at: nowIso },
-            { onConflict: 'key' }
-          );
-
-        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanCloud, nowIso);
-      }
-    } catch (e) {
-      console.warn('[clearAllCallingRequests] Cloud push notice:', e);
-    }
+    await flushWriteQueueToSupabase();
   },
 
   rollbackMaterialCallStatus(requestId: string, targetStatus: 'CALLING' | 'DELIVERING'): MaterialCallRequest {
@@ -4820,14 +5200,21 @@ export const storageService = {
     let restoredVouchers = 0;
     let restoredQueueItems = 0;
 
+    // Giới hạn phạm vi ngày/tuần hiện tại (mặc định 7 ngày)
+    const days = options?.daysLimit && options.daysLimit > 0 ? options.daysLimit : 7;
+    const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000;
+
     let txs = this.getTransactions();
-    // Nếu trong RAM chưa có, tải giao dịch trực tiếp từ Supabase Relational Table
+    // Nếu trong RAM chưa có, chỉ truy vấn các giao dịch trong phạm vi `daysLimit` ngày gần nhất (không bao giờ gọi selectAllTransactions)
     if (!txs || txs.length === 0) {
       try {
-        const cloudTxs = await supabaseRelationalStore.selectAllTransactions();
-        if (cloudTxs && cloudTxs.length > 0) {
-          txs = cloudTxs;
-          inMemoryTransactions = cloudTxs;
+        const recentTxs = await supabaseRelationalStore.selectTransactions({
+          startDate: new Date(cutoffTime).toISOString(),
+          limit: 200,
+        });
+        if (recentTxs && recentTxs.length > 0) {
+          txs = recentTxs;
+          inMemoryTransactions = recentTxs;
         }
       } catch (_) {}
     }
@@ -4839,10 +5226,6 @@ export const storageService = {
     const vouchers = this.getBomExportVouchers();
     const queue = this.getKittingQueue();
     const modelBoms = this.getModelBOMs();
-
-    // Giới hạn phạm vi ngày/tuần hiện tại (mặc định 7 ngày)
-    const days = options?.daysLimit && options.daysLimit > 0 ? options.daysLimit : 7;
-    const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000;
 
     // Tìm các giao dịch xuất theo BOM trong phạm vi thời gian chỉ định
     const bomTxs = txs.filter((t) => {
@@ -5998,30 +6381,68 @@ export const storageService = {
       await this.fetchMaterialCallsFromCloud(forceFetch);
 
       // 2. Data is already written to localStorage by batchSyncAllKeys for all changed keys!
+      // Ensure full warehouse locations list (>1000 shelves) is loaded from settings relational fallback if needed
+      const currentSettings = this.getSettings();
+      if (!currentSettings.locations || currentSettings.locations.length <= 4) {
+        const relSettings = await supabaseRelationalStore.selectSettings();
+        if (relSettings && Array.isArray(relSettings.locations) && relSettings.locations.length > currentSettings.locations.length) {
+          this.saveSettings(relSettings);
+        }
+      }
+
       // Retrieve parts directly from localStorage, fallback to relational table if brand new
       parts = this.getParts();
       if (!parts || parts.length === 0) {
-        const relParts = await supabaseRelationalStore.selectParts({ limit: 500 });
+        const relParts = await supabaseRelationalStore.selectParts({ limit: 2000 });
         if (relParts !== null && relParts.length > 0) {
           parts = relParts;
           this.saveParts(parts);
         }
       }
 
-      // 3. Transactions are kept in RAM and fetched on-demand from Supabase, NEVER in localStorage
+      // 3. LIGHTWEIGHT RECONCILE LEDGER + INCREMENTAL SYNC CHO TRANSACTIONS:
+      // - Lần khởi động đầu tiên (hoặc khi RAM rỗng): nạp sổ cái tinh gọn (selectReconcileTransactions với RAM TTL Cache 5 phút, không dùng SELECT *)
+      //   để đảm bảo đối soát chính xác 100% vị trí kệ "Có hàng" trên Sơ đồ kho và tồn kho thực tế của toàn bộ linh kiện.
+      // - Các lần đồng bộ tiếp theo: chỉ tải gia tăng (Incremental Sync) các giao dịch mới có `date > lastSyncedTransactionTimestamp`.
       try {
         localStorage.removeItem(TRANSACTIONS_KEY);
       } catch (_) {}
-      if (inMemoryTransactions.length === 0) {
-        let allTxs = await supabaseRelationalStore.selectAllTransactions();
-        if (!allTxs || allTxs.length === 0) {
-          const kvTxs = await supabaseKeyStore.get<Transaction[]>('thekho_transactions_v1');
-          if (kvTxs && Array.isArray(kvTxs) && kvTxs.length > 0) {
-            allTxs = kvTxs;
+
+      if (!hasLoadedFullReconcileLedger || inMemoryTransactions.length === 0) {
+        const reconcileTxs = await supabaseRelationalStore.selectReconcileTransactions({ forceFresh: forceFetch });
+        if (reconcileTxs && reconcileTxs.length > 0) {
+          inMemoryTransactions = [...reconcileTxs].sort(
+            (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+          );
+          hasLoadedFullReconcileLedger = true;
+          const newestDate = inMemoryTransactions[0]?.date;
+          if (newestDate) {
+            lastSyncedTransactionTimestamp = newestDate;
           }
+          invalidateBinCardHistoryCache();
         }
-        if (allTxs && allTxs.length > 0) {
-          inMemoryTransactions = allTxs;
+      } else {
+        const deltaTxs = await supabaseRelationalStore.selectIncrementalTransactions({
+          sinceIso: lastSyncedTransactionTimestamp || undefined,
+          limit: 200,
+        });
+
+        if (deltaTxs && deltaTxs.length > 0) {
+          const txMap = new Map<string, Transaction>();
+          for (const existing of inMemoryTransactions) {
+            if (existing && existing.id) txMap.set(existing.id, existing);
+          }
+          for (const incoming of deltaTxs) {
+            if (incoming && incoming.id) txMap.set(incoming.id, incoming);
+          }
+          inMemoryTransactions = Array.from(txMap.values()).sort(
+            (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+          );
+          const newestDate = inMemoryTransactions[0]?.date;
+          if (newestDate) {
+            lastSyncedTransactionTimestamp = newestDate;
+          }
+          invalidateBinCardHistoryCache();
         }
       }
       transactions = inMemoryTransactions;
@@ -6071,7 +6492,6 @@ export const storageService = {
       this.saveSettings(this.getSettings());
       this.saveUsers(this.getUsers());
       this.saveParts(this.getParts());
-      this.saveTransactions(this.getTransactions());
       this.saveContainerBatches(this.getContainerBatches());
       this.saveModelBOMs(this.getModelBOMs());
       this.saveKittingQueue(this.getKittingQueue());
@@ -6082,6 +6502,7 @@ export const storageService = {
       this.saveConversionFactors(this.getConversionFactors());
       this.saveProductivityPersonnelConfig(this.getProductivityPersonnelConfig());
       this.saveCustomGeneratedContainerTags(this.getCustomGeneratedContainerTags());
+      await flushWriteQueueToSupabase();
 
       return {
         success: true,
@@ -6464,15 +6885,13 @@ export const storageService = {
 
       const { data, error } = await query;
       if (error || !data || data.length === 0) {
-        // Fallback to cloud Key-Value table if relational table is empty
-        const cloudPayload = await supabaseKeyStore.get<Transaction[]>(STORAGE_KEYS.TRANSACTIONS, { forceFresh: true });
-        if (cloudPayload && Array.isArray(cloudPayload)) {
-          if (options?.partCode) {
-            return cloudPayload.filter((t) => t.partCode.toLowerCase() === options.partCode!.toLowerCase());
-          }
-          return cloudPayload.slice(0, limit);
+        // Tuyệt đối KHÔNG fallback sang supabaseKeyStore.get(STORAGE_KEYS.TRANSACTIONS, { forceFresh: true })
+        // để tránh tải cục dữ liệu Key-Value khổng lồ gây tốn băng thông Egress.
+        if (options?.partCode) {
+          const targetCode = options.partCode.trim().toLowerCase();
+          return this.getTransactions().filter((t) => t.partCode.trim().toLowerCase() === targetCode);
         }
-        return this.getTransactions();
+        return [];
       }
 
       const mapped = (data || []).map(mapSupabaseRowToTransaction);

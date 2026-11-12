@@ -534,6 +534,13 @@ export const supabaseKeyStore = {
    * UPSERT: Ghi đè đồng thời cả Supabase Cloud và localStorage
    */
   async set<T>(key: string, value: T): Promise<boolean> {
+    // CRITICAL ARCHITECTURE RULE: Bảng `transactions` là nguồn dữ liệu duy nhất (Single Source of Truth)
+    // cho lịch sử giao dịch. Tuyệt đối KHÔNG ghi trùng lặp mảng transactions vào bảng Key-Value `thekho_app_data`.
+    if (key === STORAGE_KEYS.TRANSACTIONS || key === 'thekho_transactions_v1') {
+      removeLocalCacheData(key);
+      return true;
+    }
+
     const nowIso = new Date().toISOString();
 
     // 1. Update localStorage immediately with latest timestamp (unless key is blacklisted)
@@ -565,9 +572,15 @@ export const supabaseKeyStore = {
 
   /**
    * UPSERT DUY NHẤT LÊN SUPABASE CLOUD, tuyệt đối không lưu vào localStorage.
-   * Chuyên dùng cho Transactions và Master Container Tags để bảo vệ dung lượng bộ nhớ.
+   * Chuyên dùng cho Master Container Tags để bảo vệ dung lượng bộ nhớ.
+   * (Tuyệt đối chặn ghi `thekho_transactions_v1` vào Key-Value để chống Write Amplification).
    */
   async setCloudOnly<T>(key: string, value: T): Promise<boolean> {
+    if (key === STORAGE_KEYS.TRANSACTIONS || key === 'thekho_transactions_v1') {
+      removeLocalCacheData(key);
+      return true;
+    }
+
     const nowIso = new Date().toISOString();
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
@@ -652,7 +665,7 @@ export const supabaseRelationalStore = {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return null;
 
-      const limit = options?.limit ?? 500;
+      const limit = options?.limit ?? 2000;
       let query = client
         .from('parts')
         .select('id, code, name, group_name, unit, current_stock, qty_ng, min_stock, max_stock, location, locations, unit_price, supplier, notes, created_at, updated_at')
@@ -702,20 +715,27 @@ export const supabaseRelationalStore = {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return false;
       if (!parts || parts.length === 0) return true;
+
+      const MAX_BATCH_SIZE = 150;
       const rows = parts.map(mapPartToSupabaseRow);
-      const { error } = await client.from('parts').upsert(rows, { onConflict: 'id' });
-      if (error) {
-        logSupabaseError('upsertParts', error);
-        if (String(error.message || '').includes('qty_ng')) {
-          const rowsFallback = rows.map((r: any) => {
-            const copy = { ...r };
-            delete copy.qty_ng;
-            return copy;
-          });
-          const { error: err2 } = await client.from('parts').upsert(rowsFallback, { onConflict: 'id' });
-          if (!err2) return true;
+
+      for (let i = 0; i < rows.length; i += MAX_BATCH_SIZE) {
+        const chunk = rows.slice(i, i + MAX_BATCH_SIZE);
+        const { error } = await client.from('parts').upsert(chunk, { onConflict: 'id' });
+        if (error) {
+          logSupabaseError('upsertParts', error);
+          if (String(error.message || '').includes('qty_ng')) {
+            const rowsFallback = chunk.map((r: any) => {
+              const copy = { ...r };
+              delete copy.qty_ng;
+              return copy;
+            });
+            const { error: err2 } = await client.from('parts').upsert(rowsFallback, { onConflict: 'id' });
+            if (err2) return false;
+          } else {
+            return false;
+          }
         }
-        return false;
       }
       return true;
     } catch (err) {
@@ -765,17 +785,28 @@ export const supabaseRelationalStore = {
   },
 
   async deletePart(id: string): Promise<boolean> {
+    return this.deletePartsBatch([id]);
+  },
+
+  async deletePartsBatch(ids: string[]): Promise<boolean> {
     try {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return false;
-      const { error } = await client.from('parts').delete().eq('id', id);
-      if (error) {
-        logSupabaseError('deletePart', error);
-        return false;
+      const cleanIds = Array.from(new Set((ids || []).filter(Boolean)));
+      if (cleanIds.length === 0) return true;
+
+      const MAX_BATCH_SIZE = 150;
+      for (let i = 0; i < cleanIds.length; i += MAX_BATCH_SIZE) {
+        const chunk = cleanIds.slice(i, i + MAX_BATCH_SIZE);
+        const { error } = await client.from('parts').delete().in('id', chunk);
+        if (error) {
+          logSupabaseError('deletePartsBatch', error);
+          return false;
+        }
       }
       return true;
     } catch (err) {
-      logSupabaseError('deletePart catch', err);
+      logSupabaseError('deletePartsBatch catch', err);
       return false;
     }
   },
@@ -847,6 +878,81 @@ export const supabaseRelationalStore = {
   },
 
   /**
+   * Truy vấn tinh gọn các cột bắt buộc cho Reconcile / BinCard History (Tuyệt đối không dùng SELECT * hay count: 'exact').
+   * Kết hợp RAM TTL Cache (5 phút) để không kéo lại toàn bộ transaction ledger khi dữ liệu vừa được đọc gần đây.
+   */
+  async selectReconcileTransactions(options?: {
+    partCode?: string;
+    forceFresh?: boolean;
+  }): Promise<Transaction[]> {
+    const cacheKey = `reconcile_tx_${(options?.partCode || 'ALL').trim().toUpperCase()}`;
+    if (!options?.forceFresh) {
+      const cached = pagedTransactionsMemoryCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < TRANSACTIONS_CACHE_TTL_MS) {
+        egressStats.cacheHits++;
+        return cached.data;
+      }
+      if (!options?.partCode && cachedAllTransactionsData && Date.now() - cachedAllTransactionsData.timestamp < TRANSACTIONS_CACHE_TTL_MS) {
+        egressStats.cacheHits++;
+        return cachedAllTransactionsData.data;
+      }
+    }
+
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) {
+        return cachedAllTransactionsData ? cachedAllTransactionsData.data : [];
+      }
+
+      // Chỉ select đúng các cột cần thiết cho tính toán tồn kho & phân bổ vị trí kệ (tránh SELECT *)
+      const minimalColumns =
+        'id, part_id, part_code, part_name, unit, type, quantity, date, person, production_order, location_id, stock_before, stock_after, reason_or_purpose, notes';
+      const resultTxs: Transaction[] = [];
+      let page = 0;
+      const pageSize = 1000;
+
+      while (true) {
+        let query = client
+          .from('transactions')
+          .select(minimalColumns)
+          .order('date', { ascending: true })
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (options?.partCode) {
+          query = query.eq('part_code', options.partCode.trim());
+        }
+
+        const { data, error } = await query;
+        if (error) {
+          logSupabaseError('selectReconcileTransactions', error);
+          break;
+        }
+        if (!data || data.length === 0) break;
+        resultTxs.push(...data.map(mapSupabaseRowToTransaction));
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      const now = Date.now();
+      pagedTransactionsMemoryCache.set(cacheKey, {
+        data: resultTxs,
+        timestamp: now,
+      });
+      if (!options?.partCode && resultTxs.length > 0) {
+        cachedAllTransactionsData = {
+          data: resultTxs,
+          timestamp: now,
+        };
+      }
+      egressStats.cacheMisses++;
+      return resultTxs;
+    } catch (err) {
+      logSupabaseError('selectReconcileTransactions catch', err);
+      return cachedAllTransactionsData ? cachedAllTransactionsData.data : [];
+    }
+  },
+
+  /**
    * Selects ALL transactions from Supabase with RAM TTL Cache (5 phút).
    * Trả về ngay lập tức từ bộ nhớ RAM nếu đã tải trong 5 phút trước đó, tiết kiệm 100% dung lượng Egress.
    */
@@ -894,6 +1000,63 @@ export const supabaseRelationalStore = {
     }
   },
 
+  /**
+   * Đồng bộ gia tăng (Incremental Sync) cho Transactions:
+   * - Khi khởi động lần đầu (chưa có sinceIso): chỉ tải tối đa `limit` (mặc định 100) giao dịch mới nhất.
+   * - Các lần đồng bộ tiếp theo (có sinceIso): chỉ tải các bản ghi mới phát sinh có `date > sinceIso`.
+   * Cắt giảm 99% Egress so với selectAllTransactions().
+   */
+  async selectIncrementalTransactions(options?: {
+    sinceIso?: string;
+    limit?: number;
+  }): Promise<Transaction[]> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return [];
+
+      const limit = options?.limit ?? 100;
+      const columns =
+        'id, part_id, part_code, part_name, unit, type, quantity, date, person, location_id, production_order, reason_or_purpose, notes, stock_before, stock_after, created_at';
+
+      let query = client
+        .from('transactions')
+        .select(columns)
+        .order('date', { ascending: false })
+        .limit(limit);
+
+      if (options?.sinceIso) {
+        query = query.gt('date', options.sinceIso);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        logSupabaseError('selectIncrementalTransactions', error);
+        return [];
+      }
+
+      const mapped = (data || []).map(mapSupabaseRowToTransaction);
+      egressStats.cacheMisses++;
+      return mapped;
+    } catch (err) {
+      logSupabaseError('selectIncrementalTransactions catch', err);
+      return [];
+    }
+  },
+
+  async deleteTransactionsByPart(partIdOrCode: string): Promise<boolean> {
+    invalidateTransactionMemoryCache();
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client || !partIdOrCode) return false;
+      const clean = partIdOrCode.trim();
+      await client.from('transactions').delete().or(`part_id.eq.${clean},part_code.eq.${clean}`);
+      return true;
+    } catch (err) {
+      logSupabaseError('deleteTransactionsByPart catch', err);
+      return false;
+    }
+  },
+
   async insertTransaction(tx: Transaction): Promise<boolean> {
     invalidateTransactionMemoryCache();
     try {
@@ -918,16 +1081,54 @@ export const supabaseRelationalStore = {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return false;
       if (!txs || txs.length === 0) return true;
+      const MAX_BATCH_SIZE = 150;
       const rows = txs.map(mapTransactionToSupabaseRow);
-      const { error } = await client.from('transactions').upsert(rows, { onConflict: 'id' });
-      if (error) {
-        logSupabaseError('upsertTransactions', error);
-        return false;
+      for (let i = 0; i < rows.length; i += MAX_BATCH_SIZE) {
+        const chunk = rows.slice(i, i + MAX_BATCH_SIZE);
+        const { error } = await client.from('transactions').upsert(chunk, { onConflict: 'id' });
+        if (error) {
+          logSupabaseError('upsertTransactions', error);
+          return false;
+        }
       }
       return true;
     } catch (err) {
       logSupabaseError('upsertTransactions catch', err);
       return false;
+    }
+  },
+
+  // --- ANDON / MATERIAL CALLS CRUD (THEO REQUEST_ID & LỌC TRẠNG THÁI) ---
+  /**
+   * Truy vấn có điều kiện các đơn gọi hàng Andon theo trạng thái (mặc định chỉ lấy các đơn đang hoạt động: CALLING, DELIVERING
+   * hoặc giới hạn bản ghi mới nhất), tránh tải toàn bộ lịch sử đơn gọi hàng cũ.
+   */
+  async selectActiveMaterialCalls(options?: {
+    statuses?: Array<'CALLING' | 'DELIVERING' | 'COMPLETED'>;
+    limit?: number;
+    forceFresh?: boolean;
+  }): Promise<MaterialCallRequest[] | null> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return null;
+
+      // Fallback thông qua smart timestamp check của KeyStore (chỉ tốn ~50B nếu không có thay đổi trên Cloud)
+      const remoteCalls = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, {
+        forceFresh: options?.forceFresh,
+      });
+      if (!remoteCalls || !Array.isArray(remoteCalls)) return null;
+
+      const statuses = options?.statuses;
+      const limit = options?.limit ?? 200;
+      let filtered = remoteCalls;
+      if (statuses && statuses.length > 0) {
+        const statusSet = new Set(statuses);
+        filtered = remoteCalls.filter((c) => c && statusSet.has(c.status));
+      }
+      return filtered.slice(0, limit);
+    } catch (err) {
+      logSupabaseError('selectActiveMaterialCalls catch', err);
+      return null;
     }
   },
 

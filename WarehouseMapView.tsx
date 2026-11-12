@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { Part, AppSettings, WarehouseLocation } from './types';
-import { storageService, normalizeShelfKey, cleanWarehousePrefix, isRealShelfLocation } from './storage';
+import { storageService, normalizeShelfKey, getShelfKeyVariants, cleanWarehousePrefix, isRealShelfLocation } from './storage';
 import {
   MapPin,
   Plus,
@@ -223,11 +223,11 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   const locationSummaryMap = useMemo(() => {
     const map = new Map<string, { partCount: number; totalQty: number }>();
 
-    const recordKey = (key: string, qty: number) => {
+    const recordKey = (key: string, qty: number, isNewPartForKey: boolean) => {
       if (!key) return;
       const existing = map.get(key);
       if (existing) {
-        existing.partCount += 1;
+        if (isNewPartForKey) existing.partCount += 1;
         existing.totalQty += qty;
       } else {
         map.set(key, { partCount: 1, totalQty: qty });
@@ -239,21 +239,25 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
       if (stock <= 0) continue;
 
       const locs = storageService.getPartLocations(part);
+      const countedPartKeys = new Set<string>();
+
       for (const l of locs) {
         if (!l || typeof l.quantity !== 'number' || l.quantity <= 0) continue;
 
-        const recordedKeys = new Set<string>();
-        const normKey = normalizeShelfKey(l.locationName);
+        const recordedForThisLocEntry = new Set<string>();
         const strippedName = cleanWarehousePrefix(l.locationName);
-        const strippedKey = normalizeShelfKey(strippedName);
+        const allVariants = [
+          ...getShelfKeyVariants(l.locationName),
+          ...getShelfKeyVariants(strippedName),
+        ];
 
-        if (normKey) {
-          recordKey(normKey, l.quantity);
-          recordedKeys.add(normKey);
-        }
-        if (strippedKey && !recordedKeys.has(strippedKey)) {
-          recordKey(strippedKey, l.quantity);
-          recordedKeys.add(strippedKey);
+        for (const vKey of allVariants) {
+          if (vKey && !recordedForThisLocEntry.has(vKey)) {
+            const isFirstForPart = !countedPartKeys.has(vKey);
+            recordKey(vKey, l.quantity, isFirstForPart);
+            recordedForThisLocEntry.add(vKey);
+            countedPartKeys.add(vKey);
+          }
         }
 
         // Sub-compartment / compound segment support (e.g. "A01 - Tầng 1" or "2BVL - H02")
@@ -262,10 +266,18 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
           const segments = l.locationName.split(/\s*[-/]\s*/);
           for (const seg of segments) {
             const segCleaned = cleanWarehousePrefix(seg);
-            const segKey = normalizeShelfKey(segCleaned) || normalizeShelfKey(seg);
-            if (segKey && isRealShelfLocation(segCleaned || seg) && !recordedKeys.has(segKey)) {
-              recordKey(segKey, l.quantity);
-              recordedKeys.add(segKey);
+            if (!isRealShelfLocation(segCleaned || seg)) continue;
+            const segVariants = [
+              ...getShelfKeyVariants(segCleaned),
+              ...getShelfKeyVariants(seg),
+            ];
+            for (const svKey of segVariants) {
+              if (svKey && !recordedForThisLocEntry.has(svKey)) {
+                const isFirstForPart = !countedPartKeys.has(svKey);
+                recordKey(svKey, l.quantity, isFirstForPart);
+                recordedForThisLocEntry.add(svKey);
+                countedPartKeys.add(svKey);
+              }
             }
           }
         }
@@ -278,14 +290,17 @@ export const WarehouseMapView: React.FC<WarehouseMapViewProps> = ({
   // Instant O(1) summary getter
   const getLocationSummary = useCallback(
     (locName: string) => {
-      const normKey = normalizeShelfKey(locName);
-      const strippedKey = normalizeShelfKey(cleanWarehousePrefix(locName));
-      const rawKey = locName.toLowerCase().trim();
-      return (
-        locationSummaryMap.get(normKey) ||
-        locationSummaryMap.get(strippedKey) ||
-        locationSummaryMap.get(rawKey) || { partCount: 0, totalQty: 0 }
-      );
+      const strippedName = cleanWarehousePrefix(locName);
+      const candidateKeys = [
+        ...getShelfKeyVariants(locName),
+        ...getShelfKeyVariants(strippedName),
+        locName.toLowerCase().trim(),
+      ];
+      for (const k of candidateKeys) {
+        const hit = locationSummaryMap.get(k);
+        if (hit) return hit;
+      }
+      return { partCount: 0, totalQty: 0 };
     },
     [locationSummaryMap]
   );
