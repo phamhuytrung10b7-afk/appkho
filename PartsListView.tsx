@@ -39,6 +39,7 @@ interface PartsListViewProps {
   onOpenDeleteModal: (part: Part) => void;
   onOpenBinCard: (part: Part) => void;
   onRefreshParts: () => void;
+  onLocalRefresh?: () => void;
   searchTerm: string;
   onSearchChange: (value: string) => void;
 }
@@ -51,6 +52,7 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
   onOpenDeleteModal,
   onOpenBinCard,
   onRefreshParts,
+  onLocalRefresh,
   searchTerm,
   onSearchChange,
 }) => {
@@ -63,6 +65,11 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
   const [isContModalOpen, setIsContModalOpen] = useState(false);
   const [selectedSinglePartForPrint, setSelectedSinglePartForPrint] = useState<Part | null>(null);
   const [selectedPartForFifo, setSelectedPartForFifo] = useState<Part | null>(null);
+  const [isImportingExcel, setIsImportingExcel] = useState(false);
+  const [importFeedback, setImportFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
   const pageSize = 10;
 
   const [debouncedSearch, setDebouncedSearch] = useState(searchTerm);
@@ -141,47 +148,137 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
     storageService.downloadImportTemplate();
   };
 
-  const handleImportExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const inputEl = e.target;
 
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
+    setIsImportingExcel(true);
+    setImportFeedback(null);
 
-        // Parse both object array and raw array to support all Excel formats
-        const objectRows = XLSX.utils.sheet_to_json<any>(ws);
-        const rawRows = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1 });
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const wsname = wb.SheetNames[0];
+      const ws = wb.Sheets[wsname];
 
-        // Use raw array if object keys are empty or row array format fits better
-        const rowsToProcess = objectRows.length > 0 ? objectRows : rawRows;
+      const objectRows = XLSX.utils.sheet_to_json<any>(ws);
+      const rawRows = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1 });
 
-        const result = storageService.importPartsFromRows(rowsToProcess);
-
-        if (result.added === 0 && result.updated === 0) {
-          alert('Không tìm thấy dữ liệu hợp lệ trong file Excel. Vui lòng sử dụng File Mẫu!');
-        } else {
-          alert(
-            `Nhập dữ liệu thành công!\n- Thêm mới: ${result.added} linh kiện\n- Cập nhật tồn kho: ${result.updated} linh kiện`
+      // Detect whether objectRows has real recognizable headers or __EMPTY placeholders
+      const hasRecognizableHeaders =
+        objectRows.length > 0 &&
+        Object.keys(objectRows[0]).some((k) => {
+          const kl = k.trim().toLowerCase();
+          return (
+            kl === 'item' ||
+            kl === 'warehouse' ||
+            kl === 'mã linh kiện' ||
+            kl === 'mã lk' ||
+            kl === 'code' ||
+            kl === 'mã'
           );
+        });
+
+      let rowsToProcess: any[] = [];
+      if (hasRecognizableHeaders) {
+        rowsToProcess = objectRows;
+      } else {
+        // Scan rawRows (top 15 rows) for header row if file has title/blank rows above headers
+        let headerIdx = -1;
+        for (let r = 0; r < Math.min(rawRows.length, 15); r++) {
+          const row = rawRows[r];
+          if (!Array.isArray(row)) continue;
+          const hasItemHeader = row.some((cell) => {
+            const txt = String(cell ?? '').trim().toLowerCase();
+            return txt === 'item' || txt === 'mã linh kiện' || txt === 'mã lk' || txt === 'code' || txt === 'mã';
+          });
+          if (hasItemHeader) {
+            headerIdx = r;
+            break;
+          }
+        }
+
+        if (headerIdx !== -1) {
+          const headers = rawRows[headerIdx].map((h) => String(h ?? '').trim());
+          for (let r = headerIdx + 1; r < rawRows.length; r++) {
+            const arrRow = rawRows[r];
+            if (!Array.isArray(arrRow) || arrRow.every((v) => v === undefined || v === null || String(v).trim() === '')) {
+              continue;
+            }
+            const obj: Record<string, any> = {};
+            headers.forEach((h, idx) => {
+              if (h) obj[h] = arrRow[idx];
+            });
+            rowsToProcess.push(obj);
+          }
+        } else {
+          rowsToProcess = objectRows.length > 0 ? objectRows : rawRows;
+        }
+      }
+
+      const result = await storageService.importPartsFromRowsAndSync(rowsToProcess);
+
+      if (result.added === 0 && result.updated === 0) {
+        setImportFeedback({
+          type: 'error',
+          text: result.message || 'Không tìm thấy dữ liệu hợp lệ trong file Excel. Vui lòng kiểm tra lại cột Item (Mã linh kiện) hoặc sử dụng Mẫu Excel!',
+        });
+      } else {
+        if (result.cloudSynced) {
+          setImportFeedback({
+            type: 'success',
+            text: `Import thành công & đã đồng bộ Supabase Cloud! (Thêm mới: ${result.added} linh kiện, Cập nhật: ${result.updated} linh kiện)`,
+          });
+        } else {
+          setImportFeedback({
+            type: 'warning',
+            text: `Đã thêm mới ${result.added} và cập nhật ${result.updated} linh kiện tại máy, nhưng đồng bộ Supabase Cloud chưa hoàn tất: ${result.message || ''}`,
+          });
+        }
+        // Refresh UI state immediately after cloud sync completes
+        if (onLocalRefresh) {
+          onLocalRefresh();
+        } else {
           onRefreshParts();
         }
-      } catch (err) {
-        console.error(err);
-        alert('Có lỗi xảy ra khi đọc tệp Excel. Vui lòng chọn đúng file Excel!');
-      } finally {
-        e.target.value = ''; // Reset input
       }
-    };
-    reader.readAsBinaryString(file);
+    } catch (err: any) {
+      console.error(err);
+      setImportFeedback({
+        type: 'error',
+        text: `Có lỗi xảy ra khi đọc tệp Excel: ${err?.message || 'Vui lòng chọn đúng file Excel!'}`,
+      });
+    } finally {
+      setIsImportingExcel(false);
+      inputEl.value = '';
+    }
   };
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
+      {importFeedback && (
+        <div
+          className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-xs font-bold shadow-xs ${
+            importFeedback.type === 'success'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+              : importFeedback.type === 'warning'
+              ? 'bg-amber-50 border-amber-300 text-amber-800'
+              : 'bg-rose-50 border-rose-300 text-rose-800'
+          }`}
+        >
+          <span>{importFeedback.text}</span>
+          <button
+            type="button"
+            onClick={() => setImportFeedback(null)}
+            className="p-1 rounded-lg hover:bg-black/5 cursor-pointer shrink-0"
+            title="Đóng thông báo"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Top Header & Actions */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
         <div>
@@ -206,10 +303,22 @@ export const PartsListView: React.FC<PartsListViewProps> = ({
           </button>
 
           {/* Import Excel */}
-          <label className="flex items-center space-x-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-semibold cursor-pointer border border-blue-200 transition-colors">
-            <Upload className="w-4 h-4 text-blue-600" />
-            <span>Import Excel</span>
-            <input type="file" accept=".xlsx, .xls, .csv" onChange={handleImportExcel} className="hidden" />
+          <label
+            className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-colors ${
+              isImportingExcel
+                ? 'bg-blue-100 text-blue-600 border-blue-300 cursor-wait opacity-75'
+                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200 cursor-pointer'
+            }`}
+          >
+            <Upload className={`w-4 h-4 text-blue-600 ${isImportingExcel ? 'animate-bounce' : ''}`} />
+            <span>{isImportingExcel ? 'Đang Import & Đồng Bộ...' : 'Import Excel'}</span>
+            <input
+              type="file"
+              accept=".xlsx, .xls, .csv"
+              disabled={isImportingExcel}
+              onChange={handleImportExcel}
+              className="hidden"
+            />
           </label>
 
           {/* Export Excel */}

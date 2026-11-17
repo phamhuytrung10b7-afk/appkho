@@ -73,6 +73,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
   const [activeTab, setActiveTab] = useState<'request' | 'calling' | 'delivering' | 'history'>(getInitialTab);
   const [isPullingCloud, setIsPullingCloud] = useState(false);
+  const [syncingRequestIds, setSyncingRequestIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (viewMode === 'andon_request') setActiveTab('request');
@@ -561,7 +562,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     isDirectKitting = true;
   }
 
-  const handleCreateCallRequest = (e: React.FormEvent) => {
+  const handleCreateCallRequest = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedPartCode) {
@@ -588,7 +589,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
 
     try {
-      const newReq = storageService.createMaterialCallRequest({
+      const { newReq, cloudSynced } = await storageService.createMaterialCallRequestAndSync({
         assemblyLine,
         partCode: selectedPartCode,
         partName: partName || selectedPartCode,
@@ -622,10 +623,17 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         ? `Đã trừ ${requestedQty} ${unit} trong Danh Sách Chờ Bóc Tách (Giao trực tiếp qua DCLR)`
         : `Đã trừ ${requestedQty} ${unit} trên kệ Outbuffer ${targetBufferLocation}`;
 
-      setMessage({
-        type: 'success',
-        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công! ${deductInfo}. Bạn có thể tiếp tục gọi linh kiện khác bên dưới.`,
-      });
+      if (cloudSynced) {
+        setMessage({
+          type: 'success',
+          text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${selectedPartCode}] thành công & đồng bộ Supabase Cloud! ${deductInfo}. Bạn có thể tiếp tục gọi linh kiện khác bên dưới.`,
+        });
+      } else {
+        setMessage({
+          type: 'error',
+          text: `⚠️ Đã tạo đơn gọi [${selectedPartCode}] tại máy nhưng CHƯA ĐỒNG BỘ ĐƯỢC LÊN SUPABASE CLOUD! Vui lòng kiểm tra mạng và bấm "Đồng Bộ Supabase Cloud".`,
+        });
+      }
 
       // Display prominent success popup modal for mobile & desktop confirmation
       setCallSuccessModalData({
@@ -644,7 +652,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
   };
 
-  const handleConfirmAndonFromModal = () => {
+  const handleConfirmAndonFromModal = async () => {
     if (!andonModalData) return;
     const { partCode, partName, unit, isKitted, recommendedLocation, availableBuffers, kittedStockQty, pendingRawQty } = andonModalData;
     const targetLine = assemblyLine || 'DCLR';
@@ -675,7 +683,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     }
 
     try {
-      const newReq = storageService.createMaterialCallRequest({
+      const { newReq, cloudSynced } = await storageService.createMaterialCallRequestAndSync({
         assemblyLine: targetLine,
         partCode: partCode,
         partName: partName || partCode,
@@ -709,10 +717,17 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
         ? `Đã trừ ${requestedQty} ${unit} trong Danh Sách Chờ Bóc Tách (Giao trực tiếp qua DCLR)`
         : `Đã trừ ${requestedQty} ${unit} trên kệ Outbuffer ${chosenPickLocation}`;
 
-      setMessage({
-        type: 'success',
-        text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${partCode}] thành công! ${deductDetail}. Vị trí giao: ${targetLine}`,
-      });
+      if (cloudSynced) {
+        setMessage({
+          type: 'success',
+          text: `🚀 Đã phát tín hiệu ANDON gọi mã linh kiện [${partCode}] thành công & đồng bộ Supabase Cloud! ${deductDetail}. Vị trí giao: ${targetLine}`,
+        });
+      } else {
+        setMessage({
+          type: 'error',
+          text: `⚠️ Đã tạo đơn gọi [${partCode}] tại máy nhưng CHƯA ĐỒNG BỘ ĐƯỢC LÊN SUPABASE CLOUD! Vui lòng kiểm tra mạng và bấm "Đồng Bộ Supabase Cloud".`,
+        });
+      }
 
       // Open Success Confirmation Modal for mobile clarity
       setCallSuccessModalData({
@@ -731,30 +746,58 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   };
 
   const handleStartDelivery = async (requestId: string) => {
+    if (syncingRequestIds.includes(requestId)) return;
+    setSyncingRequestIds((prev) => [...prev, requestId]);
     try {
-      const updated = storageService.updateMaterialCallStatus(requestId, 'DELIVERING', delivererName);
-      await storageService.syncMaterialCallToCloud(updated);
-      setMessage({
-        type: 'success',
-        text: `🚚 Đã nhận đơn giao [${updated.partCode}] (${updated.requestedQty.toLocaleString('vi-VN')} ${updated.unit}) thành công! Đơn hàng đã chuyển sang mục "Đang trên đường vận chuyển" và đồng bộ Supabase Cloud.`,
-      });
+      const { updated, cloudSynced } = await storageService.updateMaterialCallStatusAndSync(
+        requestId,
+        'DELIVERING',
+        delivererName
+      );
+      if (cloudSynced) {
+        setMessage({
+          type: 'success',
+          text: `🚚 Đã nhận đơn giao [${updated.partCode}] (${updated.requestedQty.toLocaleString('vi-VN')} ${updated.unit}) thành công! Đơn hàng đã chuyển sang mục "Đang trên đường vận chuyển" và đồng bộ Supabase Cloud.`,
+        });
+      } else {
+        setMessage({
+          type: 'error',
+          text: `⚠️ Đã chuyển đơn [${updated.partCode}] tại máy nhưng CHƯA ĐỒNG BỘ ĐƯỢC LÊN SUPABASE CLOUD (lỗi kết nối/mạng)! Các máy khác sẽ vẫn thấy đơn đang chờ nhận. Vui lòng kiểm tra mạng và bấm "Đồng Bộ Supabase Cloud" ngay!`,
+        });
+      }
       onRefresh();
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
+    } finally {
+      setSyncingRequestIds((prev) => prev.filter((id) => id !== requestId));
     }
   };
 
   const handleCompleteDelivery = async (requestId: string) => {
+    if (syncingRequestIds.includes(requestId)) return;
+    setSyncingRequestIds((prev) => [...prev, requestId]);
     try {
-      const updated = storageService.updateMaterialCallStatus(requestId, 'COMPLETED', delivererName);
-      await storageService.syncMaterialCallToCloud(updated);
-      setMessage({
-        type: 'success',
-        text: `🎉 Xác nhận Giao Hàng Thành Công đơn [${updated.partCode}]! Đã hoàn tất và đồng bộ Supabase Cloud.`,
-      });
+      const { updated, cloudSynced } = await storageService.updateMaterialCallStatusAndSync(
+        requestId,
+        'COMPLETED',
+        delivererName
+      );
+      if (cloudSynced) {
+        setMessage({
+          type: 'success',
+          text: `🎉 Xác nhận Giao Hàng Thành Công đơn [${updated.partCode}]! Đã hoàn tất và đồng bộ Supabase Cloud.`,
+        });
+      } else {
+        setMessage({
+          type: 'error',
+          text: `⚠️ Đã xác nhận giao đơn [${updated.partCode}] tại máy nhưng CHƯA ĐỒNG BỘ ĐƯỢC LÊN SUPABASE CLOUD! Vui lòng kiểm tra mạng và bấm "Đồng Bộ Supabase Cloud" ngay!`,
+        });
+      }
       onRefresh();
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
+    } finally {
+      setSyncingRequestIds((prev) => prev.filter((id) => id !== requestId));
     }
   };
 
@@ -1056,7 +1099,11 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
           }`}
         >
           <div className="flex items-center space-x-3">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            {message.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
+            )}
             <span className="font-semibold text-xs sm:text-sm">{message.text}</span>
           </div>
           <button onClick={() => setMessage(null)} className="text-xs font-bold underline hover:no-underline cursor-pointer">
@@ -1282,11 +1329,14 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                           )}
                           <button
                             type="button"
+                            disabled={syncingRequestIds.includes(req.requestId)}
                             onClick={() => handleStartDelivery(req.requestId)}
-                            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center space-x-1.5"
+                            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 disabled:cursor-wait text-white font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center space-x-1.5"
                           >
                             <Truck className="w-3 h-3.5" />
-                            <span>NHẬN ĐƠN DELIVERY</span>
+                            <span>
+                              {syncingRequestIds.includes(req.requestId) ? 'ĐANG ĐỒNG BỘ...' : 'NHẬN ĐƠN DELIVERY'}
+                            </span>
                           </button>
                         </div>
                       </div>
@@ -1384,11 +1434,16 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
 
                     <button
                       type="button"
+                      disabled={syncingRequestIds.includes(req.requestId)}
                       onClick={() => handleCompleteDelivery(req.requestId)}
-                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center space-x-2 text-xs"
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-wait text-white font-extrabold rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center space-x-2 text-xs"
                     >
                       <Check className="w-4 h-4" />
-                      <span>XÁC NHẬN ĐÃ GIAO HÀNG TỚI BÀN MÁY</span>
+                      <span>
+                        {syncingRequestIds.includes(req.requestId)
+                          ? 'ĐANG ĐỒNG BỘ SUPABASE...'
+                          : 'XÁC NHẬN ĐÃ GIAO HÀNG TỚI BÀN MÁY'}
+                      </span>
                     </button>
 
                     {isAdmin && (

@@ -475,6 +475,7 @@ export default function App() {
               }}
               onOpenBinCard={handleOpenBinCard}
               onRefreshParts={handleManualSyncCloud}
+              onLocalRefresh={refreshData}
               searchTerm={searchTerm}
               onSearchChange={setSearchTerm}
             />

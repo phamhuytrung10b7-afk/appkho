@@ -100,8 +100,52 @@ const pendingPartsUpsertQueue = new Map<string, Part>();
 const pendingPartsDeleteQueue = new Set<string>();
 let pendingFullPartsKvSnapshot: Part[] | null = null;
 let pendingSettingsSnapshot: AppSettings | null = null;
-let pendingMaterialCallsSnapshot: MaterialCallRequest[] | null = null;
 let writeQueueDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Hàng đợi tuần tự riêng cho Andon Material Calls để không bao giờ chạy song song hoặc ghi đè chéo giữa các thao tác
+const PENDING_UNSYNCED_CALLS_KEY = 'thekho_pending_unsynced_calls_v1';
+let materialCallCloudSyncChain: Promise<any> = Promise.resolve();
+
+function enqueueMaterialCallCloudOp<T>(fn: () => Promise<T>): Promise<T> {
+  const next = materialCallCloudSyncChain.then(fn, fn);
+  materialCallCloudSyncChain = next.catch(() => undefined);
+  return next;
+}
+
+function getPendingUnsyncedCallsMap(): Record<string, MaterialCallRequest> {
+  try {
+    const raw = safeGetRaw(PENDING_UNSYNCED_CALLS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function markPendingUnsyncedCall(call: MaterialCallRequest): void {
+  if (!call || !call.requestId) return;
+  const map = getPendingUnsyncedCallsMap();
+  map[call.requestId] = call;
+  safeSetRaw(PENDING_UNSYNCED_CALLS_KEY, JSON.stringify(map));
+}
+
+function clearPendingUnsyncedCalls(requestIds: string[]): void {
+  if (!requestIds || requestIds.length === 0) return;
+  const map = getPendingUnsyncedCallsMap();
+  let changed = false;
+  for (const id of requestIds) {
+    if (map[id]) {
+      delete map[id];
+      changed = true;
+    }
+  }
+  if (changed) {
+    safeSetRaw(PENDING_UNSYNCED_CALLS_KEY, JSON.stringify(map));
+  }
+}
+
+let activeFlushPromise: Promise<void> | null = null;
 
 async function flushWriteQueueToSupabase(): Promise<void> {
   if (writeQueueDebounceTimer) {
@@ -109,59 +153,70 @@ async function flushWriteQueueToSupabase(): Promise<void> {
     writeQueueDebounceTimer = null;
   }
 
-  const settingsToFlush = pendingSettingsSnapshot;
-  const fullPartsKvToFlush = pendingFullPartsKvSnapshot;
-  const materialCallsToFlush = pendingMaterialCallsSnapshot;
-  const partsToUpsert = Array.from(pendingPartsUpsertQueue.values());
-  const partIdsToDelete = Array.from(pendingPartsDeleteQueue.values());
-
-  pendingSettingsSnapshot = null;
-  pendingFullPartsKvSnapshot = null;
-  pendingMaterialCallsSnapshot = null;
-  pendingPartsUpsertQueue.clear();
-  pendingPartsDeleteQueue.clear();
-
-  const tasks: Promise<any>[] = [];
-
-  // 1. Flush Settings (KV + Relational)
-  if (settingsToFlush) {
-    tasks.push(
-      supabaseKeyStore.set(STORAGE_KEYS.SETTINGS, settingsToFlush),
-      supabaseRelationalStore.upsertSettings(settingsToFlush)
-    );
+  if (activeFlushPromise) {
+    await activeFlushPromise;
   }
 
-  // 2. Flush Full Parts KV Snapshot (1 lệnh duy nhất thay vì bắn liên tục)
-  if (fullPartsKvToFlush) {
-    tasks.push(supabaseKeyStore.set(STORAGE_KEYS.PARTS, fullPartsKvToFlush));
-  }
+  const runFlush = async () => {
+    while (
+      pendingSettingsSnapshot ||
+      pendingFullPartsKvSnapshot ||
+      pendingPartsUpsertQueue.size > 0 ||
+      pendingPartsDeleteQueue.size > 0
+    ) {
+      const settingsToFlush = pendingSettingsSnapshot;
+      const fullPartsKvToFlush = pendingFullPartsKvSnapshot;
+      const partsToUpsert = Array.from(pendingPartsUpsertQueue.values());
+      const partIdsToDelete = Array.from(pendingPartsDeleteQueue.values());
 
-  // 2b. Flush Material Calls Snapshot (Debounced)
-  if (materialCallsToFlush) {
-    tasks.push(supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, materialCallsToFlush));
-  }
+      pendingSettingsSnapshot = null;
+      pendingFullPartsKvSnapshot = null;
+      pendingPartsUpsertQueue.clear();
+      pendingPartsDeleteQueue.clear();
 
-  // 3. Flush Relational Parts Upsert theo lô tối đa 150 bản ghi/lần gửi
-  if (partsToUpsert.length > 0) {
-    for (let i = 0; i < partsToUpsert.length; i += MAX_BATCH_UPSERT_RECORDS) {
-      const chunk = partsToUpsert.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
-      tasks.push(supabaseRelationalStore.upsertParts(chunk));
+      const tasks: Promise<any>[] = [];
+
+      // 1. Flush Settings (KV + Relational)
+      if (settingsToFlush) {
+        tasks.push(
+          supabaseKeyStore.set(STORAGE_KEYS.SETTINGS, settingsToFlush),
+          supabaseRelationalStore.upsertSettings(settingsToFlush)
+        );
+      }
+
+      // 2. Flush Full Parts KV Snapshot (1 lệnh duy nhất thay vì bắn liên tục)
+      if (fullPartsKvToFlush) {
+        tasks.push(supabaseKeyStore.set(STORAGE_KEYS.PARTS, fullPartsKvToFlush));
+      }
+
+      // 3. Flush Relational Parts Upsert theo lô tối đa 150 bản ghi/lần gửi
+      if (partsToUpsert.length > 0) {
+        for (let i = 0; i < partsToUpsert.length; i += MAX_BATCH_UPSERT_RECORDS) {
+          const chunk = partsToUpsert.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
+          tasks.push(supabaseRelationalStore.upsertParts(chunk));
+        }
+      }
+
+      // 4. Flush Relational Parts Delete theo lô tối đa 150 ID/lần gửi
+      if (partIdsToDelete.length > 0) {
+        for (let i = 0; i < partIdsToDelete.length; i += MAX_BATCH_UPSERT_RECORDS) {
+          const chunk = partIdsToDelete.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
+          tasks.push(supabaseRelationalStore.deletePartsBatch(chunk));
+        }
+      }
+
+      if (tasks.length > 0) {
+        try {
+          await Promise.allSettled(tasks);
+        } catch (_) {}
+      }
     }
-  }
+  };
 
-  // 4. Flush Relational Parts Delete theo lô tối đa 150 ID/lần gửi
-  if (partIdsToDelete.length > 0) {
-    for (let i = 0; i < partIdsToDelete.length; i += MAX_BATCH_UPSERT_RECORDS) {
-      const chunk = partIdsToDelete.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
-      tasks.push(supabaseRelationalStore.deletePartsBatch(chunk));
-    }
-  }
-
-  if (tasks.length > 0) {
-    try {
-      await Promise.allSettled(tasks);
-    } catch (_) {}
-  }
+  activeFlushPromise = runFlush().finally(() => {
+    activeFlushPromise = null;
+  });
+  await activeFlushPromise;
 }
 
 function scheduleDebouncedWriteFlush(): void {
@@ -2559,10 +2614,11 @@ export const storageService = {
   },
 
   // Import Excel helper according to custom layout (Warehouse, Item, Item description, Stock, Description, Unit)
-  importPartsFromRows(rawRows: any[]): { added: number; updated: number } {
+  importPartsFromRows(rawRows: any[]): { added: number; updated: number; changedParts?: Part[]; allParts?: Part[] } {
     const existingParts = this.getParts();
     let added = 0;
     let updated = 0;
+    const changedPartsMap = new Map<string, Part>();
 
     const parseStock = (val: any): number => {
       if (val === undefined || val === null || val === '') return 0;
@@ -2578,11 +2634,20 @@ export const storageService = {
       return isNaN(parsed) ? 0 : parsed;
     };
 
+    const pickNormalizedField = (normRow: Record<string, any>, candidates: string[]): any => {
+      for (const key of candidates) {
+        if (normRow[key] !== undefined && normRow[key] !== null && String(normRow[key]).trim() !== '') {
+          return normRow[key];
+        }
+      }
+      return undefined;
+    };
+
     rawRows.forEach((row) => {
       let warehouse = '';
       let itemCode = '';
       let itemName = '';
-      let stockVal: any = 0;
+      let stockVal: any = undefined;
       let desc = '';
       let unit = '';
 
@@ -2595,38 +2660,82 @@ export const storageService = {
         desc = String(row[4] ?? '').trim();
         unit = String(row[5] ?? '').trim();
       } else if (typeof row === 'object' && row !== null) {
-        // Named keys representation
-        warehouse = String(
-          row['Warehouse'] || row['Warehouse nào'] || row['Kho'] || row['Vị Trí Lưu'] || row['Location'] || ''
-        ).trim();
+        // Normalize object keys (trim + lowercase) so trailing spaces or mixed case never fail
+        const normRow: Record<string, any> = {};
+        for (const [k, v] of Object.entries(row)) {
+          normRow[k.trim().toLowerCase()] = v;
+        }
 
-        itemCode = String(
-          row['Item'] || row['Mã linh kiện'] || row['Mã Linh Kiện'] || row['Code'] || row['Mã'] || ''
-        ).trim();
+        const wVal = pickNormalizedField(normRow, [
+          'warehouse',
+          'warehouse nào',
+          'kho',
+          'vị trí lưu',
+          'vị trí kệ',
+          'location',
+        ]);
+        warehouse = wVal !== undefined ? String(wVal).trim() : '';
 
-        itemName = String(
-          row['Item description'] || row['Item Description'] || row['Tên linh kiện'] || row['Tên Linh Kiện'] || row['Name'] || row['Tên'] || ''
-        ).trim();
+        const cVal = pickNormalizedField(normRow, [
+          'item',
+          'mã linh kiện',
+          'mã lk',
+          'code',
+          'item code',
+          'part code',
+          'mã',
+        ]);
+        itemCode = cVal !== undefined ? String(cVal).trim() : '';
 
-        stockVal = row['Stock'] ?? row['Tồn kho'] ?? row['Tồn Kho'] ?? row['Tồn Hiện Tại'] ?? row['Tồn'] ?? 0;
+        const nVal = pickNormalizedField(normRow, [
+          'item description',
+          'tên linh kiện',
+          'tên lk',
+          'name',
+          'part name',
+          'tên',
+        ]);
+        itemName = nVal !== undefined ? String(nVal).trim() : '';
 
-        desc = String(
-          row['Description'] || row['Mô tả'] || row['Mô Tả'] || row['Phân loại'] || ''
-        ).trim();
+        stockVal = pickNormalizedField(normRow, [
+          'stock',
+          'tồn kho',
+          'tồn hiện tại',
+          'tồn',
+          'số lượng',
+          'qty',
+        ]);
 
-        unit = String(
-          row['Unit'] || row['Đơn vị tính'] || row['Đơn Vị'] || row['ĐVT'] || ''
-        ).trim();
+        const dVal = pickNormalizedField(normRow, [
+          'description',
+          'mô tả',
+          'phân loại',
+          'ghi chú',
+          'note',
+        ]);
+        desc = dVal !== undefined ? String(dVal).trim() : '';
+
+        const uVal = pickNormalizedField(normRow, [
+          'unit',
+          'đơn vị tính',
+          'đơn vị',
+          'đvt',
+        ]);
+        unit = uVal !== undefined ? String(uVal).trim() : '';
       }
 
-      // Ignore header row or rows without item code or name
-      if (!itemCode || !itemName) return;
+      // Ignore header row or rows without item code
+      if (!itemCode) return;
       const lowerCode = itemCode.toLowerCase();
-      if (lowerCode === 'item' || lowerCode === 'mã linh kiện' || lowerCode === 'code') return;
-
-      const currentStock = parseStock(stockVal);
-      const locationStr = warehouse || 'Kho 1';
-      const unitStr = unit || 'Cái';
+      if (
+        lowerCode === 'item' ||
+        lowerCode === 'mã linh kiện' ||
+        lowerCode === 'mã lk' ||
+        lowerCode === 'code' ||
+        lowerCode === 'mã'
+      ) {
+        return;
+      }
 
       const existingIndex = existingParts.findIndex(
         (p) => p.code.trim().toLowerCase() === lowerCode
@@ -2635,25 +2744,34 @@ export const storageService = {
       if (existingIndex !== -1) {
         // Update existing part stock & info while preserving existing physical shelf breakdown
         const existing = existingParts[existingIndex];
+        const currentStock = stockVal !== undefined ? parseStock(stockVal) : existing.currentStock;
+        const locationStr = warehouse || existing.location || 'Kho 1';
+        const unitStr = unit || existing.unit || 'Cái';
         const hasExistingShelves = Array.isArray(existing.locations) && existing.locations.length > 0;
-        existingParts[existingIndex] = {
+        const updatedPart: Part = {
           ...existing,
           code: itemCode,
-          name: itemName,
+          name: itemName || existing.name,
           description: desc || existing.description,
-          location: hasExistingShelves ? existing.location : (locationStr || existing.location),
+          location: hasExistingShelves ? existing.location : locationStr,
           locations: existing.locations,
           unit: unitStr,
           currentStock: currentStock,
           updatedAt: new Date().toISOString(),
         };
+        existingParts[existingIndex] = updatedPart;
+        changedPartsMap.set(updatedPart.id, updatedPart);
         updated++;
       } else {
-        // Add new part
+        const effectiveName = itemName || desc || itemCode;
+        const currentStock = stockVal !== undefined ? parseStock(stockVal) : 0;
+        const locationStr = warehouse || 'Kho 1';
+        const unitStr = unit || 'Cái';
+        const nowIso = new Date().toISOString();
         const newPart: Part = {
           id: 'part-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
           code: itemCode,
-          name: itemName,
+          name: effectiveName,
           description: desc,
           location: locationStr,
           unit: unitStr,
@@ -2662,16 +2780,129 @@ export const storageService = {
           barcode: itemCode,
           qrCode: itemCode,
           note: '',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: nowIso,
+          updatedAt: nowIso,
         };
         existingParts.unshift(newPart);
+        changedPartsMap.set(newPart.id, newPart);
         added++;
       }
     });
 
-    this.saveParts(existingParts);
-    return { added, updated };
+    const changedParts = Array.from(changedPartsMap.values());
+    if (added > 0 || updated > 0) {
+      this.saveParts(existingParts, changedParts);
+    }
+    return { added, updated, changedParts, allParts: existingParts };
+  },
+
+  /**
+   * Import Excel và ĐỒNG BỘ TRỰC TIẾP tức thời lên Supabase Cloud (cả KV `thekho_parts_v1` và bảng `parts`).
+   * - Kéo danh sách mới nhất từ Cloud trước khi merge để không bao giờ đè mất linh kiện do thiết bị khác mới thêm.
+   * - Ghi trực tiếp ngay lập tức, không bị trễ bởi hàng đợi debounce 400ms hay bị ghi đè khi refresh UI.
+   */
+  async importPartsFromRowsAndSync(rawRows: any[]): Promise<{
+    added: number;
+    updated: number;
+    cloudSynced: boolean;
+    message?: string;
+  }> {
+    try {
+      await flushWriteQueueToSupabase();
+
+      const { isConfigured } = getActiveSupabaseClient();
+      const cloudByCodeMap = new Map<string, Part>();
+      if (isConfigured) {
+        const cloudParts = await supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS, { forceFresh: true });
+        if (cloudParts && Array.isArray(cloudParts) && cloudParts.length > 0) {
+          const localParts = this.getParts();
+          const mergedMap = new Map<string, Part>();
+          for (const cp of cloudParts) {
+            if (cp && cp.code) {
+              const k = cp.code.trim().toLowerCase();
+              cloudByCodeMap.set(k, cp);
+              mergedMap.set(k, cp);
+            }
+          }
+          for (const lp of localParts) {
+            if (lp && lp.code) {
+              const k = lp.code.trim().toLowerCase();
+              const ex = mergedMap.get(k);
+              if (!ex) {
+                mergedMap.set(k, lp);
+              } else {
+                const lpTs = new Date(lp.updatedAt || 0).getTime();
+                const exTs = new Date(ex.updatedAt || 0).getTime();
+                if (lpTs > exTs) {
+                  mergedMap.set(k, { ...ex, ...lp });
+                }
+              }
+            }
+          }
+          const mergedList = Array.from(mergedMap.values());
+          const compactMerged = mergedList.map((p) => ({
+            id: p.id,
+            code: p.code,
+            name: p.name,
+            unit: p.unit || 'Cái',
+            currentStock: typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0,
+            qtyNg: typeof p.qtyNg === 'number' ? p.qtyNg : Number(p.qtyNg) || 0,
+            minStock: typeof p.minStock === 'number' ? p.minStock : Number(p.minStock) || 0,
+            location: p.location || 'Kho chính',
+            locations: p.locations || [],
+            updatedAt: p.updatedAt,
+          }));
+          safeSetRaw(PARTS_KEY, JSON.stringify(compactMerged));
+          setLocalCacheData(STORAGE_KEYS.PARTS, mergedList, new Date().toISOString());
+        }
+      }
+
+      const result = this.importPartsFromRows(rawRows);
+      if (result.added === 0 && result.updated === 0) {
+        return { added: 0, updated: 0, cloudSynced: true };
+      }
+
+      if (writeQueueDebounceTimer) {
+        clearTimeout(writeQueueDebounceTimer);
+        writeQueueDebounceTimer = null;
+      }
+      pendingFullPartsKvSnapshot = null;
+      const changedIdSet = new Set((result.changedParts || []).map((cp) => cp.id));
+      const latestParts = (result.allParts || this.getParts()).map((p) => {
+        if (changedIdSet.has(p.id)) return p;
+        const cp = p.code ? cloudByCodeMap.get(p.code.trim().toLowerCase()) : undefined;
+        return cp ? { ...cp, ...p } : p;
+      });
+      const changedParts = result.changedParts || [];
+      for (const cp of changedParts) {
+        if (cp?.id) pendingPartsUpsertQueue.delete(cp.id);
+      }
+
+      let kvOk = true;
+      let relOk = true;
+      if (isConfigured) {
+        const [resKv, resRel] = await Promise.all([
+          supabaseKeyStore.set(STORAGE_KEYS.PARTS, latestParts),
+          changedParts.length > 0 ? supabaseRelationalStore.upsertParts(changedParts) : Promise.resolve(true),
+        ]);
+        kvOk = resKv;
+        relOk = resRel;
+      }
+
+      return {
+        added: result.added,
+        updated: result.updated,
+        cloudSynced: kvOk && relOk,
+        message: kvOk && relOk ? undefined : 'Đã lưu tại máy nhưng chưa đồng bộ hoàn tất lên Supabase Cloud. Vui lòng kiểm tra kết nối mạng!',
+      };
+    } catch (err: any) {
+      return {
+        added: 0,
+        updated: 0,
+        cloudSynced: false,
+        message: err?.message || 'Lỗi khi import & đồng bộ linh kiện',
+      };
+    }
   },
 
   downloadImportTemplate(): void {
@@ -3433,7 +3664,6 @@ export const storageService = {
         });
         if (prunedCalls > 0) {
           safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(filteredCalls));
-          supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, filteredCalls);
         }
       } catch {
         // Fallback
@@ -4773,7 +5003,6 @@ export const storageService = {
 
       if (hasPruned) {
         safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(validItems));
-        supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, validItems);
       }
       return validItems;
     } catch {
@@ -4782,6 +5011,13 @@ export const storageService = {
   },
 
   async fetchMaterialCallsFromCloud(forceFetch: boolean = false): Promise<MaterialCallRequest[]> {
+    // 0. Nếu máy từng có đơn thao tác lúc rớt mạng, đẩy lên Cloud trước khi kéo về
+    const pendingMap = getPendingUnsyncedCallsMap();
+    const pendingCalls = Object.values(pendingMap);
+    for (const pc of pendingCalls) {
+      await this.syncMaterialCallToCloud(pc);
+    }
+
     // 1. Fetch deleted call IDs using smart timestamp check (0 JSONB egress if unchanged)
     const deletedIds = await this.fetchDeletedCallIdsFromCloud();
     try {
@@ -4827,9 +5063,10 @@ export const storageService = {
             (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
           );
 
-        const nowIso = new Date().toISOString();
+        const existingCache = getLocalCacheData<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS);
+        const cacheTs = existingCache?.timestamp || new Date().toISOString();
         safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
-        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
+        setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, cacheTs);
         return merged;
       }
       return this.getMaterialCallRequests();
@@ -4841,121 +5078,277 @@ export const storageService = {
   saveMaterialCallRequests(reqs: MaterialCallRequest[]): void {
     const deletedIds = this.getDeletedCallIds();
     const cleanReqs = reqs.filter((r) => r && r.requestId && !deletedIds.has(r.requestId));
-    const nowIso = new Date().toISOString();
+    const existingCache = getLocalCacheData<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS);
+    const cacheTs = existingCache?.timestamp || new Date().toISOString();
     safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(cleanReqs));
-    setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanReqs, nowIso);
-    // Đưa vào hàng đợi Debounce 400ms để tránh bắn nhiều lệnh ghi đè mảng lớn liên tiếp
-    pendingMaterialCallsSnapshot = cleanReqs;
-    scheduleDebouncedWriteFlush();
+    setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, cleanReqs, cacheTs);
   },
 
   /**
    * Đồng bộ đơn gọi hàng Andon theo `requestId` trực tiếp lên Supabase Cloud:
-   * 1. Kéo mảng mới nhất từ Cloud (forceFresh) để không bị đè bởi snapshot cũ của máy khác.
-   * 2. Hợp nhất 2 chiều (2-way merge) bảo toàn 100% tất cả đơn gọi hàng hiện có của cả 2 phía.
-   * 3. Áp dụng quy tắc trạng thái đơn điệu (COMPLETED > DELIVERING > CALLING), tuyệt đối không rollback.
-   * 4. Ghi trực tiếp tức thời lên Supabase Cloud, không phụ thuộc setTimeout hay debounce.
+   * 1. Xếp hàng tuần tự (Mutex) để các thao tác trên cùng máy không chạy đè nhau.
+   * 2. Dùng Compare-And-Swap (`updated_at`) với vòng lặp thử lại (tối đa 4 lần) để chống 2 máy ghi đè nhau.
+   * 3. Kéo mảng mới nhất từ Cloud, hợp nhất 2 chiều theo quy tắc trạng thái đơn điệu (COMPLETED > DELIVERING > CALLING).
+   * 4. Xác nhận kết quả thực tế từ Supabase trước khi trả về `true`; nếu lỗi lưu vào hàng chờ offline và trả `false`.
    */
   async syncMaterialCallToCloud(targetCall: MaterialCallRequest): Promise<boolean> {
-    try {
+    if (!targetCall || !targetCall.requestId) return false;
+
+    return enqueueMaterialCallCloudOp(async () => {
       const { client, isConfigured } = getActiveSupabaseClient();
-      if (!isConfigured || !client) return true;
-
-      const deletedIds = await this.fetchDeletedCallIdsFromCloud();
-      if (deletedIds.has(targetCall.requestId)) {
-        return true;
+      if (!isConfigured || !client) {
+        markPendingUnsyncedCall(targetCall);
+        return false;
       }
 
-      // Kéo mảng mới nhất thực tế từ Supabase Cloud để chống tình trạng ghi đè chéo giữa các thiết bị
-      const cloudCallsRaw = await supabaseKeyStore.get<MaterialCallRequest[]>(STORAGE_KEYS.MATERIAL_CALLS, { forceFresh: true });
-      const cloudCalls: MaterialCallRequest[] = Array.isArray(cloudCallsRaw) ? cloudCallsRaw : [];
-      const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
-      const map = new Map<string, MaterialCallRequest>();
-
-      for (const c of cloudCalls) {
-        if (c && c.requestId && !deletedIds.has(c.requestId)) {
-          map.set(c.requestId, c);
+      try {
+        const deletedIds = await this.fetchDeletedCallIdsFromCloud();
+        if (deletedIds.has(targetCall.requestId)) {
+          clearPendingUnsyncedCalls([targetCall.requestId]);
+          return true;
         }
-      }
 
-      const localCalls = this.getMaterialCallRequests();
-      for (const loc of localCalls) {
-        if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
-          const ex = map.get(loc.requestId);
-          if (ex) {
-            const wEx = statusWeights[ex.status] ?? 0;
-            const wLoc = statusWeights[loc.status] ?? 0;
-            const finalStatus = wLoc >= wEx ? loc.status : ex.status;
-            map.set(loc.requestId, {
-              ...ex,
-              ...loc,
+        const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
+        const MAX_CAS_ATTEMPTS = 4;
+
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+          const { data: rowData, error: readErr } = await client
+            .from('thekho_app_data')
+            .select('data, updated_at')
+            .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+            .maybeSingle();
+
+          if (readErr) {
+            if (attempt < MAX_CAS_ATTEMPTS - 1) {
+              await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+              continue;
+            }
+            markPendingUnsyncedCall(targetCall);
+            return false;
+          }
+
+          const prevUpdatedAt: string | null = rowData?.updated_at ? String(rowData.updated_at) : null;
+          const cloudCalls: MaterialCallRequest[] = Array.isArray(rowData?.data) ? rowData.data : [];
+          const map = new Map<string, MaterialCallRequest>();
+
+          for (const c of cloudCalls) {
+            if (c && c.requestId && !deletedIds.has(c.requestId)) {
+              map.set(c.requestId, c);
+            }
+          }
+
+          // Merge thêm các thay đổi local chưa đẩy (hoặc bản ghi local có trạng thái cao hơn)
+          const pendingLocalMap = getPendingUnsyncedCallsMap();
+          const localCalls = this.getMaterialCallRequests();
+          for (const loc of [...localCalls, ...Object.values(pendingLocalMap)]) {
+            if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
+              const ex = map.get(loc.requestId);
+              if (ex) {
+                const wEx = statusWeights[ex.status] ?? 0;
+                const wLoc = statusWeights[loc.status] ?? 0;
+                const finalStatus = wLoc >= wEx ? loc.status : ex.status;
+                map.set(loc.requestId, {
+                  ...ex,
+                  ...loc,
+                  status: finalStatus,
+                  deliveredBy:
+                    (finalStatus === loc.status ? loc.deliveredBy : ex.deliveredBy) ||
+                    loc.deliveredBy ||
+                    ex.deliveredBy,
+                  deliveredAt:
+                    (finalStatus === loc.status ? loc.deliveredAt : ex.deliveredAt) ||
+                    loc.deliveredAt ||
+                    ex.deliveredAt,
+                  isStockDeducted: Boolean(ex.isStockDeducted || loc.isStockDeducted),
+                });
+              } else {
+                map.set(loc.requestId, loc);
+              }
+            }
+          }
+
+          // Áp dụng targetCall theo quy tắc trạng thái đơn điệu (COMPLETED > DELIVERING > CALLING)
+          const exTarget = map.get(targetCall.requestId);
+          if (exTarget) {
+            const wEx = statusWeights[exTarget.status] ?? 0;
+            const wTarget = statusWeights[targetCall.status] ?? 0;
+            const finalStatus = wTarget >= wEx ? targetCall.status : exTarget.status;
+            map.set(targetCall.requestId, {
+              ...exTarget,
+              ...targetCall,
               status: finalStatus,
-              deliveredBy: (finalStatus === loc.status ? loc.deliveredBy : ex.deliveredBy) || loc.deliveredBy || ex.deliveredBy,
-              deliveredAt: (finalStatus === loc.status ? loc.deliveredAt : ex.deliveredAt) || loc.deliveredAt || ex.deliveredAt,
-              isStockDeducted: Boolean(ex.isStockDeducted || loc.isStockDeducted),
+              deliveredBy:
+                (finalStatus === targetCall.status ? targetCall.deliveredBy : exTarget.deliveredBy) ||
+                targetCall.deliveredBy ||
+                exTarget.deliveredBy,
+              deliveredAt:
+                (finalStatus === targetCall.status ? targetCall.deliveredAt : exTarget.deliveredAt) ||
+                targetCall.deliveredAt ||
+                exTarget.deliveredAt,
+              isStockDeducted: Boolean(exTarget.isStockDeducted || targetCall.isStockDeducted),
             });
           } else {
-            map.set(loc.requestId, loc);
+            map.set(targetCall.requestId, targetCall);
           }
+
+          const merged = Array.from(map.values())
+            .filter((c) => c && c.requestId && !deletedIds.has(c.requestId))
+            .sort(
+              (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+            );
+
+          // Đảm bảo updated_at luôn mới hơn bản trên server kể cả khi đồng hồ máy client bị lệch chậm
+          const prevMs = prevUpdatedAt ? new Date(prevUpdatedAt).getTime() : 0;
+          const nextUpdatedAt = new Date(Math.max(Date.now(), isNaN(prevMs) ? 0 : prevMs + 1)).toISOString();
+
+          let committedRow: { updated_at?: string } | null = null;
+          let writeErr: any = null;
+
+          if (prevUpdatedAt) {
+            const { data: updRows, error } = await client
+              .from('thekho_app_data')
+              .update({ data: merged, updated_at: nextUpdatedAt })
+              .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+              .eq('updated_at', prevUpdatedAt)
+              .select('updated_at');
+            writeErr = error;
+            if (!error && Array.isArray(updRows) && updRows.length > 0) {
+              committedRow = updRows[0];
+            }
+          } else {
+            const { data: insRows, error } = await client
+              .from('thekho_app_data')
+              .upsert(
+                { key: STORAGE_KEYS.MATERIAL_CALLS, data: merged, updated_at: nextUpdatedAt },
+                { onConflict: 'key' }
+              )
+              .select('updated_at');
+            writeErr = error;
+            if (!error && Array.isArray(insRows) && insRows.length > 0) {
+              committedRow = insRows[0];
+            }
+          }
+
+          if (writeErr) {
+            console.warn(`[syncMaterialCallToCloud] Write error attempt ${attempt + 1}:`, writeErr);
+            if (attempt < MAX_CAS_ATTEMPTS - 1) {
+              await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+              continue;
+            }
+            markPendingUnsyncedCall(targetCall);
+            return false;
+          }
+
+          if (!committedRow) {
+            // Có máy khác vừa cập nhật thekho_material_calls_v1 cùng mili-giây -> kéo lại và gộp lại ngay
+            continue;
+          }
+
+          const confirmedTs = String(committedRow.updated_at || nextUpdatedAt);
+          safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
+          setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, confirmedTs);
+          clearPendingUnsyncedCalls([
+            targetCall.requestId,
+            ...Object.keys(pendingLocalMap),
+          ]);
+          return true;
         }
+
+        markPendingUnsyncedCall(targetCall);
+        return false;
+      } catch (err) {
+        console.warn('[syncMaterialCallToCloud] Catch error:', err);
+        markPendingUnsyncedCall(targetCall);
+        return false;
       }
-
-      // Cập nhật đúng bản ghi theo `requestId` với bảo toàn trạng thái cao nhất
-      const exTarget = map.get(targetCall.requestId);
-      if (exTarget) {
-        const wEx = statusWeights[exTarget.status] ?? 0;
-        const wTarget = statusWeights[targetCall.status] ?? 0;
-        const finalStatus = wTarget >= wEx ? targetCall.status : exTarget.status;
-        map.set(targetCall.requestId, {
-          ...exTarget,
-          ...targetCall,
-          status: finalStatus,
-          deliveredBy: (finalStatus === targetCall.status ? targetCall.deliveredBy : exTarget.deliveredBy) || targetCall.deliveredBy || exTarget.deliveredBy,
-          deliveredAt: (finalStatus === targetCall.status ? targetCall.deliveredAt : exTarget.deliveredAt) || targetCall.deliveredAt || exTarget.deliveredAt,
-          isStockDeducted: Boolean(exTarget.isStockDeducted || targetCall.isStockDeducted),
-        });
-      } else {
-        map.set(targetCall.requestId, targetCall);
-      }
-
-      const merged = Array.from(map.values())
-        .filter((c) => c && c.requestId && !deletedIds.has(c.requestId))
-        .sort(
-          (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
-        );
-
-      const nowIso = new Date().toISOString();
-      safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
-      setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, nowIso);
-      pendingMaterialCallsSnapshot = null;
-
-      // Ghi trực tiếp tức thời lên Supabase Cloud
-      await supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, merged);
-      return true;
-    } catch (err) {
-      console.warn('[syncMaterialCallToCloud] Catch error:', err);
-      return false;
-    }
+    });
   },
 
-  createMaterialCallRequest(params: {
-    assemblyLine: string;
-    partCode: string;
-    partName: string;
-    unit: string;
-    requestedQty: number;
-    bufferLocation: string;
-    isDirectKitting?: boolean;
-    requestedBy: string;
-    requiredTime?: string;
-  }): MaterialCallRequest {
+  async syncMaterialCallDeletionsToCloud(deletedIdsToSync: string[]): Promise<boolean> {
+    return enqueueMaterialCallCloudOp(async () => {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return false;
+      try {
+        const deletedIds = await this.fetchDeletedCallIdsFromCloud();
+        for (const id of deletedIdsToSync) {
+          if (id) deletedIds.add(id);
+        }
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const { data: rowData, error: readErr } = await client
+            .from('thekho_app_data')
+            .select('data, updated_at')
+            .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+            .maybeSingle();
+
+          if (readErr) continue;
+          const prevUpdatedAt: string | null = rowData?.updated_at ? String(rowData.updated_at) : null;
+          const cloudCalls: MaterialCallRequest[] = Array.isArray(rowData?.data) ? rowData.data : [];
+          const localCalls = this.getMaterialCallRequests();
+          const map = new Map<string, MaterialCallRequest>();
+          const statusWeights: Record<string, number> = { COMPLETED: 2, DELIVERING: 1, CALLING: 0 };
+
+          for (const c of cloudCalls) {
+            if (c && c.requestId && !deletedIds.has(c.requestId)) {
+              map.set(c.requestId, c);
+            }
+          }
+          for (const loc of localCalls) {
+            if (loc && loc.requestId && !deletedIds.has(loc.requestId)) {
+              const ex = map.get(loc.requestId);
+              if (!ex || (statusWeights[loc.status] ?? 0) > (statusWeights[ex.status] ?? 0)) {
+                map.set(loc.requestId, ex ? { ...ex, ...loc } : loc);
+              }
+            }
+          }
+
+          const merged = Array.from(map.values()).sort(
+            (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+          );
+
+          const prevMs = prevUpdatedAt ? new Date(prevUpdatedAt).getTime() : 0;
+          const nextUpdatedAt = new Date(Math.max(Date.now(), isNaN(prevMs) ? 0 : prevMs + 1)).toISOString();
+
+          if (prevUpdatedAt) {
+            const { data: updRows, error } = await client
+              .from('thekho_app_data')
+              .update({ data: merged, updated_at: nextUpdatedAt })
+              .eq('key', STORAGE_KEYS.MATERIAL_CALLS)
+              .eq('updated_at', prevUpdatedAt)
+              .select('updated_at');
+            if (!error && Array.isArray(updRows) && updRows.length > 0) {
+              const confirmedTs = String(updRows[0].updated_at || nextUpdatedAt);
+              safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(merged));
+              setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, merged, confirmedTs);
+              return true;
+            }
+          } else {
+            const ok = await supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, merged);
+            if (ok) return true;
+          }
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    });
+  },
+
+  createMaterialCallRequest(
+    params: {
+      assemblyLine: string;
+      partCode: string;
+      partName: string;
+      unit: string;
+      requestedQty: number;
+      bufferLocation: string;
+      isDirectKitting?: boolean;
+      requestedBy: string;
+      requiredTime?: string;
+    },
+    options?: { skipCloudSync?: boolean }
+  ): MaterialCallRequest {
     const reqs = this.getMaterialCallRequests();
-    const isDirect =
-      params.isDirectKitting ||
-      params.bufferLocation === 'DCLR' ||
-      params.bufferLocation === 'KHU BÓC TÁCH KITTING' ||
-      params.bufferLocation?.toUpperCase().includes('DCLR') ||
-      params.bufferLocation?.toUpperCase().includes('KITTING');
 
     const newReq: MaterialCallRequest = {
       requestId: 'call-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
@@ -4975,16 +5368,39 @@ export const storageService = {
 
     reqs.unshift(newReq);
     this.saveMaterialCallRequests(reqs);
+    markPendingUnsyncedCall(newReq);
 
-    // Reliable background sync to Cloud merging with server array
-    this.syncMaterialCallToCloud(newReq).catch((e) => {
-      console.warn('[createMaterialCallRequest] Cloud sync notice:', e);
-    });
+    if (!options?.skipCloudSync) {
+      this.syncMaterialCallToCloud(newReq).catch((e) => {
+        console.warn('[createMaterialCallRequest] Cloud sync notice:', e);
+      });
+    }
 
     return newReq;
   },
 
-  updateMaterialCallStatus(requestId: string, status: 'CALLING' | 'DELIVERING' | 'COMPLETED', deliveredBy?: string): MaterialCallRequest {
+  async createMaterialCallRequestAndSync(params: {
+    assemblyLine: string;
+    partCode: string;
+    partName: string;
+    unit: string;
+    requestedQty: number;
+    bufferLocation: string;
+    isDirectKitting?: boolean;
+    requestedBy: string;
+    requiredTime?: string;
+  }): Promise<{ newReq: MaterialCallRequest; cloudSynced: boolean }> {
+    const newReq = this.createMaterialCallRequest(params, { skipCloudSync: true });
+    const cloudSynced = await this.syncMaterialCallToCloud(newReq);
+    return { newReq, cloudSynced };
+  },
+
+  updateMaterialCallStatus(
+    requestId: string,
+    status: 'CALLING' | 'DELIVERING' | 'COMPLETED',
+    deliveredBy?: string,
+    options?: { skipCloudSync?: boolean }
+  ): MaterialCallRequest {
     const reqs = this.getMaterialCallRequests();
     const idx = reqs.findIndex((r) => r.requestId === requestId);
     if (idx === -1) throw new Error('Không tìm thấy đơn gọi hàng');
@@ -4996,13 +5412,6 @@ export const storageService = {
       deliveredBy: deliveredBy || current.deliveredBy || 'Thủ Kho Logistics',
       deliveredAt: status === 'COMPLETED' ? new Date().toISOString() : current.deliveredAt,
     };
-    reqs[idx] = updated;
-    this.saveMaterialCallRequests(reqs);
-
-    // CRITICAL: Push status transition to Supabase Cloud immediately so it can NEVER be rolled back!
-    this.syncMaterialCallToCloud(updated).catch((err) => {
-      console.warn('[updateMaterialCallStatus] sync notice:', err);
-    });
 
     // If completed and stock was not already deducted at creation time, deduct now
     if (status === 'COMPLETED' && !current.isStockDeducted) {
@@ -5133,7 +5542,27 @@ export const storageService = {
       updated.isStockDeducted = true;
     }
 
+    reqs[idx] = updated;
+    this.saveMaterialCallRequests(reqs);
+    markPendingUnsyncedCall(updated);
+
+    if (!options?.skipCloudSync) {
+      this.syncMaterialCallToCloud(updated).catch((err) => {
+        console.warn('[updateMaterialCallStatus] sync notice:', err);
+      });
+    }
+
     return updated;
+  },
+
+  async updateMaterialCallStatusAndSync(
+    requestId: string,
+    status: 'CALLING' | 'DELIVERING' | 'COMPLETED',
+    deliveredBy?: string
+  ): Promise<{ updated: MaterialCallRequest; cloudSynced: boolean }> {
+    const updated = this.updateMaterialCallStatus(requestId, status, deliveredBy, { skipCloudSync: true });
+    const cloudSynced = await this.syncMaterialCallToCloud(updated);
+    return { updated, cloudSynced };
   },
 
   restoreStockFromMaterialCall(req: MaterialCallRequest): void {
@@ -5230,6 +5659,7 @@ export const storageService = {
   async deleteMaterialCallRequest(requestId: string, restoreStockIfCompleted: boolean = true): Promise<void> {
     if (!requestId) return;
     await this.addDeletedCallId(requestId);
+    clearPendingUnsyncedCalls([requestId]);
     const reqs = this.getMaterialCallRequests();
     const idx = reqs.findIndex((r) => r.requestId === requestId);
     if (idx !== -1) {
@@ -5239,45 +5669,51 @@ export const storageService = {
       }
       reqs.splice(idx, 1);
     }
-    // Lưu và đẩy qua hàng đợi Debounce mà không cần tải lại toàn bộ mảng MATERIAL_CALLS từ Cloud
     this.saveMaterialCallRequests(reqs);
-    await flushWriteQueueToSupabase();
+    await this.syncMaterialCallDeletionsToCloud([requestId]);
   },
 
   async clearAllCallingRequests(): Promise<void> {
     const reqs = this.getMaterialCallRequests();
     const calling = reqs.filter((r) => r.status === 'CALLING');
+    const deletedCallingIds: string[] = [];
     for (const r of calling) {
-      if (r.requestId) await this.addDeletedCallId(r.requestId);
+      if (r.requestId) {
+        await this.addDeletedCallId(r.requestId);
+        deletedCallingIds.push(r.requestId);
+      }
     }
+    clearPendingUnsyncedCalls(deletedCallingIds);
     const remaining = reqs.filter((r) => r.status !== 'CALLING');
     this.saveMaterialCallRequests(remaining);
-    await flushWriteQueueToSupabase();
+    await this.syncMaterialCallDeletionsToCloud(deletedCallingIds);
   },
 
   async rollbackMaterialCallStatus(requestId: string, targetStatus: 'CALLING' | 'DELIVERING'): Promise<MaterialCallRequest> {
-    const reqs = this.getMaterialCallRequests();
-    const idx = reqs.findIndex((r) => r.requestId === requestId);
-    if (idx === -1) throw new Error('Không tìm thấy đơn yêu cầu cần rollback');
+    return enqueueMaterialCallCloudOp(async () => {
+      const reqs = this.getMaterialCallRequests();
+      const idx = reqs.findIndex((r) => r.requestId === requestId);
+      if (idx === -1) throw new Error('Không tìm thấy đơn yêu cầu cần rollback');
 
-    const req = reqs[idx];
-    if (req.status === 'COMPLETED') {
-      this.restoreStockFromMaterialCall(req);
-    }
+      const req = reqs[idx];
+      if (req.status === 'COMPLETED') {
+        this.restoreStockFromMaterialCall(req);
+      }
 
-    const updated: MaterialCallRequest = {
-      ...req,
-      status: targetStatus,
-      deliveredAt: targetStatus === 'CALLING' ? undefined : req.deliveredAt,
-      deliveredBy: targetStatus === 'CALLING' ? undefined : req.deliveredBy,
-    };
+      const updated: MaterialCallRequest = {
+        ...req,
+        status: targetStatus,
+        deliveredAt: targetStatus === 'CALLING' ? undefined : req.deliveredAt,
+        deliveredBy: targetStatus === 'CALLING' ? undefined : req.deliveredBy,
+      };
 
-    reqs[idx] = updated;
-    const nowIso = new Date().toISOString();
-    safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
-    setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, reqs, nowIso);
-    await supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, reqs);
-    return updated;
+      reqs[idx] = updated;
+      const nowIso = new Date().toISOString();
+      safeSetRaw(MATERIAL_CALLS_KEY, JSON.stringify(reqs));
+      setLocalCacheData(STORAGE_KEYS.MATERIAL_CALLS, reqs, nowIso);
+      await supabaseKeyStore.set(STORAGE_KEYS.MATERIAL_CALLS, reqs);
+      return updated;
+    });
   },
 
   // --- BOM EXPORT VOUCHERS STORAGE ---
@@ -6750,6 +7186,16 @@ export const storageService = {
   },
 
   async fetchInitialDataFromCloud(forceFetch: boolean = false): Promise<{ parts: Part[]; transactions: Transaction[] }> {
+    // Luôn đẩy hết các thay đổi đang chờ trong hàng đợi cục bộ lên Supabase Cloud trước khi kéo dữ liệu về
+    // để tránh ghi đè mất dữ liệu vừa thêm/import từ bộ nhớ đệm chưa kịp flush (400ms debounce).
+    await flushWriteQueueToSupabase();
+
+    // Đẩy các đơn Andon từng thao tác lúc rớt mạng (nếu có) lên Cloud trước khi tải dữ liệu mới nhất
+    const pendingAndonCalls = Object.values(getPendingUnsyncedCallsMap());
+    for (const pc of pendingAndonCalls) {
+      await this.syncMaterialCallToCloud(pc);
+    }
+
     let parts: Part[] = [];
     let transactions: Transaction[] = [];
 
@@ -6792,8 +7238,8 @@ export const storageService = {
 
       await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);
 
-      // 1.1 Ensure all material calls (Andon) are synced and smart-merged from Supabase Cloud
-      await this.fetchMaterialCallsFromCloud(forceFetch);
+      // 1.1 Ensure all material calls (Andon) are filtered/merged cleanly (smart timestamp check avoids double 587KB download)
+      await this.fetchMaterialCallsFromCloud(false);
 
       // 2. Data is already written to localStorage by batchSyncAllKeys for all changed keys!
       // Ensure full warehouse locations list (>1000 shelves) is loaded from settings relational fallback if needed
