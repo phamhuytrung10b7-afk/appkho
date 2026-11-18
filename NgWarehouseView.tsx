@@ -31,6 +31,7 @@ import {
   Truck,
   Flame,
   Check,
+  Edit3,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -39,6 +40,7 @@ interface NgWarehouseViewProps {
   transactions: Transaction[];
   settings: AppSettings;
   onRefresh: () => void;
+  onSyncCloud?: () => Promise<void> | void;
   onOpenBinCard?: (part: Part) => void;
 }
 
@@ -47,8 +49,12 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
   transactions,
   settings,
   onRefresh,
+  onSyncCloud,
   onOpenBinCard,
 }) => {
+  const currentUser = storageService.getCurrentUser();
+  const isAdmin = storageService.isAdminUser(currentUser);
+
   // Navigation sub-tabs
   const [activeTab, setActiveTab] = useState<'inventory' | 'history'>('inventory');
 
@@ -59,7 +65,7 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
-  // Selected parts in NG inventory table for bulk export
+  // Selected parts in NG inventory table for bulk export/delete
   const [selectedPartIds, setSelectedPartIds] = useState<Set<string>>(new Set());
 
   // Modals state
@@ -67,7 +73,16 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportPreselectedParts, setExportPreselectedParts] = useState<Array<{ part: Part; maxQty: number }>>([]);
 
+  // Admin Edit / Delete Modals state
+  const [partToEditNg, setPartToEditNg] = useState<Part | null>(null);
+  const [editNgQtyInput, setEditNgQtyInput] = useState<string>('');
+  const [partsToDeleteNg, setPartsToDeleteNg] = useState<Part[] | null>(null);
+  const [adminActionReason, setAdminActionReason] = useState<string>('');
+  const [adminModalError, setAdminModalError] = useState<string>('');
+  const [isSubmittingAdminAction, setIsSubmittingAdminAction] = useState(false);
+
   // Batch loading & feedback state
+  const [isRefreshingCloud, setIsRefreshingCloud] = useState(false);
   const [isProcessingBatch, setIsProcessingBatch] = useState(false);
   const [batchProgressText, setBatchProgressText] = useState('');
   const [feedbackMessage, setFeedbackMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -184,7 +199,7 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
       .map((p) => ({ part: p, maxQty: p.qtyNg || 0 }));
 
     if (selectedPartsList.length === 0) {
-      alert('Vui lòng chọn ít nhất một linh kiện có tồn lỗi > 0 để xuất kho!');
+      setFeedbackMessage({ type: 'error', text: 'Vui lòng chọn ít nhất một linh kiện có tồn lỗi > 0 để xuất kho!' });
       return;
     }
 
@@ -198,10 +213,198 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
     setIsExportModalOpen(true);
   };
 
+  // Admin: open edit NG modal
+  const handleOpenAdminEditModal = (part: Part) => {
+    if (!isAdmin) return;
+    setPartToEditNg(part);
+    setEditNgQtyInput(String(part.qtyNg || 0));
+    setAdminActionReason('Admin điều chỉnh tồn Kho NG');
+    setAdminModalError('');
+  };
+
+  // Admin: open delete NG confirmation modal (single or bulk)
+  const handleOpenAdminDeleteModal = (targetParts: Part[]) => {
+    if (!isAdmin) return;
+    const valid = targetParts.filter((p) => (p.qtyNg || 0) > 0);
+    if (valid.length === 0) {
+      setFeedbackMessage({ type: 'error', text: 'Không có linh kiện Kho NG hợp lệ để xóa!' });
+      return;
+    }
+    setPartsToDeleteNg(valid);
+    setAdminActionReason('Admin xóa tồn Kho NG');
+    setAdminModalError('');
+  };
+
+  // Admin: confirm editing qtyNg
+  const handleConfirmAdminEditNg = async () => {
+    if (!isAdmin || !partToEditNg) return;
+    setAdminModalError('');
+    const newQty = Number(editNgQtyInput);
+    if (editNgQtyInput.trim() === '' || isNaN(newQty) || newQty < 0) {
+      setAdminModalError('Số lượng tồn Kho NG mới phải là số >= 0!');
+      return;
+    }
+
+    const oldQty = partToEditNg.qtyNg || 0;
+    if (newQty === oldQty) {
+      setAdminModalError('Số lượng mới đang bằng số lượng hiện tại, vui lòng nhập số khác!');
+      return;
+    }
+
+    const cleanReason = adminActionReason.trim() || 'Admin điều chỉnh tồn Kho NG';
+    const actorName = currentUser ? `${currentUser.fullName} (Admin)` : settings.managerName || 'Admin';
+    const nowIso = new Date().toISOString();
+
+    setIsSubmittingAdminAction(true);
+    try {
+      const updatedPart: Part = {
+        ...partToEditNg,
+        qtyNg: newQty,
+        updatedAt: nowIso,
+      };
+
+      const txType: TransactionType = newQty > oldQty ? 'IMPORT_NG' : 'EXPORT_NG_SCRAP';
+      const deltaQty = Math.abs(newQty - oldQty);
+      const tx: Transaction = {
+        id: 'tx-ng-adm-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+        partId: partToEditNg.id,
+        partCode: partToEditNg.code,
+        partName: partToEditNg.name,
+        unit: partToEditNg.unit,
+        type: txType,
+        quantity: deltaQty,
+        date: nowIso,
+        person: actorName,
+        reasonOrPurpose: `[Admin Sửa Tồn NG] ${cleanReason}`,
+        ngReason: cleanReason,
+        notes: `Admin sửa tồn NG: ${oldQty} ➔ ${newQty} (${cleanReason})`,
+        stockBefore: partToEditNg.currentStock,
+        stockAfter: partToEditNg.currentStock,
+        ngStockBefore: oldQty,
+        ngStockAfter: newQty,
+      };
+
+      await storageService.batchExecuteNgTransaction({
+        partsToUpdate: [updatedPart],
+        transactionsToInsert: [tx],
+      });
+
+      const editedCode = partToEditNg.code;
+      setPartToEditNg(null);
+      onRefresh();
+      setFeedbackMessage({
+        type: 'success',
+        text:
+          newQty === 0
+            ? `Admin đã cập nhật tồn Kho NG mã ${editedCode} về 0 (đã ẩn và đồng bộ Supabase Cloud)!`
+            : `Admin đã cập nhật tồn Kho NG mã ${editedCode}: ${oldQty} ➔ ${newQty} (đã đồng bộ Supabase Cloud)!`,
+      });
+    } catch (err: any) {
+      setAdminModalError('Lỗi đồng bộ Supabase: ' + (err?.message || 'Không thể lưu chỉnh sửa'));
+    } finally {
+      setIsSubmittingAdminAction(false);
+    }
+  };
+
+  // Admin: confirm deleting qtyNg (sets qtyNg = 0)
+  const handleConfirmAdminDeleteNg = async () => {
+    if (!isAdmin || !partsToDeleteNg || partsToDeleteNg.length === 0) return;
+    setAdminModalError('');
+
+    const cleanReason = adminActionReason.trim() || 'Admin xóa tồn Kho NG';
+    const actorName = currentUser ? `${currentUser.fullName} (Admin)` : settings.managerName || 'Admin';
+    const nowIso = new Date().toISOString();
+
+    setIsSubmittingAdminAction(true);
+    try {
+      const partsToUpdate: Part[] = [];
+      const transactionsToInsert: Transaction[] = [];
+
+      for (const p of partsToDeleteNg) {
+        const oldQty = p.qtyNg || 0;
+        partsToUpdate.push({
+          ...p,
+          qtyNg: 0,
+          updatedAt: nowIso,
+        });
+
+        transactionsToInsert.push({
+          id: 'tx-ng-del-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+          partId: p.id,
+          partCode: p.code,
+          partName: p.name,
+          unit: p.unit,
+          type: 'EXPORT_NG_SCRAP',
+          quantity: oldQty,
+          date: nowIso,
+          person: actorName,
+          reasonOrPurpose: `[Admin Xóa Tồn NG] ${cleanReason}`,
+          ngReason: cleanReason,
+          notes: `Admin xóa tồn NG: ${oldQty} ➔ 0 (${cleanReason})`,
+          stockBefore: p.currentStock,
+          stockAfter: p.currentStock,
+          ngStockBefore: oldQty,
+          ngStockAfter: 0,
+        });
+      }
+
+      await storageService.batchExecuteNgTransaction({
+        partsToUpdate,
+        transactionsToInsert,
+      });
+
+      const deletedIds = new Set(partsToUpdate.map((p) => p.id));
+      setSelectedPartIds((prev) => {
+        const next = new Set(prev);
+        deletedIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      const count = partsToUpdate.length;
+      const firstCode = partsToUpdate[0]?.code;
+      setPartsToDeleteNg(null);
+      onRefresh();
+      setFeedbackMessage({
+        type: 'success',
+        text:
+          count === 1
+            ? `Admin đã xóa tồn Kho NG mã ${firstCode} và đồng bộ hoàn tất lên Supabase Cloud!`
+            : `Admin đã xóa ${count} mã khỏi tồn Kho NG và đồng bộ hoàn tất lên Supabase Cloud!`,
+      });
+    } catch (err: any) {
+      setAdminModalError('Lỗi đồng bộ Supabase: ' + (err?.message || 'Không thể xóa tồn Kho NG'));
+    } finally {
+      setIsSubmittingAdminAction(false);
+    }
+  };
+
+  // Manual reload from Supabase Cloud
+  const handleReloadNgFromCloud = async () => {
+    if (isRefreshingCloud) return;
+    setIsRefreshingCloud(true);
+    try {
+      if (onSyncCloud) {
+        await onSyncCloud();
+      } else {
+        onRefresh();
+      }
+      setFeedbackMessage({
+        type: 'success',
+        text: 'Đã tải lại dữ liệu Kho NG mới nhất từ Supabase Cloud!',
+      });
+    } catch (err: any) {
+      setFeedbackMessage({
+        type: 'error',
+        text: 'Lỗi tải lại dữ liệu từ Supabase: ' + (err?.message || 'Vui lòng thử lại'),
+      });
+    } finally {
+      setIsRefreshingCloud(false);
+    }
+  };
+
   // Export NG History to Excel
   const handleExportHistoryExcel = () => {
     if (filteredHistory.length === 0) {
-      alert('Không có dữ liệu lịch sử Kho NG để xuất!');
+      setFeedbackMessage({ type: 'error', text: 'Không có dữ liệu lịch sử Kho NG để xuất!' });
       return;
     }
 
@@ -240,7 +443,7 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
   // Export current NG Inventory to Excel
   const handleExportInventoryExcel = () => {
     if (ngInventoryList.length === 0) {
-      alert('Kho NG hiện tại đang trống (0 hàng lỗi)!');
+      setFeedbackMessage({ type: 'error', text: 'Kho NG hiện tại đang trống (0 hàng lỗi)!' });
       return;
     }
 
@@ -294,12 +497,13 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
 
           <div className="flex items-center flex-wrap gap-2.5">
             <button
-              onClick={() => onRefresh()}
-              className="px-3.5 py-2.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-xs border border-slate-700 flex items-center space-x-2 transition-all cursor-pointer shadow-sm"
+              onClick={handleReloadNgFromCloud}
+              disabled={isRefreshingCloud}
+              className="px-3.5 py-2.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-xs border border-slate-700 flex items-center space-x-2 transition-all cursor-pointer shadow-sm disabled:opacity-60"
               title="Tải lại dữ liệu mới nhất từ Supabase"
             >
-              <RefreshCw className="w-4 h-4" />
-              <span>Tải Lại Dữ Liệu</span>
+              <RefreshCw className={`w-4 h-4 ${isRefreshingCloud ? 'animate-spin' : ''}`} />
+              <span>{isRefreshingCloud ? 'Đang Đồng Bộ...' : 'Tải Lại Dữ Liệu'}</span>
             </button>
 
             <button
@@ -474,7 +678,7 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
               </div>
 
               {selectedPartIds.size > 0 && (
-                <div className="flex items-center space-x-2 bg-rose-50 border border-rose-200 px-3.5 py-1.5 rounded-xl text-xs text-rose-900 font-bold animate-in fade-in">
+                <div className="flex items-center flex-wrap gap-2 bg-rose-50 border border-rose-200 px-3.5 py-1.5 rounded-xl text-xs text-rose-900 font-bold animate-in fade-in">
                   <span>Đã chọn {selectedPartIds.size} linh kiện lỗi</span>
                   <button
                     onClick={handleOpenExportForSelected}
@@ -482,6 +686,18 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
                   >
                     Xuất Kho Các Mục Này
                   </button>
+                  {isAdmin && (
+                    <button
+                      onClick={() => {
+                        const selectedList = parts.filter((p) => selectedPartIds.has(p.id) && (p.qtyNg || 0) > 0);
+                        handleOpenAdminDeleteModal(selectedList);
+                      }}
+                      className="px-3 py-1 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-extrabold shadow-sm cursor-pointer inline-flex items-center space-x-1"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Xóa NG đã chọn</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => setSelectedPartIds(new Set())}
                     className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
@@ -606,6 +822,27 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
                                 <ArrowUpRight className="w-3 h-3 text-rose-600" />
                                 <span>Xuất NG</span>
                               </button>
+
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    onClick={() => handleOpenAdminEditModal(part)}
+                                    className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center space-x-1"
+                                    title="Admin: Sửa số lượng tồn Kho NG"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>Sửa</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleOpenAdminDeleteModal([part])}
+                                    className="px-2 py-1 bg-slate-100 hover:bg-red-100 text-red-700 border border-slate-200 hover:border-red-200 rounded-lg text-[11px] font-bold cursor-pointer transition-colors flex items-center space-x-1"
+                                    title="Admin: Xóa tồn Kho NG (đưa về 0)"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                    <span>Xóa</span>
+                                  </button>
+                                </>
+                              )}
 
                               {onOpenBinCard && (
                                 <button
@@ -777,9 +1014,16 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
                               <span>
                                 {tx.ngStockBefore} ➔ <b className="text-slate-900">{tx.ngStockAfter}</b>
                               </span>
-                            ) : (
-                              '—'
-                            )}
+                            ) : (() => {
+                              const match = (tx.notes || '').match(/(\d+(?:[.,]\d+)?)\s*➔\s*(\d+(?:[.,]\d+)?)/);
+                              return match ? (
+                                <span>
+                                  {match[1]} ➔ <b className="text-slate-900">{match[2]}</b>
+                                </span>
+                              ) : (
+                                '—'
+                              );
+                            })()}
                           </td>
                           <td className="p-3 font-medium text-slate-700 text-[11px] max-w-xs">
                             {tx.reasonOrPurpose || tx.ngReason || '—'}
@@ -831,10 +1075,190 @@ export const NgWarehouseView: React.FC<NgWarehouseViewProps> = ({
             setIsExportModalOpen(false);
             setSelectedPartIds(new Set());
             setExportPreselectedParts([]);
-            setFeedbackMessage({ type: 'success', text: 'Xuất Kho NG thành công qua Batch Processing!' });
+            setFeedbackMessage({ type: 'success', text: 'Xuất Kho NG thành công và đã đồng bộ Supabase Cloud!' });
             onRefresh();
           }}
         />
+      )}
+
+      {/* MODAL 3: ADMIN SỬA TỒN KHO NG */}
+      {isAdmin && partToEditNg && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden">
+            <div className="bg-slate-900 text-white px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Edit3 className="w-4 h-4 text-indigo-400" />
+                <h3 className="font-extrabold text-sm uppercase tracking-wide">
+                  Admin: Sửa Số Lượng Tồn Kho NG
+                </h3>
+              </div>
+              <button
+                onClick={() => !isSubmittingAdminAction && setPartToEditNg(null)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {adminModalError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold flex items-center space-x-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{adminModalError}</span>
+                </div>
+              )}
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+                <div className="font-mono font-black text-rose-700">{partToEditNg.code}</div>
+                <div className="font-semibold text-slate-800">{partToEditNg.name}</div>
+                <div className="text-slate-500">
+                  Tồn Kho NG hiện tại:{' '}
+                  <b className="text-rose-700">
+                    {(partToEditNg.qtyNg || 0).toLocaleString('vi-VN')} {partToEditNg.unit}
+                  </b>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Số Lượng Tồn Kho NG Mới (nhập 0 để xóa khỏi danh sách) <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={editNgQtyInput}
+                  onChange={(e) => setEditNgQtyInput(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-black text-indigo-700 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Lý Do Điều Chỉnh / Ghi Chú
+                </label>
+                <input
+                  type="text"
+                  value={adminActionReason}
+                  onChange={(e) => setAdminActionReason(e.target.value)}
+                  placeholder="Nhập lý do sửa tồn Kho NG..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isSubmittingAdminAction}
+                  onClick={() => setPartToEditNg(null)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  disabled={isSubmittingAdminAction}
+                  onClick={handleConfirmAdminEditNg}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold flex items-center space-x-1.5 shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  {isSubmittingAdminAction ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isSubmittingAdminAction ? 'Đang Đồng Bộ...' : 'Lưu & Đồng Bộ Supabase'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: ADMIN XÓA TỒN KHO NG */}
+      {isAdmin && partsToDeleteNg && partsToDeleteNg.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-rose-200 overflow-hidden">
+            <div className="bg-rose-900 text-white px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <AlertTriangle className="w-4 h-4 text-amber-300" />
+                <h3 className="font-extrabold text-sm uppercase tracking-wide">
+                  Admin: Xác Nhận Xóa Tồn Kho NG
+                </h3>
+              </div>
+              <button
+                onClick={() => !isSubmittingAdminAction && setPartsToDeleteNg(null)}
+                className="p-1 text-rose-200 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {adminModalError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold flex items-center space-x-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{adminModalError}</span>
+                </div>
+              )}
+
+              <p className="text-xs text-slate-700 leading-relaxed">
+                Bạn có chắc chắn muốn <b>xóa {partsToDeleteNg.length} mã linh kiện</b> khỏi danh sách{' '}
+                <b>Tồn Kho NG Hiện Tại</b> (đưa số lượng NG về <b>0</b> và đồng bộ ngay lên Supabase)?
+              </p>
+
+              <div className="max-h-36 overflow-y-auto bg-rose-50/60 border border-rose-200 rounded-xl p-2.5 space-y-1.5 text-xs">
+                {partsToDeleteNg.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between">
+                    <div className="truncate pr-2">
+                      <span className="font-mono font-black text-rose-700">{p.code}</span>
+                      <span className="text-slate-600 ml-1.5">{p.name}</span>
+                    </div>
+                    <span className="font-mono font-bold text-rose-800 shrink-0">
+                      {(p.qtyNg || 0).toLocaleString('vi-VN')} {p.unit}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Lý Do Xóa / Ghi Chú
+                </label>
+                <input
+                  type="text"
+                  value={adminActionReason}
+                  onChange={(e) => setAdminActionReason(e.target.value)}
+                  placeholder="Nhập lý do xóa tồn Kho NG..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-500/20"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isSubmittingAdminAction}
+                  onClick={() => setPartsToDeleteNg(null)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  disabled={isSubmittingAdminAction}
+                  onClick={handleConfirmAdminDeleteNg}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-extrabold flex items-center space-x-1.5 shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  {isSubmittingAdminAction ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isSubmittingAdminAction ? 'Đang Xóa...' : 'Xác Nhận Xóa & Đồng Bộ'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

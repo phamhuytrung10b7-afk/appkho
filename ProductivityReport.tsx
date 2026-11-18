@@ -42,6 +42,7 @@ export interface PersonnelSummary {
 
 interface ProductivityReportProps {
   parts: Part[];
+  lastSyncTime?: Date | null;
   onExportInventoryExcel: () => void;
 }
 
@@ -80,6 +81,7 @@ const productivityDayCache = new Map<string, CachedHourlyOutput>();
 
 export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   parts,
+  lastSyncTime,
   onExportInventoryExcel,
 }) => {
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -122,52 +124,15 @@ export const ProductivityReport: React.FC<ProductivityReportProps> = ({
   const minDateStr = minDateObj.toISOString().split('T')[0];
   const maxDateStr = today.toISOString().split('T')[0];
 
-  // 1. Chỉ fetch cấu hình phân bổ nhân sự nhẹ (~200B) khi mở component hoặc refresh
+  // TẮT HOÀN TOÀN AUTO-POLLING & TỰ ĐỘNG ĐỒNG BỘ NGẦM KHI CHUYỂN TAB / ĐỔI NGÀY:
+  // Chỉ đồng bộ Supabase khi mở/F5 lại trang (App.tsx) hoặc bấm nút "Làm mới / Đồng bộ Supabase" / "Đồng Bộ Supabase Cloud".
+  // Khi người dùng bấm nút "Làm mới / Đồng bộ Supabase" ở thanh header, đọc lại state từ bộ nhớ vừa đồng bộ mà không gọi thêm API ngầm.
   useEffect(() => {
-    let isMounted = true;
-    async function syncCloudConfig() {
-      try {
-        const cloudCfg = await storageService.fetchProductivityPersonnelConfigFromCloud();
-        if (isMounted && cloudCfg) {
-          setPersonnelConfig(cloudCfg);
-        }
-      } catch (_) {
-      }
-    }
-    syncCloudConfig();
-    return () => { isMounted = false; };
-  }, [refreshTrigger]);
-
-  // 2. TỐI ƯU HÓA TRUY VẤN DỮ LIỆU KHUNG GIỜ THEO NGÀY + IN-MEMORY RAM CACHE
-  // - Nếu là ngày trong quá khứ và đã có trong cache: LẤY TRỰC TIẾP TỪ RAM, 0 CALL, 0 EGRESS
-  // - Đồng bộ nhẹ timestamp với Supabase cho Kitting Queue & Buffer Map để đảm bảo dữ liệu Lịch sử bóc tách luôn mới nhất
-  useEffect(() => {
-    let isMounted = true;
-    const isPast = reportDate < maxDateStr;
-
-    if (isPast && productivityDayCache.has(reportDate)) {
-      return;
-    }
-
-    async function loadSingleDayData() {
-      try {
-        setIsCloudSyncing(true);
-        await storageService.syncKittingHistoryDataFromCloud(false);
-        if (isMounted) {
-          setRefreshTrigger((p) => p);
-        }
-      } catch (_) {
-      } finally {
-        if (isMounted) setIsCloudSyncing(false);
-      }
-    }
-
-    loadSingleDayData();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [reportDate, maxDateStr]);
+    if (!lastSyncTime) return;
+    productivityDayCache.clear();
+    setPersonnelConfig(storageService.getProductivityPersonnelConfig());
+    setRefreshTrigger((p) => p + 1);
+  }, [lastSyncTime]);
 
   // Nút Đồng Bộ Supabase Cloud (Thao tác chủ động On-demand từ người dùng)
   // Đồng bộ dữ liệu Lịch sử bóc tách (Kitting Queue, Sơ đồ kệ Outbuffer, Andon) và cấu hình nhân sự

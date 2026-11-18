@@ -7,12 +7,14 @@ import { ProductivityReport } from './ProductivityReport';
 interface DashboardViewProps {
   parts: Part[];
   transactions: Transaction[];
+  lastSyncTime?: Date | null;
   onNavigateTab: (tab: ViewTab) => void;
   onOpenBinCard: (part: Part) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   parts,
+  lastSyncTime,
   onNavigateTab,
 }) => {
   const totalParts = parts.length;
@@ -89,6 +91,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* REPLACED SECTIONS (IMAGE 3 & 4 DELETED) -> INSERT PRODUCTIVITY REPORT (IMAGE 5 & 6) */}
       <ProductivityReport
         parts={parts}
+        lastSyncTime={lastSyncTime}
         onExportInventoryExcel={handleExportInventoryExcel}
       />
     </div>

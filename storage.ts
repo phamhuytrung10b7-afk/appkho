@@ -2,7 +2,7 @@ import { Part, PartLocationStock, Transaction, StockCheckRecord, AppSettings, Co
 import { initialParts, initialTransactions, initialSettings } from './sampleData';
 import { MasterKittingTag, SAMPLE_MASTER_TAGS } from './masterExcelParser';
 import { getPartGroupConfig } from './partGroupColors';
-import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS, batchExecuteNgTransaction, mapSupabaseRowToTransaction, getLocalCacheData, setLocalCacheData } from './supabaseStorage';
+import { supabaseKeyStore, supabaseRelationalStore, STORAGE_KEYS, batchExecuteNgTransaction, mergePartsKvWithCloud, mapSupabaseRowToTransaction, getLocalCacheData, setLocalCacheData } from './supabaseStorage';
 import { getActiveSupabaseClient } from './supabase';
 import { compressStorageValue, decompressStorageValue, optimizeAllExistingLocalStorage } from './storageCompression';
 import * as XLSX from 'xlsx';
@@ -184,16 +184,23 @@ async function flushWriteQueueToSupabase(): Promise<void> {
         );
       }
 
-      // 2. Flush Full Parts KV Snapshot (1 lệnh duy nhất thay vì bắn liên tục)
+      // 2. Flush Full Parts KV Snapshot bằng CAS Merge để tuyệt đối không ghi đè mất tồn Kho NG từ thiết bị khác
       if (fullPartsKvToFlush) {
-        tasks.push(supabaseKeyStore.set(STORAGE_KEYS.PARTS, fullPartsKvToFlush));
+        tasks.push(
+          mergePartsKvWithCloud({
+            fallbackLocalParts: fullPartsKvToFlush,
+            partsToUpsert,
+            partIdsToDelete,
+            preserveCloudQtyNg: true,
+          })
+        );
       }
 
-      // 3. Flush Relational Parts Upsert theo lô tối đa 150 bản ghi/lần gửi
+      // 3. Flush Relational Parts Upsert theo lô tối đa 150 bản ghi/lần gửi (giữ nguyên cột qty_ng của Kho NG)
       if (partsToUpsert.length > 0) {
         for (let i = 0; i < partsToUpsert.length; i += MAX_BATCH_UPSERT_RECORDS) {
           const chunk = partsToUpsert.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
-          tasks.push(supabaseRelationalStore.upsertParts(chunk));
+          tasks.push(supabaseRelationalStore.upsertParts(chunk, { preserveExistingQtyNg: true }));
         }
       }
 
@@ -1334,7 +1341,28 @@ export const storageService = {
     partsToUpdate: Part[];
     transactionsToInsert: Transaction[];
   }): Promise<{ success: boolean; message?: string }> {
-    return batchExecuteNgTransaction(params);
+    const res = await batchExecuteNgTransaction(params);
+    if (res.insertedTransactions && res.insertedTransactions.length > 0) {
+      const txMap = new Map<string, Transaction>();
+      for (const tx of res.insertedTransactions) {
+        if (tx && tx.id) {
+          txMap.set(tx.id, tx);
+          if (tx.date && (!lastSyncedTransactionTimestamp || tx.date > lastSyncedTransactionTimestamp)) {
+            lastSyncedTransactionTimestamp = tx.date;
+          }
+        }
+      }
+      for (const existing of inMemoryTransactions) {
+        if (existing && existing.id && !txMap.has(existing.id)) {
+          txMap.set(existing.id, existing);
+        }
+      }
+      inMemoryTransactions = Array.from(txMap.values()).sort(
+        (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+      );
+      invalidateBinCardHistoryCache();
+    }
+    return { success: res.success, message: res.message };
   },
 
   // Get transactions for a specific part chronologically (ascending for bin card calculations)
@@ -2882,10 +2910,16 @@ export const storageService = {
       let relOk = true;
       if (isConfigured) {
         const [resKv, resRel] = await Promise.all([
-          supabaseKeyStore.set(STORAGE_KEYS.PARTS, latestParts),
-          changedParts.length > 0 ? supabaseRelationalStore.upsertParts(changedParts) : Promise.resolve(true),
+          mergePartsKvWithCloud({
+            fallbackLocalParts: latestParts,
+            partsToUpsert: changedParts,
+            preserveCloudQtyNg: true,
+          }),
+          changedParts.length > 0
+            ? supabaseRelationalStore.upsertParts(changedParts, { preserveExistingQtyNg: true })
+            : Promise.resolve(true),
         ]);
-        kvOk = resKv;
+        kvOk = Boolean(resKv?.success);
         relOk = resRel;
       }
 
@@ -7258,6 +7292,67 @@ export const storageService = {
         if (relParts !== null && relParts.length > 0) {
           parts = relParts;
           this.saveParts(parts);
+        }
+      }
+
+      // 2.1 Đối soát tồn Kho NG (qty_ng) từ bảng Relational `parts` chuẩn trên Supabase Cloud:
+      // Đảm bảo các mã đã Xuất trả NCC / Tiêu hủy / Admin xóa (qty_ng = 0) KHÔNG bao giờ bị hồi sinh từ bản KV cũ của máy khác.
+      const relNgList = await supabaseRelationalStore.selectPartsNgSummary();
+      if (relNgList && relNgList.length > 0 && parts && parts.length > 0) {
+        const relById = new Map<string, { qtyNg: number; updatedAt: string }>();
+        const relByCode = new Map<string, { qtyNg: number; updatedAt: string }>();
+        for (const item of relNgList) {
+          if (item.id) relById.set(item.id, { qtyNg: item.qtyNg, updatedAt: item.updatedAt });
+          if (item.code) relByCode.set(item.code.trim().toLowerCase(), { qtyNg: item.qtyNg, updatedAt: item.updatedAt });
+        }
+
+        const healedParts: Part[] = [];
+        parts = parts.map((p) => {
+          const relInfo =
+            relById.get(p.id) ||
+            (p.code ? relByCode.get(p.code.trim().toLowerCase()) : undefined);
+          if (!relInfo) return p;
+
+          const kvQtyNg = typeof p.qtyNg === 'number' ? p.qtyNg : Number((p as any).qty_ng || p.qtyNg) || 0;
+          if (kvQtyNg !== relInfo.qtyNg) {
+            const relTs = new Date(relInfo.updatedAt || 0).getTime();
+            const kvTs = new Date(p.updatedAt || 0).getTime();
+            const newerIso =
+              !isNaN(relTs) && (isNaN(kvTs) || relTs > kvTs)
+                ? relInfo.updatedAt
+                : p.updatedAt || new Date().toISOString();
+            const healed: Part = {
+              ...p,
+              qtyNg: relInfo.qtyNg,
+              updatedAt: newerIso,
+            };
+            healedParts.push(healed);
+            return healed;
+          }
+          return p;
+        });
+
+        if (healedParts.length > 0) {
+          const compactHealed = parts.map((p) => ({
+            id: p.id,
+            code: p.code,
+            name: p.name,
+            unit: p.unit || 'Cái',
+            currentStock: typeof p.currentStock === 'number' ? p.currentStock : Number(p.currentStock) || 0,
+            qtyNg: typeof p.qtyNg === 'number' ? p.qtyNg : Number(p.qtyNg) || 0,
+            minStock: typeof p.minStock === 'number' ? p.minStock : Number(p.minStock) || 0,
+            location: p.location || 'Kho chính',
+            locations: p.locations || [],
+            updatedAt: p.updatedAt,
+          }));
+          safeSetRaw(PARTS_KEY, JSON.stringify(compactHealed));
+          setLocalCacheData(STORAGE_KEYS.PARTS, parts, new Date().toISOString());
+          // Tự động đồng bộ làm sạch KV thekho_parts_v1 trên Cloud để các máy khác cũng cập nhật đúng
+          mergePartsKvWithCloud({
+            fallbackLocalParts: parts,
+            partsToUpsert: healedParts,
+            preserveCloudQtyNg: false,
+          }).catch(() => {});
         }
       }
 

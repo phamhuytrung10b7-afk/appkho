@@ -452,6 +452,7 @@ export default function App() {
             <DashboardView
               parts={parts}
               transactions={transactions}
+              lastSyncTime={lastSyncTime}
               onNavigateTab={setCurrentTab}
               onOpenBinCard={handleOpenBinCard}
             />
@@ -495,6 +496,7 @@ export default function App() {
               transactions={transactions}
               settings={settings}
               onRefresh={refreshData}
+              onSyncCloud={handleManualSyncCloud}
               onOpenBinCard={handleOpenBinCard}
             />
           )}
