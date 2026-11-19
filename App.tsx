@@ -237,26 +237,46 @@ export default function App() {
     setIsBinCardOpen(true);
   };
 
-  // Handle Save Part (Add or Edit)
-  const handleSavePart = (
+  // Handle Save Part (Add or Edit) with immediate Supabase Cloud Sync
+  const handleSavePart = async (
     partData: Omit<Part, 'id' | 'createdAt' | 'updatedAt'>,
     editId?: string
   ) => {
-    if (editId) {
-      storageService.updatePart(editId, partData);
-    } else {
-      storageService.addPart(partData);
-    }
+    const res = editId
+      ? await storageService.updatePartAndSync(editId, partData)
+      : await storageService.addPartAndSync(partData);
     refreshData();
+    setSyncToast({
+      message: res.cloudSynced
+        ? editId
+          ? `Đã cập nhật linh kiện [${res.part.code}] và đồng bộ Supabase Cloud!`
+          : `Đã thêm mới linh kiện [${res.part.code}] và đồng bộ Supabase Cloud!`
+        : `Đã lưu linh kiện [${res.part.code}] tại máy nhưng chưa đồng bộ được Supabase Cloud. Vui lòng kiểm tra mạng!`,
+      type: res.cloudSynced ? 'success' : 'error',
+    });
+    setTimeout(() => {
+      setSyncToast(null);
+    }, 3500);
   };
 
-  // Handle Delete Part
-  const handleConfirmDelete = () => {
+  // Handle Delete Part with immediate Supabase Cloud Sync
+  const handleConfirmDelete = async () => {
     if (partToDelete) {
-      storageService.deletePart(partToDelete.id);
+      const deletedCode = partToDelete.code;
+      const targetId = partToDelete.id;
       setIsDeleteModalOpen(false);
       setPartToDelete(null);
+      const res = await storageService.deletePartAndSync(targetId);
       refreshData();
+      setSyncToast({
+        message: res.cloudSynced
+          ? `Đã xóa linh kiện [${deletedCode}] và đồng bộ Supabase Cloud!`
+          : `Đã xóa [${deletedCode}] tại máy nhưng chưa đồng bộ xong lên Supabase Cloud.`,
+        type: res.cloudSynced ? 'success' : 'error',
+      });
+      setTimeout(() => {
+        setSyncToast(null);
+      }, 3500);
     }
   };
 

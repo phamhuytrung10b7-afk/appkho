@@ -41,6 +41,7 @@ export const STORAGE_KEYS = {
   MANUALLY_COMPLETED_VOUCHERS: 'thekho_manually_completed_vouchers_v1',
   DELETED_CALL_IDS: 'thekho_deleted_call_ids_v1',
   DELETED_BOM_VOUCHER_CODES: 'thekho_deleted_bom_voucher_codes_v1',
+  DELETED_PART_CODES: 'thekho_deleted_part_codes_v1',
 };
 
 // Egress bandwidth savings tracker (for diagnostics & verification)
@@ -705,6 +706,43 @@ export const supabaseRelationalStore = {
   },
 
   /**
+   * Fetches ALL parts from relational `parts` table with automatic 1000-row pagination
+   * (prevents Supabase PostgREST 1000-row default truncation).
+   */
+  async selectAllParts(): Promise<Part[] | null> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return null;
+
+      const allParts: Part[] = [];
+      const pageSize = 1000;
+      let page = 0;
+
+      while (page < 20) {
+        const { data, error } = await client
+          .from('parts')
+          .select('id, code, name, group_name, unit, current_stock, qty_ng, min_stock, max_stock, location, locations, unit_price, supplier, notes, created_at, updated_at')
+          .order('updated_at', { ascending: false })
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          logSupabaseError('selectAllParts', error);
+          return page === 0 ? null : allParts;
+        }
+        if (!data || data.length === 0) break;
+        allParts.push(...data.map(mapSupabaseRowToPart));
+        if (data.length < pageSize) break;
+        page++;
+      }
+
+      return allParts;
+    } catch (err) {
+      logSupabaseError('selectAllParts catch', err);
+      return null;
+    }
+  },
+
+  /**
    * Lightweight query of relational `parts` table for Kho NG reconciliation (returns id, code, qtyNg, updatedAt only).
    */
   async selectPartsNgSummary(): Promise<Array<{ id: string; code: string; qtyNg: number; updatedAt: string }> | null> {
@@ -712,22 +750,34 @@ export const supabaseRelationalStore = {
       const { client, isConfigured } = getActiveSupabaseClient();
       if (!isConfigured || !client) return null;
 
-      const { data, error } = await client
-        .from('parts')
-        .select('id, code, qty_ng, updated_at')
-        .limit(3000);
+      const result: Array<{ id: string; code: string; qtyNg: number; updatedAt: string }> = [];
+      const pageSize = 1000;
+      let page = 0;
 
-      if (error) {
-        logSupabaseError('selectPartsNgSummary', error);
-        return null;
+      while (page < 20) {
+        const { data, error } = await client
+          .from('parts')
+          .select('id, code, qty_ng, updated_at')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          logSupabaseError('selectPartsNgSummary', error);
+          return page === 0 ? null : result;
+        }
+        if (!data || data.length === 0) break;
+        for (const row of data as any[]) {
+          result.push({
+            id: String(row.id || ''),
+            code: String(row.code || ''),
+            qtyNg: typeof row.qty_ng === 'number' ? row.qty_ng : Number(row.qty_ng) || 0,
+            updatedAt: String(row.updated_at || ''),
+          });
+        }
+        if (data.length < pageSize) break;
+        page++;
       }
 
-      return (data || []).map((row: any) => ({
-        id: String(row.id || ''),
-        code: String(row.code || ''),
-        qtyNg: typeof row.qty_ng === 'number' ? row.qty_ng : Number(row.qty_ng) || 0,
-        updatedAt: String(row.updated_at || ''),
-      }));
+      return result;
     } catch (err) {
       logSupabaseError('selectPartsNgSummary catch', err);
       return null;
@@ -858,6 +908,29 @@ export const supabaseRelationalStore = {
       return true;
     } catch (err) {
       logSupabaseError('deletePartsBatch catch', err);
+      return false;
+    }
+  },
+
+  async deletePartsByCodes(codes: string[]): Promise<boolean> {
+    try {
+      const { client, isConfigured } = getActiveSupabaseClient();
+      if (!isConfigured || !client) return false;
+      const cleanCodes = Array.from(new Set((codes || []).map((c) => String(c || '').trim()).filter(Boolean)));
+      if (cleanCodes.length === 0) return true;
+
+      const MAX_BATCH_SIZE = 100;
+      for (let i = 0; i < cleanCodes.length; i += MAX_BATCH_SIZE) {
+        const chunk = cleanCodes.slice(i, i + MAX_BATCH_SIZE);
+        const { error } = await client.from('parts').delete().in('code', chunk);
+        if (error) {
+          logSupabaseError('deletePartsByCodes', error);
+          return false;
+        }
+      }
+      return true;
+    } catch (err) {
+      logSupabaseError('deletePartsByCodes catch', err);
       return false;
     }
   },
@@ -1243,51 +1316,86 @@ export async function mergePartsKvWithCloud({
   fallbackLocalParts,
   partsToUpsert = [],
   partIdsToDelete = [],
+  partCodesToDelete = [],
   preserveCloudQtyNg = false,
 }: {
   fallbackLocalParts: Part[];
   partsToUpsert?: Part[];
   partIdsToDelete?: string[];
+  partCodesToDelete?: string[];
   preserveCloudQtyNg?: boolean;
 }): Promise<{ success: boolean; mergedParts: Part[] }> {
   const { client, isConfigured } = getActiveSupabaseClient();
   const deleteIdSet = new Set((partIdsToDelete || []).filter(Boolean));
+  const deleteCodeSet = new Set(
+    (partCodesToDelete || []).map((c) => String(c || '').trim().toLowerCase()).filter(Boolean)
+  );
   const upsertById = new Map<string, Part>();
   const upsertByCode = new Map<string, Part>();
 
   for (const p of partsToUpsert) {
-    if (p && p.id && !deleteIdSet.has(p.id)) {
-      upsertById.set(p.id, p);
-      if (p.code) upsertByCode.set(p.code.trim().toLowerCase(), p);
-    }
+    if (!p || !p.id) continue;
+    const codeKey = p.code ? p.code.trim().toLowerCase() : '';
+    if (deleteIdSet.has(p.id) || (codeKey && deleteCodeSet.has(codeKey))) continue;
+    upsertById.set(p.id, p);
+    if (codeKey) upsertByCode.set(codeKey, p);
   }
 
-  const mergeWithBase = (baseList: Part[]): Part[] => {
-    const mergedMap = new Map<string, Part>();
-    for (const cp of baseList) {
-      if (!cp || !cp.id || deleteIdSet.has(cp.id)) continue;
-      mergedMap.set(cp.id, cp);
+  // Read tombstoned deleted part codes from localStorage so stale devices cannot resurrect intentionally deleted parts
+  let tombstoneCodeSet = new Set<string>();
+  try {
+    const rawTomb = localStorage.getItem(STORAGE_KEYS.DELETED_PART_CODES);
+    if (rawTomb) {
+      const decomp = decompressStorageValue(rawTomb) || rawTomb;
+      const parsed = JSON.parse(decomp);
+      if (Array.isArray(parsed)) {
+        tombstoneCodeSet = new Set(parsed.map((c: any) => String(c || '').trim().toLowerCase()).filter(Boolean));
+      }
     }
+  } catch (_) {}
 
-    // Also include any parts created locally that aren't in cloud yet
-    for (const lp of fallbackLocalParts) {
-      if (!lp || !lp.id || deleteIdSet.has(lp.id)) continue;
-      if (!mergedMap.has(lp.id)) {
-        const codeKey = lp.code?.trim().toLowerCase();
-        const sameCode = codeKey ? Array.from(mergedMap.values()).find((x) => x.code?.trim().toLowerCase() === codeKey) : undefined;
-        if (!sameCode) {
-          mergedMap.set(lp.id, lp);
-        }
+  const mergeWithBase = (baseList: Part[]): Part[] => {
+    const mergedByCode = new Map<string, Part>();
+    const noCodeMap = new Map<string, Part>();
+
+    const isDeleted = (p: Part): boolean => {
+      if (!p || !p.id) return true;
+      const cKey = p.code ? p.code.trim().toLowerCase() : '';
+      if (deleteIdSet.has(p.id)) return true;
+      if (cKey && deleteCodeSet.has(cKey)) return true;
+      // Never resurrect tombstoned code unless it is being explicitly upserted right now
+      if (cKey && tombstoneCodeSet.has(cKey) && !upsertByCode.has(cKey) && !upsertById.has(p.id)) return true;
+      return false;
+    };
+
+    // 1. Seed with authoritative Cloud base (preserving every part added on any device!)
+    for (const cp of baseList) {
+      if (isDeleted(cp)) continue;
+      const cKey = cp.code ? cp.code.trim().toLowerCase() : '';
+      if (cKey) {
+        if (!mergedByCode.has(cKey)) mergedByCode.set(cKey, cp);
+      } else {
+        noCodeMap.set(cp.id, cp);
       }
     }
 
-    // Apply explicit upserts onto base
+    // 2. Include any local parts missing from cloud (e.g., newly created locally before sync)
+    for (const lp of fallbackLocalParts) {
+      if (isDeleted(lp)) continue;
+      const cKey = lp.code ? lp.code.trim().toLowerCase() : '';
+      if (cKey) {
+        if (!mergedByCode.has(cKey)) {
+          mergedByCode.set(cKey, lp);
+        }
+      } else if (!noCodeMap.has(lp.id)) {
+        noCodeMap.set(lp.id, lp);
+      }
+    }
+
+    // 3. Apply explicit upserts onto base
     for (const [id, incoming] of upsertById.entries()) {
-      const existing =
-        mergedMap.get(id) ||
-        (incoming.code
-          ? Array.from(mergedMap.values()).find((x) => x.code?.trim().toLowerCase() === incoming.code.trim().toLowerCase())
-          : undefined);
+      const cKey = incoming.code ? incoming.code.trim().toLowerCase() : '';
+      const existing = (cKey ? mergedByCode.get(cKey) : undefined) || noCodeMap.get(id);
 
       if (existing) {
         const finalQtyNg = preserveCloudQtyNg
@@ -1298,17 +1406,27 @@ export async function mergePartsKvWithCloud({
           ? incoming.qtyNg
           : Number((incoming as any).qty_ng || incoming.qtyNg) || 0;
 
-        mergedMap.set(existing.id, {
+        const mergedItem: Part = {
           ...existing,
           ...incoming,
+          id: existing.id,
           qtyNg: finalQtyNg,
-        });
+        };
+        if (cKey) {
+          mergedByCode.set(cKey, mergedItem);
+        } else {
+          noCodeMap.set(existing.id, mergedItem);
+        }
       } else {
-        mergedMap.set(id, incoming);
+        if (cKey) {
+          mergedByCode.set(cKey, incoming);
+        } else {
+          noCodeMap.set(id, incoming);
+        }
       }
     }
 
-    return Array.from(mergedMap.values());
+    return [...Array.from(mergedByCode.values()), ...Array.from(noCodeMap.values())];
   };
 
   if (!isConfigured || !client) {
@@ -1317,7 +1435,9 @@ export async function mergePartsKvWithCloud({
     return { success: true, mergedParts: localMerged };
   }
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastCloudParts: Part[] | null = null;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
     try {
       const { data: row, error: fetchErr } = await client
         .from('thekho_app_data')
@@ -1327,10 +1447,14 @@ export async function mergePartsKvWithCloud({
 
       if (fetchErr) {
         logSupabaseError('mergePartsKvWithCloud fetch', fetchErr);
+        await new Promise((r) => setTimeout(r, 75 * (attempt + 1)));
         continue;
       }
 
       const cloudParts = Array.isArray(row?.data) ? (row.data as Part[]) : [];
+      if (cloudParts.length > 0) {
+        lastCloudParts = cloudParts;
+      }
       const prevUpdatedAt = row?.updated_at ? String(row.updated_at) : null;
       const baseList = cloudParts.length > 0 ? cloudParts : fallbackLocalParts;
       const finalMerged = mergeWithBase(baseList);
@@ -1351,6 +1475,8 @@ export async function mergePartsKvWithCloud({
         if (updErr) {
           logSupabaseError('mergePartsKvWithCloud CAS update', updErr);
         }
+        // Contention detected: brief jitter backoff before next CAS retry
+        await new Promise((r) => setTimeout(r, 75 * (attempt + 1) + Math.floor(Math.random() * 60)));
       } else {
         const { data: upsertedRows, error: upsErr } = await client
           .from('thekho_app_data')
@@ -1366,13 +1492,19 @@ export async function mergePartsKvWithCloud({
       }
     } catch (err) {
       logSupabaseError('mergePartsKvWithCloud attempt catch', err);
+      await new Promise((r) => setTimeout(r, 80 * (attempt + 1)));
     }
   }
 
-  // Fallback direct overwrite only if CAS retries exhausted unexpectedly
-  const finalFallback = mergeWithBase(fallbackLocalParts);
-  const ok = await supabaseKeyStore.set(STORAGE_KEYS.PARTS, finalFallback);
-  return { success: ok, mergedParts: finalFallback };
+  // CRITICAL: NEVER blindly overwrite Cloud with stale local-only list!
+  // Only write if we successfully fetched Cloud data and merged against it.
+  if (lastCloudParts && lastCloudParts.length > 0) {
+    const safeMerged = mergeWithBase(lastCloudParts);
+    const ok = await supabaseKeyStore.set(STORAGE_KEYS.PARTS, safeMerged);
+    return { success: ok, mergedParts: safeMerged };
+  }
+
+  return { success: false, mergedParts: mergeWithBase(fallbackLocalParts) };
 }
 
 /**

@@ -98,6 +98,7 @@ const MAX_BATCH_UPSERT_RECORDS = 150;
 
 const pendingPartsUpsertQueue = new Map<string, Part>();
 const pendingPartsDeleteQueue = new Set<string>();
+const pendingPartCodesDeleteQueue = new Set<string>();
 let pendingFullPartsKvSnapshot: Part[] | null = null;
 let pendingSettingsSnapshot: AppSettings | null = null;
 let writeQueueDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,17 +163,20 @@ async function flushWriteQueueToSupabase(): Promise<void> {
       pendingSettingsSnapshot ||
       pendingFullPartsKvSnapshot ||
       pendingPartsUpsertQueue.size > 0 ||
-      pendingPartsDeleteQueue.size > 0
+      pendingPartsDeleteQueue.size > 0 ||
+      pendingPartCodesDeleteQueue.size > 0
     ) {
       const settingsToFlush = pendingSettingsSnapshot;
       const fullPartsKvToFlush = pendingFullPartsKvSnapshot;
       const partsToUpsert = Array.from(pendingPartsUpsertQueue.values());
       const partIdsToDelete = Array.from(pendingPartsDeleteQueue.values());
+      const partCodesToDelete = Array.from(pendingPartCodesDeleteQueue.values());
 
       pendingSettingsSnapshot = null;
       pendingFullPartsKvSnapshot = null;
       pendingPartsUpsertQueue.clear();
       pendingPartsDeleteQueue.clear();
+      pendingPartCodesDeleteQueue.clear();
 
       const tasks: Promise<any>[] = [];
 
@@ -184,13 +188,14 @@ async function flushWriteQueueToSupabase(): Promise<void> {
         );
       }
 
-      // 2. Flush Full Parts KV Snapshot bằng CAS Merge để tuyệt đối không ghi đè mất tồn Kho NG từ thiết bị khác
+      // 2. Flush Full Parts KV Snapshot bằng CAS Merge để tuyệt đối không ghi đè mất linh kiện mới hoặc tồn Kho NG từ thiết bị khác
       if (fullPartsKvToFlush) {
         tasks.push(
           mergePartsKvWithCloud({
             fallbackLocalParts: fullPartsKvToFlush,
             partsToUpsert,
             partIdsToDelete,
+            partCodesToDelete,
             preserveCloudQtyNg: true,
           })
         );
@@ -204,12 +209,15 @@ async function flushWriteQueueToSupabase(): Promise<void> {
         }
       }
 
-      // 4. Flush Relational Parts Delete theo lô tối đa 150 ID/lần gửi
+      // 4. Flush Relational Parts Delete theo lô tối đa 150 ID/lần gửi (+ xóa theo code để không còn bản trùng)
       if (partIdsToDelete.length > 0) {
         for (let i = 0; i < partIdsToDelete.length; i += MAX_BATCH_UPSERT_RECORDS) {
           const chunk = partIdsToDelete.slice(i, i + MAX_BATCH_UPSERT_RECORDS);
           tasks.push(supabaseRelationalStore.deletePartsBatch(chunk));
         }
+      }
+      if (partCodesToDelete.length > 0) {
+        tasks.push(supabaseRelationalStore.deletePartsByCodes(partCodesToDelete));
       }
 
       if (tasks.length > 0) {
@@ -1220,18 +1228,107 @@ export const storageService = {
     scheduleDebouncedWriteFlush();
   },
 
+  getDeletedPartCodes(): string[] {
+    try {
+      const raw = safeGetRaw(STORAGE_KEYS.DELETED_PART_CODES);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? Array.from(new Set(parsed.map((c: any) => String(c || '').trim().toLowerCase()).filter(Boolean)))
+        : [];
+    } catch {
+      return [];
+    }
+  },
+
+  markPartCodesDeleted(codes: string[]): void {
+    const clean = (codes || []).map((c) => String(c || '').trim().toLowerCase()).filter(Boolean);
+    if (clean.length === 0) return;
+    const merged = Array.from(new Set([...this.getDeletedPartCodes(), ...clean]));
+    safeSetRaw(STORAGE_KEYS.DELETED_PART_CODES, JSON.stringify(merged));
+    setLocalCacheData(STORAGE_KEYS.DELETED_PART_CODES, merged, new Date().toISOString());
+    supabaseKeyStore.set(STORAGE_KEYS.DELETED_PART_CODES, merged).catch(() => {});
+  },
+
+  unmarkPartCodesDeleted(codes: string[]): void {
+    const removeSet = new Set((codes || []).map((c) => String(c || '').trim().toLowerCase()).filter(Boolean));
+    if (removeSet.size === 0) return;
+    const current = this.getDeletedPartCodes();
+    const next = current.filter((c) => !removeSet.has(c));
+    if (next.length !== current.length) {
+      safeSetRaw(STORAGE_KEYS.DELETED_PART_CODES, JSON.stringify(next));
+      setLocalCacheData(STORAGE_KEYS.DELETED_PART_CODES, next, new Date().toISOString());
+      supabaseKeyStore.set(STORAGE_KEYS.DELETED_PART_CODES, next).catch(() => {});
+    }
+  },
+
   addPart(partData: Omit<Part, 'id' | 'createdAt' | 'updatedAt'>): Part {
     const parts = this.getParts();
+    const cleanCode = String(partData.code || '').trim();
+    const lowerCode = cleanCode.toLowerCase();
+    if (cleanCode) {
+      this.unmarkPartCodesDeleted([cleanCode]);
+    }
+
+    // Tránh sinh bản ghi trùng mã nếu linh kiện đã tồn tại
+    const existingIdx = lowerCode
+      ? parts.findIndex((p) => p.code && p.code.trim().toLowerCase() === lowerCode)
+      : -1;
+    const nowIso = new Date().toISOString();
+
+    if (existingIdx !== -1) {
+      const updatedExisting: Part = {
+        ...parts[existingIdx],
+        ...partData,
+        code: cleanCode || parts[existingIdx].code,
+        updatedAt: nowIso,
+      };
+      parts[existingIdx] = updatedExisting;
+      this.saveParts(parts, [updatedExisting]);
+      return updatedExisting;
+    }
+
     const newPart: Part = {
       ...partData,
+      code: cleanCode,
       id: 'part-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     parts.unshift(newPart);
-    // Gom nhóm vào hàng đợi Debounce 400ms thay vì bắn insertPart lẻ tẻ
     this.saveParts(parts, [newPart]);
     return newPart;
+  },
+
+  async addPartAndSync(
+    partData: Omit<Part, 'id' | 'createdAt' | 'updatedAt'>
+  ): Promise<{ part: Part; cloudSynced: boolean }> {
+    const saved = this.addPart(partData);
+    const { isConfigured } = getActiveSupabaseClient();
+    if (!isConfigured) {
+      return { part: saved, cloudSynced: true };
+    }
+    try {
+      const latestParts = this.getParts();
+      if (writeQueueDebounceTimer) {
+        clearTimeout(writeQueueDebounceTimer);
+        writeQueueDebounceTimer = null;
+      }
+      pendingFullPartsKvSnapshot = null;
+      pendingPartsUpsertQueue.delete(saved.id);
+
+      const [resKv, resRel] = await Promise.all([
+        mergePartsKvWithCloud({
+          fallbackLocalParts: latestParts,
+          partsToUpsert: [saved],
+          preserveCloudQtyNg: true,
+        }),
+        supabaseRelationalStore.upsertParts([saved], { preserveExistingQtyNg: true }),
+      ]);
+      return { part: saved, cloudSynced: Boolean(resKv?.success) && Boolean(resRel) };
+    } catch {
+      return { part: saved, cloudSynced: false };
+    }
   },
 
   updatePart(id: string, updatedData: Partial<Part>): Part {
@@ -1248,32 +1345,100 @@ export const storageService = {
       updatedAt: new Date().toISOString(),
     };
     parts[index] = updatedPart;
-    // Gom nhóm vào hàng đợi Debounce 400ms thay vì bắn updatePart lẻ tẻ
     this.saveParts(parts, [updatedPart]);
     return updatedPart;
   },
 
+  async updatePartAndSync(
+    id: string,
+    updatedData: Partial<Part>
+  ): Promise<{ part: Part; cloudSynced: boolean }> {
+    const updated = this.updatePart(id, updatedData);
+    const { isConfigured } = getActiveSupabaseClient();
+    if (!isConfigured) {
+      return { part: updated, cloudSynced: true };
+    }
+    try {
+      const latestParts = this.getParts();
+      if (writeQueueDebounceTimer) {
+        clearTimeout(writeQueueDebounceTimer);
+        writeQueueDebounceTimer = null;
+      }
+      pendingFullPartsKvSnapshot = null;
+      pendingPartsUpsertQueue.delete(updated.id);
+
+      const [resKv, resRel] = await Promise.all([
+        mergePartsKvWithCloud({
+          fallbackLocalParts: latestParts,
+          partsToUpsert: [updated],
+          preserveCloudQtyNg: true,
+        }),
+        supabaseRelationalStore.upsertParts([updated], { preserveExistingQtyNg: true }),
+      ]);
+      return { part: updated, cloudSynced: Boolean(resKv?.success) && Boolean(resRel) };
+    } catch {
+      return { part: updated, cloudSynced: false };
+    }
+  },
+
   deletePart(id: string): void {
     const allParts = this.getParts();
-    const matchedToDelete = allParts.filter((p) => p.id === id || p.code === id);
-    const remainingParts = allParts.filter((p) => p.id !== id && p.code !== id);
+    const matchedToDelete = allParts.filter(
+      (p) => p.id === id || (p.code && p.code.trim().toLowerCase() === id.trim().toLowerCase())
+    );
+    const deleteCodeSet = new Set(
+      matchedToDelete.map((p) => p.code?.trim().toLowerCase()).filter(Boolean) as string[]
+    );
+    const remainingParts = allParts.filter(
+      (p) =>
+        p.id !== id &&
+        (!p.code || !deleteCodeSet.has(p.code.trim().toLowerCase()))
+    );
 
+    const codesToTombstone: string[] = [];
     for (const p of matchedToDelete) {
       pendingPartsUpsertQueue.delete(p.id);
       pendingPartsDeleteQueue.add(p.id);
+      if (p.code) {
+        pendingPartCodesDeleteQueue.add(p.code.trim());
+        codesToTombstone.push(p.code.trim());
+      }
     }
     if (matchedToDelete.length === 0 && id) {
       pendingPartsUpsertQueue.delete(id);
       pendingPartsDeleteQueue.add(id);
+    }
+    if (codesToTombstone.length > 0) {
+      this.markPartCodesDeleted(codesToTombstone);
     }
 
     // Đưa vào hàng đợi Debounce 400ms
     this.saveParts(remainingParts, []);
 
     // Remove transactions for this part in memory & delete only matching rows in relational table
-    const txs = this.getTransactions().filter((t) => t.partId !== id && t.partCode !== id);
+    const txs = this.getTransactions().filter(
+      (t) =>
+        t.partId !== id &&
+        t.partCode !== id &&
+        (!t.partCode || !deleteCodeSet.has(t.partCode.trim().toLowerCase()))
+    );
     this.setTransactionsInMemory(txs);
     supabaseRelationalStore.deleteTransactionsByPart(id);
+    for (const code of codesToTombstone) {
+      supabaseRelationalStore.deleteTransactionsByPart(code);
+    }
+  },
+
+  async deletePartAndSync(id: string): Promise<{ cloudSynced: boolean }> {
+    this.deletePart(id);
+    const { isConfigured } = getActiveSupabaseClient();
+    if (!isConfigured) return { cloudSynced: true };
+    try {
+      await flushWriteQueueToSupabase();
+      return { cloudSynced: true };
+    } catch {
+      return { cloudSynced: false };
+    }
   },
 
   // Transactions (The Kho) - SOURCE OF TRUTH LÀ BẢNG RELATIONAL `transactions`, TUYỆT ĐỐI KHÔNG GHI TRÙNG LẶP VÀO KEY-VALUE
@@ -2841,32 +3006,68 @@ export const storageService = {
       const { isConfigured } = getActiveSupabaseClient();
       const cloudByCodeMap = new Map<string, Part>();
       if (isConfigured) {
-        const cloudParts = await supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS, { forceFresh: true });
+        const [cloudParts, relParts] = await Promise.all([
+          supabaseKeyStore.get<Part[]>(STORAGE_KEYS.PARTS, { forceFresh: true }),
+          supabaseRelationalStore.selectAllParts(),
+        ]);
+        const deletedSet = new Set(this.getDeletedPartCodes());
+        const localParts = this.getParts();
+        const mergedMap = new Map<string, Part>();
+
+        // 1. Nạp từ bảng Relational `parts` chuẩn trước (ưu tiên bản cập nhật mới nhất theo mã)
+        if (relParts && Array.isArray(relParts) && relParts.length > 0) {
+          for (const rp of relParts) {
+            if (!rp || !rp.code) continue;
+            const k = rp.code.trim().toLowerCase();
+            if (deletedSet.has(k)) continue;
+            const prev = mergedMap.get(k);
+            if (!prev || new Date(rp.updatedAt || 0).getTime() > new Date(prev.updatedAt || 0).getTime()) {
+              mergedMap.set(k, rp);
+              cloudByCodeMap.set(k, rp);
+            }
+          }
+        }
+
+        // 2. Merge từ KV `thekho_parts_v1`
         if (cloudParts && Array.isArray(cloudParts) && cloudParts.length > 0) {
-          const localParts = this.getParts();
-          const mergedMap = new Map<string, Part>();
           for (const cp of cloudParts) {
-            if (cp && cp.code) {
-              const k = cp.code.trim().toLowerCase();
-              cloudByCodeMap.set(k, cp);
+            if (!cp || !cp.code) continue;
+            const k = cp.code.trim().toLowerCase();
+            if (deletedSet.has(k)) continue;
+            const ex = mergedMap.get(k);
+            if (!ex) {
               mergedMap.set(k, cp);
+              cloudByCodeMap.set(k, cp);
+            } else {
+              const mergedItem: Part = {
+                ...ex,
+                ...cp,
+                qtyNg: typeof ex.qtyNg === 'number' ? ex.qtyNg : cp.qtyNg,
+              };
+              mergedMap.set(k, mergedItem);
+              cloudByCodeMap.set(k, mergedItem);
             }
           }
-          for (const lp of localParts) {
-            if (lp && lp.code) {
-              const k = lp.code.trim().toLowerCase();
-              const ex = mergedMap.get(k);
-              if (!ex) {
-                mergedMap.set(k, lp);
-              } else {
-                const lpTs = new Date(lp.updatedAt || 0).getTime();
-                const exTs = new Date(ex.updatedAt || 0).getTime();
-                if (lpTs > exTs) {
-                  mergedMap.set(k, { ...ex, ...lp });
-                }
-              }
+        }
+
+        // 3. Merge với local cache
+        for (const lp of localParts) {
+          if (!lp || !lp.code) continue;
+          const k = lp.code.trim().toLowerCase();
+          if (deletedSet.has(k)) continue;
+          const ex = mergedMap.get(k);
+          if (!ex) {
+            mergedMap.set(k, lp);
+          } else {
+            const lpTs = new Date(lp.updatedAt || 0).getTime();
+            const exTs = new Date(ex.updatedAt || 0).getTime();
+            if (lpTs > exTs) {
+              mergedMap.set(k, { ...ex, ...lp, id: ex.id });
             }
           }
+        }
+
+        if (mergedMap.size > 0) {
           const mergedList = Array.from(mergedMap.values());
           const compactMerged = mergedList.map((p) => ({
             id: p.id,
@@ -2888,6 +3089,12 @@ export const storageService = {
       const result = this.importPartsFromRows(rawRows);
       if (result.added === 0 && result.updated === 0) {
         return { added: 0, updated: 0, cloudSynced: true };
+      }
+
+      // Gỡ khỏi danh sách đã xóa nếu người dùng chủ động import lại mã linh kiện
+      const importedCodes = (result.changedParts || []).map((cp) => cp.code).filter(Boolean);
+      if (importedCodes.length > 0) {
+        this.unmarkPartCodesDeleted(importedCodes);
       }
 
       if (writeQueueDebounceTimer) {
@@ -7268,6 +7475,7 @@ export const storageService = {
         STORAGE_KEYS.USERS,
         STORAGE_KEYS.MANUALLY_COMPLETED_VOUCHERS,
         STORAGE_KEYS.DELETED_CALL_IDS,
+        STORAGE_KEYS.DELETED_PART_CODES,
       ];
 
       await supabaseKeyStore.batchSyncAllKeys(allKvKeys, forceFetch);
@@ -7285,54 +7493,109 @@ export const storageService = {
         }
       }
 
-      // Retrieve parts directly from localStorage, fallback to relational table if brand new
+      // Retrieve parts from KV localStorage cache
       parts = this.getParts();
-      if (!parts || parts.length === 0) {
-        const relParts = await supabaseRelationalStore.selectParts({ limit: 2000 });
-        if (relParts !== null && relParts.length > 0) {
-          parts = relParts;
-          this.saveParts(parts);
+
+      // 2.1 ĐỐI SOÁT 2 CHIỀU VỚI BẢNG RELATIONAL `parts` CHUẨN TRÊN SUPABASE:
+      // - Tự động khôi phục mọi linh kiện đã thêm mới / import Excel nằm trong bảng `parts` nhưng bị thiết bị cũ ghi đè mất khỏi KV `thekho_parts_v1`.
+      // - Đồng thời đối soát `qty_ng` chuẩn cho Kho NG (đảm bảo mã đã xuất NG không bị hồi sinh).
+      // - Tôn trọng danh sách mã Admin đã chủ động xóa (`DELETED_PART_CODES`).
+      const deletedPartCodesSet = new Set(this.getDeletedPartCodes());
+      const relAllParts = await supabaseRelationalStore.selectAllParts();
+
+      if (relAllParts && relAllParts.length > 0) {
+        const kvByCode = new Map<string, Part>();
+        const kvById = new Map<string, Part>();
+        for (const kp of parts || []) {
+          if (!kp) continue;
+          const cKey = kp.code ? kp.code.trim().toLowerCase() : '';
+          if (cKey && deletedPartCodesSet.has(cKey)) continue;
+          if (cKey && !kvByCode.has(cKey)) kvByCode.set(cKey, kp);
+          if (kp.id) kvById.set(kp.id, kp);
         }
-      }
 
-      // 2.1 Đối soát tồn Kho NG (qty_ng) từ bảng Relational `parts` chuẩn trên Supabase Cloud:
-      // Đảm bảo các mã đã Xuất trả NCC / Tiêu hủy / Admin xóa (qty_ng = 0) KHÔNG bao giờ bị hồi sinh từ bản KV cũ của máy khác.
-      const relNgList = await supabaseRelationalStore.selectPartsNgSummary();
-      if (relNgList && relNgList.length > 0 && parts && parts.length > 0) {
-        const relById = new Map<string, { qtyNg: number; updatedAt: string }>();
-        const relByCode = new Map<string, { qtyNg: number; updatedAt: string }>();
-        for (const item of relNgList) {
-          if (item.id) relById.set(item.id, { qtyNg: item.qtyNg, updatedAt: item.updatedAt });
-          if (item.code) relByCode.set(item.code.trim().toLowerCase(), { qtyNg: item.qtyNg, updatedAt: item.updatedAt });
-        }
-
-        const healedParts: Part[] = [];
-        parts = parts.map((p) => {
-          const relInfo =
-            relById.get(p.id) ||
-            (p.code ? relByCode.get(p.code.trim().toLowerCase()) : undefined);
-          if (!relInfo) return p;
-
-          const kvQtyNg = typeof p.qtyNg === 'number' ? p.qtyNg : Number((p as any).qty_ng || p.qtyNg) || 0;
-          if (kvQtyNg !== relInfo.qtyNg) {
-            const relTs = new Date(relInfo.updatedAt || 0).getTime();
-            const kvTs = new Date(p.updatedAt || 0).getTime();
-            const newerIso =
-              !isNaN(relTs) && (isNaN(kvTs) || relTs > kvTs)
-                ? relInfo.updatedAt
-                : p.updatedAt || new Date().toISOString();
-            const healed: Part = {
-              ...p,
-              qtyNg: relInfo.qtyNg,
-              updatedAt: newerIso,
-            };
-            healedParts.push(healed);
-            return healed;
+        // Nhóm các bản ghi Relational theo mã linh kiện (chọn bản ghi chuẩn nhất nếu trước đây có bản trùng mã)
+        const relBestByCode = new Map<string, Part>();
+        for (const rp of relAllParts) {
+          if (!rp || !rp.code) continue;
+          const cKey = rp.code.trim().toLowerCase();
+          if (deletedPartCodesSet.has(cKey)) continue;
+          const prev = relBestByCode.get(cKey);
+          if (!prev) {
+            relBestByCode.set(cKey, rp);
+          } else {
+            // Ưu tiên ID khớp với KV hiện tại nếu có, sau đó ưu tiên updatedAt mới hơn
+            const kvMatch = kvByCode.get(cKey);
+            if (kvMatch && rp.id === kvMatch.id) {
+              relBestByCode.set(cKey, rp);
+            } else if (!kvMatch || prev.id !== kvMatch.id) {
+              const rpTs = new Date(rp.updatedAt || 0).getTime();
+              const prevTs = new Date(prev.updatedAt || 0).getTime();
+              if (rpTs > prevTs) {
+                relBestByCode.set(cKey, rp);
+              }
+            }
           }
-          return p;
-        });
+        }
 
-        if (healedParts.length > 0) {
+        const healedPartsForKv: Part[] = [];
+        const missingPartsForRel: Part[] = [];
+        const mergedParts: Part[] = [];
+        const seenCodes = new Set<string>();
+
+        // A. Giữ toàn bộ linh kiện hiện có trong KV (đã lọc mã bị xóa) & cập nhật qtyNg chuẩn từ Relational
+        for (const kp of parts || []) {
+          if (!kp) continue;
+          const cKey = kp.code ? kp.code.trim().toLowerCase() : '';
+          if (cKey && deletedPartCodesSet.has(cKey)) {
+            continue;
+          }
+          if (cKey) {
+            if (seenCodes.has(cKey)) continue;
+            seenCodes.add(cKey);
+          }
+
+          const relMatch = (cKey ? relBestByCode.get(cKey) : undefined) || kvById.get(kp.id);
+          if (relMatch && relBestByCode.has(cKey)) {
+            const kvQtyNg = typeof kp.qtyNg === 'number' ? kp.qtyNg : Number((kp as any).qty_ng || kp.qtyNg) || 0;
+            const relQtyNg = typeof relMatch.qtyNg === 'number' ? relMatch.qtyNg : Number((relMatch as any).qty_ng || relMatch.qtyNg) || 0;
+            if (kvQtyNg !== relQtyNg) {
+              const relTs = new Date(relMatch.updatedAt || 0).getTime();
+              const kvTs = new Date(kp.updatedAt || 0).getTime();
+              const newerIso =
+                !isNaN(relTs) && (isNaN(kvTs) || relTs > kvTs)
+                  ? relMatch.updatedAt
+                  : kp.updatedAt || new Date().toISOString();
+              const healed: Part = {
+                ...kp,
+                qtyNg: relQtyNg,
+                updatedAt: newerIso,
+              };
+              mergedParts.push(healed);
+              healedPartsForKv.push(healed);
+            } else {
+              mergedParts.push(kp);
+            }
+          } else {
+            mergedParts.push(kp);
+            if (cKey && !relBestByCode.has(cKey)) {
+              missingPartsForRel.push(kp);
+            }
+          }
+        }
+
+        // B. TỰ ĐỘNG KHÔI PHỤC các linh kiện có trong bảng Relational `parts` nhưng bị thiếu trong KV `thekho_parts_v1`!
+        for (const [cKey, rp] of relBestByCode.entries()) {
+          if (!seenCodes.has(cKey) && !deletedPartCodesSet.has(cKey)) {
+            seenCodes.add(cKey);
+            mergedParts.unshift(rp);
+            healedPartsForKv.push(rp);
+          }
+        }
+
+        parts = mergedParts;
+
+        if (healedPartsForKv.length > 0 || (parts.length !== (this.getParts() || []).length)) {
           const compactHealed = parts.map((p) => ({
             id: p.id,
             code: p.code,
@@ -7347,12 +7610,24 @@ export const storageService = {
           }));
           safeSetRaw(PARTS_KEY, JSON.stringify(compactHealed));
           setLocalCacheData(STORAGE_KEYS.PARTS, parts, new Date().toISOString());
-          // Tự động đồng bộ làm sạch KV thekho_parts_v1 trên Cloud để các máy khác cũng cập nhật đúng
-          mergePartsKvWithCloud({
-            fallbackLocalParts: parts,
-            partsToUpsert: healedParts,
-            preserveCloudQtyNg: false,
-          }).catch(() => {});
+          if (healedPartsForKv.length > 0) {
+            mergePartsKvWithCloud({
+              fallbackLocalParts: parts,
+              partsToUpsert: healedPartsForKv,
+              preserveCloudQtyNg: false,
+            }).catch(() => {});
+          }
+        }
+
+        // C. Đồng bộ ngược các mã chỉ có trong KV sang bảng Relational `parts` để 2 bảng luôn khớp 100%
+        if (missingPartsForRel.length > 0) {
+          supabaseRelationalStore.upsertParts(missingPartsForRel, { preserveExistingQtyNg: true }).catch(() => {});
+        }
+      } else if (!parts || parts.length === 0) {
+        const relParts = await supabaseRelationalStore.selectParts({ limit: 2000 });
+        if (relParts !== null && relParts.length > 0) {
+          parts = relParts;
+          this.saveParts(parts);
         }
       }
 
