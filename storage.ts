@@ -5647,10 +5647,15 @@ export const storageService = {
     if (idx === -1) throw new Error('Không tìm thấy đơn gọi hàng');
 
     const current = reqs[idx];
+    const resolvedDeliveredBy =
+      status === 'COMPLETED'
+        ? current.deliveredBy || deliveredBy || 'Thủ Kho Logistics'
+        : deliveredBy || current.deliveredBy || 'Thủ Kho Logistics';
+
     const updated: MaterialCallRequest = {
       ...current,
       status,
-      deliveredBy: deliveredBy || current.deliveredBy || 'Thủ Kho Logistics',
+      deliveredBy: resolvedDeliveredBy,
       deliveredAt: status === 'COMPLETED' ? new Date().toISOString() : current.deliveredAt,
     };
 
@@ -5686,7 +5691,7 @@ export const storageService = {
             kittedQuantity: pItem.rawQuantity,
             status: 'DELIVERED',
             bufferLocation: current.bufferLocation || 'Giao DCLR',
-            operatorName: deliveredBy || current.deliveredBy || 'Thủ Kho Logistics',
+            operatorName: resolvedDeliveredBy,
             endTime: nowIso,
             durationMinutes: 5,
           };

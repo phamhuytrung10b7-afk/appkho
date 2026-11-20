@@ -777,10 +777,11 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
     if (syncingRequestIds.includes(requestId)) return;
     setSyncingRequestIds((prev) => [...prev, requestId]);
     try {
+      const existingReq = materialCalls.find((m) => m.requestId === requestId);
       const { updated, cloudSynced } = await storageService.updateMaterialCallStatusAndSync(
         requestId,
         'COMPLETED',
-        delivererName
+        existingReq?.deliveredBy
       );
       if (cloudSynced) {
         setMessage({
@@ -1006,6 +1007,20 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
       const minutes = String(d.getMinutes()).padStart(2, '0');
       const seconds = String(d.getSeconds()).padStart(2, '0');
       return `${hours}:${minutes}:${seconds} - ${day}/${month}/${year}`;
+    } catch {
+      return isoString;
+    }
+  };
+
+  const formatVietnamDate = (isoString: string) => {
+    if (!isoString) return 'Chưa ghi nhận';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      return `${day}/${month}/${year}`;
     } catch {
       return isoString;
     }
@@ -1420,12 +1435,21 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                     </div>
 
                     <div className="p-3 bg-blue-50/80 border border-blue-100 rounded-xl text-xs space-y-1">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-start justify-between gap-2">
                         <span className="font-bold text-blue-900">Nơi nhận hàng:</span>
-                        {req.requiredTime && (
-                          <span className="text-[11px] font-mono font-black text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md border border-rose-300">
-                            ⏰ Cần lúc: {req.requiredTime}
-                          </span>
+                        {(req.requiredTime || req.requestedAt) && (
+                          <div className="flex flex-col items-end gap-1">
+                            {req.requiredTime && (
+                              <span className="text-[11px] font-mono font-black text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md border border-rose-300">
+                                ⏰ Cần lúc: {req.requiredTime}
+                              </span>
+                            )}
+                            {req.requestedAt && (
+                              <span className="text-[11px] font-mono font-bold text-slate-700 bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                                📅 Ngày: {formatVietnamDate(req.requestedAt)}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                       <p className="font-extrabold text-slate-900 text-sm">{req.assemblyLine}</p>
