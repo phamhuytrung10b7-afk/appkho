@@ -655,7 +655,7 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
   const handleConfirmAndonFromModal = async () => {
     if (!andonModalData) return;
     const { partCode, partName, unit, isKitted, recommendedLocation, availableBuffers, kittedStockQty, pendingRawQty } = andonModalData;
-    const targetLine = assemblyLine || 'DCLR';
+    const targetLine = assemblyLine.trim() || 'DCLR';
     const chosenPickLocation = isKitted ? (selectedPickShelf || recommendedLocation) : 'KHU BÓC TÁCH KITTING';
 
     // Stock validation against actual available quantity on chosen shelf
@@ -2436,8 +2436,8 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
               </div>
 
               {/* Input Fields Grid */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                <div className="sm:col-span-4">
                   <label className="block font-black text-slate-800 text-[11px] mb-1">
                     SL CẤP ({andonModalData.unit}) <span className="text-rose-500">*</span>
                   </label>
@@ -2450,21 +2450,69 @@ export const AndonCallView: React.FC<AndonCallViewProps> = ({
                   />
                 </div>
 
-                <div>
-                  <label className="block font-black text-slate-800 text-[11px] mb-1">
-                    DÂY CHUYỀN NHẬN <span className="text-rose-500">*</span>
-                  </label>
-                  <select
-                    value={assemblyLine}
-                    onChange={(e) => setAssemblyLine(e.target.value)}
-                    className="w-full px-2.5 py-2.5 bg-blue-50 border-2 border-blue-400 rounded-xl font-extrabold text-blue-950 text-xs focus:ring-2 focus:ring-blue-500 outline-hidden"
-                  >
-                    {assemblyLinesList.map((line) => (
-                      <option key={line} value={line}>
-                        📍 {line}
-                      </option>
-                    ))}
-                  </select>
+                <div className="sm:col-span-8">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-black text-slate-800 text-[11px]">
+                      DÂY CHUYỀN NHẬN <span className="text-rose-500">*</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsCustomLineMode(!isCustomLineMode)}
+                      className="text-[11px] font-bold text-amber-700 hover:text-amber-900 underline flex items-center space-x-1 cursor-pointer"
+                    >
+                      <SettingsIcon className="w-3 h-3" />
+                      <span>{isCustomLineMode ? 'Mặc Định DCLR' : 'Sửa Chi Tiết'}</span>
+                    </button>
+                  </div>
+
+                  {isCustomLineMode ? (
+                    <div className="space-y-1.5">
+                      <input
+                        type="text"
+                        value={assemblyLine}
+                        onChange={(e) => setAssemblyLine(e.target.value)}
+                        placeholder="Nhập thủ công vị trí / bàn máy / dây chuyền..."
+                        className="w-full px-3 py-2 bg-white border-2 border-amber-400 rounded-xl font-extrabold text-slate-900 text-xs focus:ring-2 focus:ring-amber-500 outline-hidden"
+                      />
+                      <div className="flex flex-wrap gap-1 items-center">
+                        <span className="text-[10px] text-slate-500 font-bold">Chọn nhanh:</span>
+                        <button
+                          type="button"
+                          onClick={() => setAssemblyLine('DCLR')}
+                          className="px-2 py-0.5 bg-slate-100 hover:bg-amber-100 border border-slate-300 rounded text-[10px] font-bold cursor-pointer"
+                        >
+                          DCLR (Ghi chung)
+                        </button>
+                        {assemblyLinesList.map((line) => (
+                          <button
+                            key={line}
+                            type="button"
+                            onClick={() => setAssemblyLine(line)}
+                            className="px-2 py-0.5 bg-slate-100 hover:bg-amber-100 border border-slate-300 rounded text-[10px] font-bold cursor-pointer"
+                          >
+                            {line}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={assemblyLine}
+                        onChange={(e) => setAssemblyLine(e.target.value)}
+                        placeholder="Nhập vị trí / bàn máy nhận..."
+                        className="w-full flex-1 px-3 py-2.5 bg-blue-50 border-2 border-blue-400 rounded-xl font-extrabold text-blue-950 text-xs focus:ring-2 focus:ring-blue-500 outline-hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsCustomLineMode(true)}
+                        className="px-2.5 py-2.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-[11px] font-extrabold shrink-0 cursor-pointer"
+                      >
+                        ✏️ Sửa Chi Tiết
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
